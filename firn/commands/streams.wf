@@ -1,0 +1,2564 @@
+alias Bytes = pkg::bytes::Bytes;
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias OrderedNode = std::collections::ordered_map::OrderedNode;
+alias Span = pkg::protocol::Span;
+alias StreamId = pkg::store::StreamId;
+alias StreamIdOrder = pkg::store::StreamIdOrder;
+alias StreamItem = pkg::store::StreamItem;
+alias StreamLog = pkg::store::StreamLog;
+alias StreamNode = pkg::store::StreamNode;
+alias Time = pkg::store::Time;
+alias Value = pkg::store::Value;
+alias arg = pkg::protocol::arg;
+alias byte_at = pkg::bytes::byte_at;
+alias byte_before = pkg::bytes::byte_before;
+alias bytes_copy = pkg::bytes::bytes_copy;
+alias bytes_integer = pkg::bytes::bytes_integer;
+alias bytes_length = pkg::bytes::bytes_length;
+alias bytes_new = pkg::bytes::bytes_new;
+alias bytes_same = pkg::bytes::bytes_same;
+alias ceiling = pkg::store::ceiling;
+alias expired = pkg::store::expired;
+alias log_count = pkg::store::log_count;
+alias log_decimal = pkg::store::log_decimal;
+alias log_input = pkg::store::log_input;
+alias log_text = pkg::store::log_text;
+alias log_word = pkg::store::log_word;
+alias name_is = pkg::bytes::name_is;
+alias ordered_map_edit = std::collections::ordered_map::ordered_map_edit;
+alias ordered_map_lookup = std::collections::ordered_map::ordered_map_lookup;
+alias ordered_map_put = std::collections::ordered_map::ordered_map_put;
+alias ordered_map_remove = std::collections::ordered_map::ordered_map_remove;
+alias read_integer = pkg::bytes::read_integer;
+alias remove_expired = pkg::store::remove_expired;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_echoed = pkg::protocol::reply_echoed;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_integer = pkg::protocol::reply_integer;
+alias reply_map = pkg::protocol::reply_map;
+alias reply_nil = pkg::protocol::reply_nil;
+alias reply_nil_array = pkg::protocol::reply_nil_array;
+alias reply_ok = pkg::protocol::reply_ok;
+alias reply_text = pkg::protocol::reply_text;
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_word = pkg::protocol::reply_word;
+alias reply_wrong_type = pkg::protocol::reply_wrong_type;
+alias stream_id_text = pkg::store::stream_id_text;
+alias stream_new = pkg::store::stream_new;
+
+const code_xadd: u64 = 1145323864_u64;
+
+const code_xrange: u64 = 76172557898328_u64;
+
+const code_xrevrange: u64 = 18396713349745562200_u64;
+
+const code_xlen: u64 = 1313164376_u64;
+
+const code_xtrim: u64 = 331942614104_u64;
+
+const code_xdel: u64 = 1279607896_u64;
+
+const code_xsetid: u64 = 75081737130840_u64;
+
+const code_xread: u64 = 293152838232_u64;
+
+const word_xrevrange: Array<u8, 9> = "XREVRANGE";
+
+const arity_xadd: i64 = -5_i64;
+
+const arity_xrange: i64 = -4_i64;
+
+const arity_xlen: i64 = 2_i64;
+
+const arity_xtrim: i64 = -4_i64;
+
+const arity_xdel: i64 = -3_i64;
+
+const arity_xread: i64 = -4_i64;
+
+const arity_xsetid: i64 = -3_i64;
+
+const word_maxlen: Array<u8, 6> = "MAXLEN";
+
+const word_minid: Array<u8, 5> = "MINID";
+
+const word_limit: Array<u8, 5> = "LIMIT";
+
+const word_nomkstream: Array<u8, 10> = "NOMKSTREAM";
+
+const word_count: Array<u8, 5> = "COUNT";
+
+const word_block: Array<u8, 5> = "BLOCK";
+
+const word_streams: Array<u8, 7> = "STREAMS";
+
+const word_group: Array<u8, 5> = "GROUP";
+
+const word_noack: Array<u8, 5> = "NOACK";
+
+const word_entries_added: Array<u8, 12> = "ENTRIESADDED";
+
+const word_max_deleted: Array<u8, 12> = "MAXDELETEDID";
+
+const word_exact: Array<u8, 1> = "=";
+
+const text_stream_id: Array<u8, 58> = "ERR Invalid stream ID specified as stream command argument";
+
+const text_stream_both: Array<u8, 78> = "ERR syntax error, MAXLEN and MINID options at the same time are not compatible";
+
+const text_stream_maxlen: Array<u8, 37> = "ERR The MAXLEN argument must be >= 0.";
+
+const text_stream_limit: Array<u8, 36> = "ERR The LIMIT argument must be >= 0.";
+
+const text_stream_limit_alone: Array<u8, 77> = "ERR syntax error, LIMIT cannot be used without specifying a trimming strategy";
+
+const text_stream_limit_exact: Array<u8, 67> = "ERR syntax error, LIMIT cannot be used without the special ~ option";
+
+const text_stream_xtrim: Array<u8, 63> = "ERR syntax error, XTRIM must be called with a trimming strategy";
+
+const text_stream_zero: Array<u8, 53> = "ERR The ID specified in XADD must be greater than 0-0";
+
+const text_stream_exhausted: Array<u8, 75> = "ERR The stream has exhausted the last possible ID, unable to add more items";
+
+const text_stream_smaller: Array<u8, 80> = "ERR The ID specified in XADD is equal or smaller than the target stream top item";
+
+const text_stream_large: Array<u8, 39> = "ERR Elements are too large to be stored";
+
+const text_stream_integer: Array<u8, 43> = "ERR value is not an integer or out of range";
+
+const text_stream_syntax: Array<u8, 16> = "ERR syntax error";
+
+const text_stream_start: Array<u8, 37> = "ERR invalid start ID for the interval";
+
+const text_stream_end: Array<u8, 35> = "ERR invalid end ID for the interval";
+
+const text_stream_unbalanced: Array<u8, 91> = "ERR Unbalanced 'xread' list of streams: for each stream key an ID or '$' must be specified.";
+
+const text_stream_group: Array<u8, 79> = "ERR The GROUP option is only supported by XREADGROUP. You called XREAD instead.";
+
+const text_stream_noack: Array<u8, 79> = "ERR The NOACK option is only supported by XREADGROUP. You called XREAD instead.";
+
+const text_stream_greater: Array<u8, 101> = "ERR The > ID can be specified only when calling XREADGROUP using the GROUP <group> <consumer> option.";
+
+const text_stream_timeout: Array<u8, 45> = "ERR timeout is not an integer or out of range";
+
+const text_stream_timeout_negative: Array<u8, 23> = "ERR timeout is negative";
+
+const text_stream_timeout_range: Array<u8, 27> = "ERR timeout is out of range";
+
+const text_stream_block: Array<u8, 69> = "ERR XREAD with BLOCK cannot wait yet: no stream had an entry to serve";
+
+const text_stream_added: Array<u8, 34> = "ERR entries_added must be positive";
+
+const text_stream_given_deleted: Array<u8, 80> = "ERR The ID specified in XSETID is smaller than the provided max_deleted_entry_id";
+
+const text_stream_no_key: Array<u8, 15> = "ERR no such key";
+
+const text_stream_current_deleted: Array<u8, 75> = "ERR The ID specified in XSETID is smaller than current max_deleted_entry_id";
+
+const text_stream_top: Array<u8, 73> = "ERR The ID specified in XSETID is smaller than the target stream top item";
+
+const text_stream_length: Array<u8, 82> = "ERR The entries_added specified in XSETID is smaller than the target stream length";
+
+const text_stream_script_head: Array<u8, 5> = "-ERR ";
+
+const text_stream_script_tail: Array<u8, 54> = " command is not allowed with BLOCK option from scripts";
+
+const text_stream_crlf: Array<u8, 2> =[13_u8, 10_u8];
+
+const stream_max: u64 = 18446744073709551615_u64;
+
+const stream_lp_max: u64 = 1073741824_u64;
+
+struct StreamOp {
+  doc "One stream command as parsed, with what the stream code needs to run it and what it found. act names the work: 1 XADD, 2 XTRIM, 3 XDEL, 4 XSETID, 5 a range reply, 6 XLEN, 7 a probe of the stream's IDs. error, when not 0, names the error reply stream_error writes.";
+  act: u64;
+  id: StreamId;
+  low: StreamId;
+  high: StreamId;
+  id_given: Bool;
+  seq_given: Bool;
+  id_index: u64;
+  trim: u64;
+  approx: Bool;
+  maxlen: u64;
+  minid: StreamId;
+  limit: u64;
+  trim_index: u64;
+  nomkstream: Bool;
+  count: u64;
+  count_given: Bool;
+  reverse: Bool;
+  added_given: Bool;
+  entries_added: u64;
+  max_deleted: StreamId;
+  node_bytes: u64;
+  node_entries: u64;
+  now: u64;
+  pairs: Box<Slots<Bytes>>;
+  raw: u64;
+  ids: Box<Slots<StreamId>>;
+  serve: Box<Slots<u64>>;
+  ranks: Box<Slots<u64>>;
+  first_key: u64;
+  key_count: u64;
+  blocking: Bool;
+  error: u64;
+  made: StreamId;
+  removed: u64;
+  number: u64;
+  last: StreamId;
+  live_last: StreamId;
+  changed: Bool;
+  created: Bool;
+}
+
+struct StreamPart {
+  doc "One part of a stream ID as read, its value and whether it was a number.";
+  value: u64;
+  valid: Bool;
+}
+
+struct StreamIdRead {
+  doc "An ID argument as read: the ID, whether it was valid, and whether it gave its sequence, which only the ms-* form of XADD leaves out.";
+  id: StreamId;
+  valid: Bool;
+  seq_given: Bool;
+}
+
+struct StreamFind {
+  doc "The state of a walk down the node tree for one node key: the target ID, and the key found so far.";
+  target: StreamId;
+  found: Bool;
+  key: StreamId;
+}
+
+struct StreamWalk {
+  doc "A walk over entries in ID order, or reverse order, from the node key bound when bounded: it takes the live entries from low to high, up to limit when limit is not 0, counting them in taken and writing them into the reply when emit; seen is the last ID taken.";
+  low: StreamId;
+  high: StreamId;
+  bound: StreamId;
+  bounded: Bool;
+  reverse: Bool;
+  limit: u64;
+  taken: u64;
+  ended: Bool;
+  emit: Bool;
+  seen: StreamId;
+}
+
+struct StreamAppend {
+  doc "An entry offered to the tail node: it is appended unless the node is full by Redis's measure, in bytes or in entries.";
+  id: StreamId;
+  pairs: Box<Slots<Bytes>>;
+  raw: u64;
+  max_bytes: u64;
+  max_entries: u64;
+}
+
+struct StreamNodeInfo {
+  doc "What trimming reads of one node: its live and deleted counts and the ID of its last entry, a deleted one included.";
+  live: u64;
+  deleted: u64;
+  last: StreamId;
+}
+
+struct StreamMark {
+  doc "Exact trimming inside one node: marks entries deleted from the first until the stream holds maxlen entries (MAXLEN, trim 1) or an entry reaches minid (MINID, trim 2).";
+  trim: u64;
+  maxlen: u64;
+  minid: StreamId;
+  length: u64;
+  marked: u64;
+}
+
+struct StreamDelete {
+  doc "XDEL's work in one node: marks the live entry with the target ID deleted, if the node holds one, and reports whether the node has no live entry left.";
+  target: StreamId;
+  hit: Bool;
+  emptied: Bool;
+}
+
+fn stream_op_new() -> op: StreamOp pure {
+  doc "A stream command with nothing parsed yet.";
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  let top = StreamId(ms: stream_max, seq: stream_max);
+  let pairs = box_slots_new::<Bytes>(capacity: 0_u64);
+  let ids = box_slots_new::<StreamId>(capacity: 0_u64);
+  let serve = box_slots_new::<u64>(capacity: 0_u64);
+  let ranks = box_slots_new::<u64>(capacity: 0_u64);
+  let no = False();
+  return StreamOp(act: 0_u64, id: zero, low: zero, high: top, id_given: no, seq_given: no, id_index: 0_u64, trim: 0_u64, approx: no, maxlen: 0_u64, minid: zero, limit: 0_u64, trim_index: 0_u64, nomkstream: no, count: 0_u64, count_given: no, reverse: no, added_given: no, entries_added: 0_u64, max_deleted: zero, node_bytes: 4096_u64, node_entries: 100_u64, now: 0_u64, pairs: move pairs, raw: 0_u64, ids: move ids, serve: move serve, ranks: move ranks, first_key: 0_u64, key_count: 0_u64, blocking: no, error: 0_u64, made: zero, removed: 0_u64, number: 0_u64, last: zero, live_last: zero, changed: no, created: no);
+}
+
+fn id_order(left: StreamId, right: StreamId) -> order: i32 pure {
+  doc "Orders two IDs as streamCompareID does: by milliseconds, then by sequence.";
+  if left.ms < right.ms {
+    return -1_i32;
+  }
+  if left.ms > right.ms {
+    return 1_i32;
+  }
+  if left.seq < right.seq {
+    return -1_i32;
+  }
+  if left.seq > right.seq {
+    return 1_i32;
+  }
+  return 0_i32;
+}
+
+fn id_next(id: StreamId) -> next: StreamIdRead pure {
+  doc "The ID after id, as streamIncrID steps one; not valid after max-max.";
+  if id.seq == stream_max {
+    if id.ms == stream_max {
+      return StreamIdRead(id: id, valid: False(), seq_given: True());
+    }
+    let ms = id.ms +wrap 1_u64;
+    let stepped = StreamId(ms: ms, seq: 0_u64);
+    return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+  }
+  let seq = id.seq +wrap 1_u64;
+  let stepped = StreamId(ms: id.ms, seq: seq);
+  return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+}
+
+fn id_previous(id: StreamId) -> previous: StreamIdRead pure {
+  doc "The ID before id, as streamDecrID steps one; not valid before 0-0.";
+  if id.seq == 0_u64 {
+    if id.ms == 0_u64 {
+      return StreamIdRead(id: id, valid: False(), seq_given: True());
+    }
+    let ms = id.ms -wrap 1_u64;
+    let stepped = StreamId(ms: ms, seq: stream_max);
+    return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+  }
+  let seq = id.seq -wrap 1_u64;
+  let stepped = StreamId(ms: id.ms, seq: seq);
+  return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+}
+
+fn stream_space(byte: u8) -> space: Bool pure {
+  doc "Whether a byte is white space as C's isspace reads it in the C locale.";
+  let low = byte >= 9_u8;
+  let high = byte <= 13_u8;
+  let control = band(low, high);
+  let blank = byte == 32_u8;
+  let space = bor(control, blank);
+  return space;
+}
+
+fn stream_part(input: &[u8], start: u64, end: u64) -> part: StreamPart reads(input) {
+  doc "Reads one part of an ID as Redis 7.2.16's string2ull does: a strict signed decimal, refused when negative; otherwise strtoull's form, leading white space, an optional sign, at least one digit and nothing after, refused on overflow, a minus sign negating modulo 2^64.";
+  let length = end -sat start;
+  let strict = read_integer(input: input, start: start, length: length);
+  if strict.state == 1_u64 {
+    if strict.value < 0_i64 {
+      return StreamPart(value: 0_u64, valid: False());
+    }
+    let value = cvt.wrap::<i64, u64>(strict.value);
+    return StreamPart(value: value, valid: True());
+  }
+  let position = start;
+  loop @spaces {
+    if position >= end {
+      break @spaces;
+    }
+    let byte = byte_at(input: input, index: position);
+    if stream_space(byte: byte) {
+      set position = position +wrap 1_u64;
+    } else {
+      break @spaces;
+    }
+  }
+  let negative = False();
+  if position < end {
+    let sign = byte_at(input: input, index: position);
+    if sign == 45_u8 {
+      set negative = True();
+      set position = position +wrap 1_u64;
+    } else if sign == 43_u8 {
+      set position = position +wrap 1_u64;
+    }
+  }
+  let value = 0_u64;
+  let digits = 0_u64;
+  let overflow = False();
+  loop @digits {
+    if position >= end {
+      break @digits;
+    }
+    let byte = byte_at(input: input, index: position);
+    let above = byte >= 48_u8;
+    let below = byte <= 57_u8;
+    let digit = band(above, below);
+    if bnot(digit) {
+      break @digits;
+    }
+    let narrow = byte -wrap 48_u8;
+    let added = cvt.wrap::<u8, u64>(narrow);
+    let room = stream_max -wrap added;
+    let limit = room / 10_u64;
+    if value > limit {
+      set overflow = True();
+    }
+    let scaled = value *wrap 10_u64;
+    set value = scaled +wrap added;
+    set digits = digits +wrap 1_u64;
+    set position = position +wrap 1_u64;
+  }
+  let none = digits == 0_u64;
+  let left = position < end;
+  let refused = bor(none, left);
+  if bor(refused, overflow) {
+    return StreamPart(value: 0_u64, valid: False());
+  }
+  if negative {
+    let negated = 0_u64 -wrap value;
+    return StreamPart(value: negated, valid: True());
+  }
+  return StreamPart(value: value, valid: True());
+}
+
+fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: Bool) -> read: StreamIdRead reads(input) {
+  doc "Reads an ID argument as Redis 7.2.16's streamGenericParseIDOrReply does: at most 127 bytes, read up to its first zero byte; - and + alone are 0-0 and max-max, refused when strict; otherwise milliseconds, then after the first dash the sequence, or missing without a dash. With star, ms-* gives the milliseconds and leaves the sequence to XADD.";
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  let refused = StreamIdRead(id: zero, valid: False(), seq_given: True());
+  if span.length > 127_u64 {
+    return refused;
+  }
+  let start = span.start;
+  let end = span.start +wrap span.length;
+  for @bytes (offset in 0_u64..span.length) {
+    let position = span.start +wrap offset;
+    let byte = byte_at(input: input, index: position);
+    if byte == 0_u8 {
+      set end = position;
+      break @bytes;
+    }
+  }
+  let first = byte_before(input: input, position: start, end: end);
+  let after_first = start +wrap 1_u64;
+  let second = byte_before(input: input, position: after_first, end: end);
+  let alone = second == 0_u8;
+  let minus = first == 45_u8;
+  let plus = first == 43_u8;
+  let lone_minus = band(minus, alone);
+  let lone_plus = band(plus, alone);
+  let special = bor(lone_minus, lone_plus);
+  if special {
+    if strict {
+      return refused;
+    }
+    if lone_minus {
+      return StreamIdRead(id: zero, valid: True(), seq_given: True());
+    }
+    let top = StreamId(ms: stream_max, seq: stream_max);
+    return StreamIdRead(id: top, valid: True(), seq_given: True());
+  }
+  let dash = end;
+  let length = end -sat start;
+  for @dash (offset in 0_u64..length) {
+    let position = start +wrap offset;
+    let byte = byte_at(input: input, index: position);
+    if byte == 45_u8 {
+      set dash = position;
+      break @dash;
+    }
+  }
+  let ms = stream_part(input: input, start: start, end: dash);
+  if bnot(ms.valid) {
+    return refused;
+  }
+  if dash >= end {
+    let whole = StreamId(ms: ms.value, seq: missing);
+    return StreamIdRead(id: whole, valid: True(), seq_given: True());
+  }
+  let seq_start = dash +wrap 1_u64;
+  let seq_length = end -sat seq_start;
+  if star {
+    if seq_length == 1_u64 {
+      let byte = byte_at(input: input, index: seq_start);
+      if byte == 42_u8 {
+        let partial = StreamId(ms: ms.value, seq: 0_u64);
+        return StreamIdRead(id: partial, valid: True(), seq_given: False());
+      }
+    }
+  }
+  let seq = stream_part(input: input, start: seq_start, end: end);
+  if bnot(seq.valid) {
+    return refused;
+  }
+  let whole = StreamId(ms: ms.value, seq: seq.value);
+  return StreamIdRead(id: whole, valid: True(), seq_given: True());
+}
+
+fn stream_lone(input: &[u8], span: Span, byte: u8) -> lone: Bool reads(input) {
+  doc "Whether an argument is one byte alone as C reads a string: that byte, then a zero byte or the end.";
+  let end = span.start +wrap span.length;
+  let first = byte_before(input: input, position: span.start, end: end);
+  let after = span.start +wrap 1_u64;
+  let second = byte_before(input: input, position: after, end: end);
+  let same = first == byte;
+  let alone = second == 0_u8;
+  let lone = band(same, alone);
+  return lone;
+}
+
+fn lp_int_size(value: i64) -> size: u64 pure {
+  doc "The bytes a listpack spends on an integer element, its back-length included, as Redis 7.2.16's listpack encodes one: 2 for 0 to 127, 3 for 13 bits, 4 for 16, 5 for 24, 6 for 32 and 10 for 64.";
+  let small_low = value >= 0_i64;
+  let small_high = value <= 127_i64;
+  if band(small_low, small_high) {
+    return 2_u64;
+  }
+  let low13 = value >= -4096_i64;
+  let high13 = value <= 4095_i64;
+  if band(low13, high13) {
+    return 3_u64;
+  }
+  let low16 = value >= -32768_i64;
+  let high16 = value <= 32767_i64;
+  if band(low16, high16) {
+    return 4_u64;
+  }
+  let low24 = value >= -8388608_i64;
+  let high24 = value <= 8388607_i64;
+  if band(low24, high24) {
+    return 5_u64;
+  }
+  let low32 = value >= -2147483648_i64;
+  let high32 = value <= 2147483647_i64;
+  if band(low32, high32) {
+    return 6_u64;
+  }
+  return 10_u64;
+}
+
+fn lp_count_size(value: u64) -> size: u64 pure {
+  doc "The bytes a listpack spends on a count, as lp_int_size measures it.";
+  let signed = cvt.wrap::<u64, i64>(value);
+  let size = lp_int_size(value: signed);
+  return size;
+}
+
+fn lp_text_size(text: &Bytes) -> size: u64 reads(text) {
+  doc "The bytes a listpack spends on a string element, as Redis 7.2.16's lpAppend stores one: as an integer when lpStringToInt64 reads it, a canonical signed decimal of at most 20 characters; otherwise a header of 1, 2 or 5 bytes, the bytes, and a back-length of 1 to 5 bytes over header and bytes.";
+  let length = bytes_length(bytes: text);
+  if length <= 20_u64 {
+    let number = bytes_integer(bytes: text);
+    if number.state == 1_u64 {
+      let size = lp_int_size(value: number.value);
+      return size;
+    }
+  }
+  let header = 5_u64;
+  if length < 64_u64 {
+    set header = 1_u64;
+  } else if length < 4096_u64 {
+    set header = 2_u64;
+  }
+  let encoded = header +wrap length;
+  let back = 5_u64;
+  if encoded <= 127_u64 {
+    set back = 1_u64;
+  } else if encoded < 16383_u64 {
+    set back = 2_u64;
+  } else if encoded < 2097151_u64 {
+    set back = 3_u64;
+  } else if encoded < 268435455_u64 {
+    set back = 4_u64;
+  }
+  let size = encoded +wrap back;
+  return size;
+}
+
+fn same_fields(fields: &Box<Slots<Bytes>>, pairs: &Box<Slots<Bytes>>) -> same: Bool reads(fields), reads(pairs) {
+  doc "Whether an entry's fields are the node's master fields, in the same order, as streamAppendItem decides that an entry carries only its values.";
+  let count = fields^.inner.len;
+  let expected = count +wrap count;
+  if pairs^.inner.len != expected {
+    return False();
+  }
+  for @fields (index in 0_u64..count) {
+    let at = index +wrap index;
+    if index < fields^.inner.len {
+      if at < pairs^.inner.len {
+        let equal = bytes_same(left: &fields^.inner[index], right: &pairs^.inner[at]);
+        if bnot(equal) {
+          return False();
+        }
+      }
+    }
+  }
+  return True();
+}
+
+fn item_size(pairs: &Box<Slots<Bytes>>, same: Bool, id: StreamId, master: StreamId) -> size: u64 reads(pairs) {
+  doc "The bytes an entry adds to its node, as streamAppendItem encodes one: its flags, the ID as differences from the master ID, its values and, unless it has the master fields, its field count and fields, then its element count.";
+  let count = pairs^.inner.len / 2_u64;
+  let ms_delta = id.ms -wrap master.ms;
+  let seq_delta = id.seq -wrap master.seq;
+  let ms_signed = cvt.wrap::<u64, i64>(ms_delta);
+  let seq_signed = cvt.wrap::<u64, i64>(seq_delta);
+  let ms_size = lp_int_size(value: ms_signed);
+  let seq_size = lp_int_size(value: seq_signed);
+  let size = 2_u64 +wrap ms_size;
+  set size = size +wrap seq_size;
+  for @values (index in 0_u64..count) {
+    let at = index +wrap index;
+    let value_at = at +wrap 1_u64;
+    if value_at < pairs^.inner.len {
+      let value_size = lp_text_size(text: &pairs^.inner[value_at]);
+      set size = size +wrap value_size;
+    }
+    if bnot(same) {
+      if at < pairs^.inner.len {
+        let field_size = lp_text_size(text: &pairs^.inner[at]);
+        set size = size +wrap field_size;
+      }
+    }
+  }
+  let elements = count +wrap 3_u64;
+  if bnot(same) {
+    let count_size = lp_count_size(value: count);
+    set size = size +wrap count_size;
+    let doubled = count +wrap count;
+    set elements = doubled +wrap 4_u64;
+  }
+  let elements_size = lp_count_size(value: elements);
+  set size = size +wrap elements_size;
+  return size;
+}
+
+fn node_bytes(node: &StreamNode) -> bytes: u64 reads(node) {
+  doc "A node's size as Redis's lpBytes would report its listpack: 7 bytes of header and end, the live and deleted counts, the master fields with their count and terminator, and every entry, deleted ones included.";
+  let live = lp_count_size(value: node^.live);
+  let deleted = lp_count_size(value: node^.deleted);
+  let bytes = 7_u64 +wrap live;
+  set bytes = bytes +wrap deleted;
+  set bytes = bytes +wrap node^.master;
+  set bytes = bytes +wrap node^.body;
+  return bytes;
+}
+
+fn stream_node_new(id: StreamId, pairs: Box<Slots<Bytes>>) -> node: StreamNode pure {
+  doc "A node whose master entry takes this entry's ID and fields, holding the entry alone.";
+  let count = pairs.inner.len / 2_u64;
+  let fields = box_slots_new::<Bytes>(capacity: count);
+  let master = lp_count_size(value: count);
+  set master = master +wrap 2_u64;
+  for @fields (index in 0_u64..count) {
+    let at = index +wrap index;
+    if at < pairs.inner.len {
+      let field = bytes_copy(bytes: &pairs.inner[at]);
+      let field_size = lp_text_size(text: &field);
+      set master = master +wrap field_size;
+      if fields.inner.len < fields.inner.cap {
+        place_back(window: &fields.inner, value: move field);
+      } else {
+        let dropped = move field;
+      }
+    }
+  }
+  let same = True();
+  let size = item_size(pairs: &pairs, same: same, id: id, master: id);
+  let item = StreamItem(id: id, deleted: False(), same: same, pairs: move pairs, size: size);
+  let items = box_slots_new::<StreamItem>(capacity: 4_u64);
+  if items.inner.len < items.inner.cap {
+    place_back(window: &items.inner, value: move item);
+  } else {
+    let dropped = move item;
+  }
+  return StreamNode(fields: move fields, items: move items, live: 1_u64, deleted: 0_u64, master: master, body: size);
+}
+
+fn floor_link(link: &Slots<Box<OrderedNode<StreamId, StreamNode>>, 1>, find: &StreamFind) -> result: unit reads(link), writes(find) {
+  doc "Seeks the floor key in the subtree a link holds, if any. The node tree's fields are read directly until the ordered map offers a cursor (wf-std-ordered-map-cursor).";
+  if link^.len > 0_u64 {
+    floor_node(node: &link^[0_u64].inner, find: find);
+  }
+  return unit;
+}
+
+fn floor_node(node: &OrderedNode<StreamId, StreamNode>, find: &StreamFind) -> result: unit reads(node), writes(find) {
+  doc "Seeks, in a node's subtree, the greatest node key at most the target: the last entry at most the target is a candidate, and the subtree after it can hold a greater one; with no such entry, only the leading subtree can. Reads the node tree's fields directly (wf-std-ordered-map-cursor).";
+  let count = node^.entries.len;
+  let below = 0_u64;
+  loop @seek {
+    if below >= count {
+      break @seek;
+    }
+    if below < node^.entries.len {
+      let order = id_order(left: node^.entries[below].pair.key, right: find^.target);
+      if order > 0_i32 {
+        break @seek;
+      }
+    }
+    set below = below +wrap 1_u64;
+  }
+  if below == 0_u64 {
+    floor_link(link: &node^.leading, find: find);
+    return unit;
+  }
+  let index = below -wrap 1_u64;
+  if index < node^.entries.len {
+    set find^.found = True();
+    set find^.key = node^.entries[index].pair.key;
+    floor_link(link: &node^.entries[index].after, find: find);
+  }
+  return unit;
+}
+
+fn head_link(link: &Slots<Box<OrderedNode<StreamId, StreamNode>>, 1>, find: &StreamFind) -> result: unit reads(link), writes(find) {
+  doc "Seeks the least node key in the subtree a link holds, if any. Reads the node tree's fields directly (wf-std-ordered-map-cursor).";
+  if link^.len > 0_u64 {
+    let node = &link^[0_u64].inner;
+    head_link(link: &node^.leading, find: find);
+    if bnot(find^.found) {
+      if node^.entries.len > 0_u64 {
+        set find^.found = True();
+        set find^.key = node^.entries[0_u64].pair.key;
+      }
+    }
+  }
+  return unit;
+}
+
+fn stream_floor(log: &StreamLog, target: StreamId) -> find: StreamFind reads(log) {
+  doc "The key of the node that would hold target: the greatest node key at most target, if any.";
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  let find = StreamFind(target: target, found: False(), key: zero);
+  floor_link(link: &log^.nodes.root, find: &find);
+  return find;
+}
+
+fn stream_head(log: &StreamLog) -> find: StreamFind reads(log) {
+  doc "The key of the first node, if any; its first entry, deleted or not, has this ID.";
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  let find = StreamFind(target: zero, found: False(), key: zero);
+  head_link(link: &log^.nodes.root, find: &find);
+  return find;
+}
+
+fn walk_take(walk: &StreamWalk, item: &StreamItem, client: &Client) -> result: unit reads(item), writes(walk), writes(client) {
+  doc "Takes one live entry in range, writing it as [id, [field, value, ...]] when the walk emits, and ends the walk at its limit.";
+  if walk^.limit != 0_u64 {
+    if walk^.taken >= walk^.limit {
+      set walk^.ended = True();
+      return unit;
+    }
+  }
+  set walk^.taken = walk^.taken +wrap 1_u64;
+  set walk^.seen = item^.id;
+  if walk^.emit {
+    reply_array(client: client, count: 2_u64);
+    let text = stream_id_text(id: item^.id);
+    reply_text(client: client, text: &text);
+    let count = item^.pairs.inner.len;
+    reply_array(client: client, count: count);
+    for @pairs (index in 0_u64..count) {
+      if index < item^.pairs.inner.len {
+        reply_text(client: client, text: &item^.pairs.inner[index]);
+      }
+    }
+  }
+  if walk^.limit != 0_u64 {
+    if walk^.taken >= walk^.limit {
+      set walk^.ended = True();
+    }
+  }
+  return unit;
+}
+
+fn walk_items(walk: &StreamWalk, node: &StreamNode, client: &Client) -> result: unit reads(node), writes(walk), writes(client) {
+  doc "Visits a node's entries in the walk's order, taking the live ones in range and ending the walk at the first entry past it.";
+  let count = node^.items.inner.len;
+  for @items (step in 0_u64..count) {
+    if walk^.ended {
+      return unit;
+    }
+    let index = step;
+    if walk^.reverse {
+      let back = count -wrap step;
+      set index = back -wrap 1_u64;
+    }
+    if index < node^.items.inner.len {
+      let item = &node^.items.inner[index];
+      if walk^.reverse {
+        let before = id_order(left: item^.id, right: walk^.low);
+        if before < 0_i32 {
+          set walk^.ended = True();
+          return unit;
+        }
+        let above = id_order(left: item^.id, right: walk^.high);
+        if above <= 0_i32 {
+          if bnot(item^.deleted) {
+            walk_take(walk: walk, item: item, client: client);
+          }
+        }
+      } else {
+        let past = id_order(left: item^.id, right: walk^.high);
+        if past > 0_i32 {
+          set walk^.ended = True();
+          return unit;
+        }
+        let reached = id_order(left: item^.id, right: walk^.low);
+        if reached >= 0_i32 {
+          if bnot(item^.deleted) {
+            walk_take(walk: walk, item: item, client: client);
+          }
+        }
+      }
+    }
+  }
+  return unit;
+}
+
+fn walk_stream_link(link: &Slots<Box<OrderedNode<StreamId, StreamNode>>, 1>, walk: &StreamWalk, client: &Client) -> result: unit reads(link), writes(walk), writes(client) {
+  doc "Walks the subtree a link holds, if any. Reads the node tree's fields directly (wf-std-ordered-map-cursor).";
+  if walk^.ended {
+    return unit;
+  }
+  if link^.len > 0_u64 {
+    walk_stream_node(node: &link^[0_u64].inner, walk: walk, client: client);
+  }
+  return unit;
+}
+
+fn walk_stream_node(node: &OrderedNode<StreamId, StreamNode>, walk: &StreamWalk, client: &Client) -> result: unit reads(node), writes(walk), writes(client) {
+  doc "Walks a node's subtree in the walk's order, visiting each stream node's entries. When bounded, the stream nodes before the bound, or after it in reverse, are passed over: in order, only the subtree before the first key at least the bound can hold more of the walk; in reverse, only the subtree after the last key at most the bound. Reads the node tree's fields directly (wf-std-ordered-map-cursor).";
+  let count = node^.entries.len;
+  if walk^.reverse {
+    let position = count;
+    if walk^.bounded {
+      set position = 0_u64;
+      loop @seek {
+        if position >= count {
+          break @seek;
+        }
+        if position < node^.entries.len {
+          let order = id_order(left: node^.entries[position].pair.key, right: walk^.bound);
+          if order > 0_i32 {
+            break @seek;
+          }
+        }
+        set position = position +wrap 1_u64;
+      }
+    }
+    for @entries (step in 0_u64..position) {
+      if walk^.ended {
+        return unit;
+      }
+      let back = position -wrap step;
+      let index = back -wrap 1_u64;
+      if index < node^.entries.len {
+        walk_stream_link(link: &node^.entries[index].after, walk: walk, client: client);
+        if walk^.ended {
+          return unit;
+        }
+        walk_items(walk: walk, node: &node^.entries[index].pair.value, client: client);
+      }
+    }
+    walk_stream_link(link: &node^.leading, walk: walk, client: client);
+    return unit;
+  }
+  let first = 0_u64;
+  if walk^.bounded {
+    loop @seek {
+      if first >= count {
+        break @seek;
+      }
+      if first < node^.entries.len {
+        let order = id_order(left: node^.entries[first].pair.key, right: walk^.bound);
+        if order >= 0_i32 {
+          break @seek;
+        }
+      }
+      set first = first +wrap 1_u64;
+    }
+  }
+  if first == 0_u64 {
+    walk_stream_link(link: &node^.leading, walk: walk, client: client);
+  } else {
+    let previous = first -wrap 1_u64;
+    if previous < node^.entries.len {
+      walk_stream_link(link: &node^.entries[previous].after, walk: walk, client: client);
+    }
+  }
+  for @entries (index in first..count) {
+    if walk^.ended {
+      return unit;
+    }
+    if index < node^.entries.len {
+      walk_items(walk: walk, node: &node^.entries[index].pair.value, client: client);
+      walk_stream_link(link: &node^.entries[index].after, walk: walk, client: client);
+    }
+  }
+  return unit;
+}
+
+fn stream_walk(log: &StreamLog, low: StreamId, high: StreamId, reverse: Bool, limit: u64, emit: Bool, client: &Client) -> walk: StreamWalk reads(log), writes(client) {
+  doc "Walks the live entries from low to high, in reverse when reverse, up to limit when it is not 0, writing them when emit, and returns the walk with how many it took. The walk starts at the node that would hold low, or high in reverse.";
+  let target = high;
+  if bnot(reverse) {
+    set target = low;
+  }
+  let find = stream_floor(log: log, target: target);
+  let walk = StreamWalk(low: low, high: high, bound: find.key, bounded: find.found, reverse: reverse, limit: limit, taken: 0_u64, ended: False(), emit: emit, seen: low);
+  if reverse {
+    if bnot(find.found) {
+      return walk;
+    }
+  }
+  walk_stream_link(link: &log^.nodes.root, walk: &walk, client: client);
+  return walk;
+}
+
+fn stream_edge(log: &StreamLog, last: Bool, client: &Client) -> walk: StreamWalk reads(log), writes(client) {
+  doc "The first live entry, or the last when last, as streamGetEdgeID finds it skipping deleted entries; taken is 0 for an empty stream.";
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  let top = StreamId(ms: stream_max, seq: stream_max);
+  let no = False();
+  let walk = stream_walk(log: log, low: zero, high: top, reverse: last, limit: 1_u64, emit: no, client: client);
+  return walk;
+}
+
+fn append_into_node(env: &StreamAppend, key: &StreamId, value: &StreamNode) -> appended: Bool reads(key), writes(value), writes(env) {
+  doc "Appends the offered entry to the tail node unless Redis 7.2.16's streamAppendItem would start a new node: when the node's bytes and the entry's raw bytes reach the byte limit, or when an entry limit is set and the node's live and deleted entries reach it.";
+  let bytes = node_bytes(node: value);
+  let total = bytes +wrap env^.raw;
+  if total >= env^.max_bytes {
+    return False();
+  }
+  if env^.max_entries != 0_u64 {
+    let entries = value^.live +wrap value^.deleted;
+    if entries >= env^.max_entries {
+      return False();
+    }
+  }
+  let same = same_fields(fields: &value^.fields, pairs: &env^.pairs);
+  let master = key^;
+  let size = item_size(pairs: &env^.pairs, same: same, id: env^.id, master: master);
+  let pairs = box_slots_new::<Bytes>(capacity: 0_u64);
+  swap(first: &pairs, second: &env^.pairs);
+  let item = StreamItem(id: env^.id, deleted: False(), same: same, pairs: move pairs, size: size);
+  let capacity = value^.items.inner.cap;
+  if value^.items.inner.len >= capacity {
+    let doubled = capacity +wrap capacity;
+    let target = imax(doubled, 4_u64);
+    if target <= ceiling {
+      if target >= value^.items.inner.cap {
+        grow(cell: &value^.items, capacity: target);
+      }
+    }
+  }
+  if value^.items.inner.len < value^.items.inner.cap {
+    place_back(window: &value^.items.inner, value: move item);
+  } else {
+    let dropped = move item;
+  }
+  set value^.live = value^.live +wrap 1_u64;
+  set value^.body = value^.body +wrap size;
+  return True();
+}
+
+fn stream_add(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit writes(log), writes(op), writes(client) {
+  doc "XADD's append, as Redis 7.2.16's xaddCommand and streamAppendItem make it: the ID given, the milliseconds given with the next sequence, or the next ID from the clock; refused when the stream's last ID is max-max, when the ID is not above the last, or when the entry's strings pass 2^30 bytes. The entry goes into the tail node, or a new node when the tail is full.";
+  let last = log^.last_id;
+  let exhausted_ms = last.ms == stream_max;
+  let exhausted_seq = last.seq == stream_max;
+  if band(exhausted_ms, exhausted_seq) {
+    set op^.error = 9_u64;
+    return unit;
+  }
+  let id = last;
+  if op^.id_given {
+    if op^.seq_given {
+      set id = op^.id;
+    } else if last.ms == op^.id.ms {
+      if last.seq == stream_max {
+        set op^.error = 10_u64;
+        return unit;
+      }
+      let seq = last.seq +wrap 1_u64;
+      set id = StreamId(ms: last.ms, seq: seq);
+    } else {
+      set id = StreamId(ms: op^.id.ms, seq: 0_u64);
+    }
+  } else if op^.now > last.ms {
+    set id = StreamId(ms: op^.now, seq: 0_u64);
+  } else {
+    let next = id_next(id: last);
+    set id = next.id;
+  }
+  let order = id_order(left: id, right: last);
+  if order <= 0_i32 {
+    set op^.error = 10_u64;
+    return unit;
+  }
+  if op^.raw > stream_lp_max {
+    set op^.error = 11_u64;
+    return unit;
+  }
+  let pairs = box_slots_new::<Bytes>(capacity: 0_u64);
+  swap(first: &pairs, second: &op^.pairs);
+  let max_bytes = op^.node_bytes;
+  let unlimited = max_bytes == 0_u64;
+  let oversized = max_bytes > stream_lp_max;
+  if bor(unlimited, oversized) {
+    set max_bytes = stream_lp_max;
+  }
+  let offer = StreamAppend(id: id, pairs: move pairs, raw: op^.raw, max_bytes: max_bytes, max_entries: op^.node_entries);
+  let top = StreamId(ms: stream_max, seq: stream_max);
+  let tail = stream_floor(log: log, target: top);
+  let appended = False();
+  let keys = KeyEnv();
+  if tail.found {
+    let edited = ordered_map_edit::<StreamIdOrder, StreamNode, StreamAppend, Bool, fn append_into_node, ceiling>(map: &log^.nodes, key: &tail.key, key_env: &keys, edit_env: &offer);
+    match move edited {
+      Ok(value: placed) => {
+        set appended = placed;
+      }
+      Err(error: absent) => {
+      }
+    }
+  }
+  let StreamAppend(id: offered, pairs: left, raw: unused_raw, max_bytes: unused_bytes, max_entries: unused_entries) = move offer;
+  if bnot(appended) {
+    let node = stream_node_new(id: id, pairs: move left);
+    let put = ordered_map_put::<StreamIdOrder, StreamNode, ceiling>(map: &log^.nodes, key: id, value: move node, env: &keys);
+  } else {
+    let dropped = move left;
+  }
+  if log^.length == 0_u64 {
+    set log^.first_id = id;
+  }
+  set log^.length = log^.length +wrap 1_u64;
+  set log^.last_id = id;
+  set log^.entries_added = log^.entries_added +wrap 1_u64;
+  set op^.made = id;
+  set op^.changed = True();
+  return unit;
+}
+
+fn node_info(env: &StreamNodeInfo, key: &StreamId, value: &StreamNode) -> result: unit reads(key), reads(value), writes(env) {
+  doc "Reads a node's counts and the ID of its last entry, deleted or not.";
+  set env^.live = value^.live;
+  set env^.deleted = value^.deleted;
+  set env^.last = key^;
+  let count = value^.items.inner.len;
+  if count > 0_u64 {
+    let index = count -wrap 1_u64;
+    if index < value^.items.inner.len {
+      set env^.last = value^.items.inner[index].id;
+    }
+  }
+  return unit;
+}
+
+fn mark_entries(env: &StreamMark, key: &StreamId, value: &StreamNode) -> result: unit reads(key), writes(value), writes(env) {
+  doc "Exact trimming inside one node, as streamTrim marks entries: from the first entry, until the stream is short enough or an entry reaches minid, each live entry is marked deleted, its count moving from live to deleted; the node keeps its bytes.";
+  let count = value^.items.inner.len;
+  for @items (index in 0_u64..count) {
+    if index < value^.items.inner.len {
+      let stop = False();
+      if env^.trim == 1_u64 {
+        set stop = env^.length <= env^.maxlen;
+      } else {
+        let order = id_order(left: value^.items.inner[index].id, right: env^.minid);
+        set stop = order >= 0_i32;
+      }
+      if stop {
+        return unit;
+      }
+      if bnot(value^.items.inner[index].deleted) {
+        set value^.items.inner[index].deleted = True();
+        set value^.live = value^.live -wrap 1_u64;
+        set value^.deleted = value^.deleted +wrap 1_u64;
+        set env^.length = env^.length -wrap 1_u64;
+        set env^.marked = env^.marked +wrap 1_u64;
+      }
+    }
+  }
+  return unit;
+}
+
+fn stream_first_live(log: &StreamLog, client: &Client) -> result: unit writes(log), writes(client) {
+  doc "Sets the stream's first ID to its first live entry, or 0-0 when it has none, as streamTrim and XDEL recompute it.";
+  if log^.length == 0_u64 {
+    set log^.first_id = StreamId(ms: 0_u64, seq: 0_u64);
+    return unit;
+  }
+  let no = False();
+  let first = stream_edge(log: log, last: no, client: client);
+  if first.taken > 0_u64 {
+    set log^.first_id = first.seen;
+  }
+  return unit;
+}
+
+fn stream_trim(log: &StreamLog, op: &StreamOp, client: &Client) -> removed: u64 writes(log), reads(op), writes(client) {
+  doc "Trims the stream as Redis 7.2.16's streamTrim does and returns how many live entries it removed. From the first node: MAXLEN stops once the stream is no longer than maxlen; a node is removed whole when the rest would still hold maxlen entries (MAXLEN) or its last entry, a deleted one included, is below minid (MINID); a nonzero limit stops before the node whose entries would pass it. With ~ trimming stops at the first node it cannot remove; otherwise entries inside that node are marked deleted. The first ID is recomputed.";
+  let removed = 0_u64;
+  let keys = KeyEnv();
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  loop @nodes {
+    if op^.trim == 1_u64 {
+      if log^.length <= op^.maxlen {
+        break @nodes;
+      }
+    }
+    let head = stream_head(log: log);
+    if bnot(head.found) {
+      break @nodes;
+    }
+    let info = StreamNodeInfo(live: 0_u64, deleted: 0_u64, last: zero);
+    let read = ordered_map_lookup::<StreamIdOrder, StreamNode, StreamNodeInfo, unit, fn node_info, ceiling>(map: &log^.nodes, key: &head.key, key_env: &keys, visit_env: &info);
+    if op^.limit != 0_u64 {
+      let reach = removed +wrap info.live;
+      if reach > op^.limit {
+        break @nodes;
+      }
+    }
+    let whole = False();
+    if op^.trim == 1_u64 {
+      let rest = log^.length -wrap info.live;
+      set whole = rest >= op^.maxlen;
+    } else {
+      let order = id_order(left: info.last, right: op^.minid);
+      set whole = order < 0_i32;
+    }
+    if whole {
+      let gone = ordered_map_remove::<StreamIdOrder, StreamNode, ceiling>(map: &log^.nodes, key: &head.key, env: &keys);
+      set log^.length = log^.length -wrap info.live;
+      set removed = removed +wrap info.live;
+    } else {
+      if op^.approx {
+        break @nodes;
+      }
+      let mark = StreamMark(trim: op^.trim, maxlen: op^.maxlen, minid: op^.minid, length: log^.length, marked: 0_u64);
+      let marked = ordered_map_edit::<StreamIdOrder, StreamNode, StreamMark, unit, fn mark_entries, ceiling>(map: &log^.nodes, key: &head.key, key_env: &keys, edit_env: &mark);
+      set log^.length = mark.length;
+      set removed = removed +wrap mark.marked;
+      break @nodes;
+    }
+  }
+  stream_first_live(log: log, client: client);
+  return removed;
+}
+
+fn stream_threshold(log: &StreamLog, op: &StreamOp) -> result: unit reads(log), writes(op) {
+  doc "The threshold the file records for a trim with ~, as streamRewriteTrimArgument writes it: the length after trimming for MAXLEN; for MINID the first entry's ID, a deleted one included, or max-max for a stream with no entry.";
+  set op^.number = log^.length;
+  let head = stream_head(log: log);
+  if head.found {
+    set op^.last = head.key;
+  } else {
+    set op^.last = StreamId(ms: stream_max, seq: stream_max);
+  }
+  return unit;
+}
+
+fn delete_entry(env: &StreamDelete, key: &StreamId, value: &StreamNode) -> result: unit reads(key), writes(value), writes(env) {
+  doc "Marks the node's live entry with the target ID deleted, as streamIteratorRemoveEntry does, moving one count from live to deleted, and reports a node left with no live entry.";
+  let count = value^.items.inner.len;
+  for @items (index in 0_u64..count) {
+    if index < value^.items.inner.len {
+      let order = id_order(left: value^.items.inner[index].id, right: env^.target);
+      if order == 0_i32 {
+        if bnot(value^.items.inner[index].deleted) {
+          set value^.items.inner[index].deleted = True();
+          set value^.live = value^.live -wrap 1_u64;
+          set value^.deleted = value^.deleted +wrap 1_u64;
+          set env^.hit = True();
+          set env^.emptied = value^.live == 0_u64;
+        }
+        return unit;
+      }
+    }
+  }
+  return unit;
+}
+
+fn stream_delete(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit writes(log), writes(op), writes(client) {
+  doc "XDEL's work as Redis 7.2.16's xdelCommand does it: each named live entry is marked deleted, a node left without live entries removed; max_deleted_entry_id becomes the greatest ID deleted when above it, and the first ID is recomputed when the first entry went or the stream is empty.";
+  let keys = KeyEnv();
+  let first = log^.first_id;
+  let first_entry = False();
+  let deleted = 0_u64;
+  let count = op^.ids.inner.len;
+  for @ids (index in 0_u64..count) {
+    if index < op^.ids.inner.len {
+      let target = op^.ids.inner[index];
+      let find = stream_floor(log: log, target: target);
+      if find.found {
+        let mark = StreamDelete(target: target, hit: False(), emptied: False());
+        let edited = ordered_map_edit::<StreamIdOrder, StreamNode, StreamDelete, unit, fn delete_entry, ceiling>(map: &log^.nodes, key: &find.key, key_env: &keys, edit_env: &mark);
+        if mark.hit {
+          if mark.emptied {
+            let gone = ordered_map_remove::<StreamIdOrder, StreamNode, ceiling>(map: &log^.nodes, key: &find.key, env: &keys);
+          }
+          set log^.length = log^.length -wrap 1_u64;
+          let at_first = id_order(left: target, right: first);
+          if at_first == 0_i32 {
+            set first_entry = True();
+          }
+          let above = id_order(left: target, right: log^.max_deleted_id);
+          if above > 0_i32 {
+            set log^.max_deleted_id = target;
+          }
+          set deleted = deleted +wrap 1_u64;
+        }
+      }
+    }
+  }
+  if deleted > 0_u64 {
+    if log^.length == 0_u64 {
+      set log^.first_id = StreamId(ms: 0_u64, seq: 0_u64);
+    } else if first_entry {
+      stream_first_live(log: log, client: client);
+    }
+  }
+  set op^.removed = deleted;
+  set op^.changed = deleted > 0_u64;
+  return unit;
+}
+
+fn stream_setid(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit writes(log), writes(op), writes(client) {
+  doc "XSETID's checks on the stream and its change, as Redis 7.2.16's xsetidCommand does them: the ID may not be below the current max_deleted_entry_id; for a stream with entries, nor below its last live entry, and an ENTRIESADDED below the length is refused. The last ID becomes the ID, entries_added the ENTRIESADDED given, and max_deleted_entry_id the MAXDELETEDID given unless it is 0-0.";
+  let below_deleted = id_order(left: op^.id, right: log^.max_deleted_id);
+  if below_deleted < 0_i32 {
+    set op^.error = 27_u64;
+    return unit;
+  }
+  if log^.length > 0_u64 {
+    let yes = True();
+    let last = stream_edge(log: log, last: yes, client: client);
+    let below_top = id_order(left: op^.id, right: last.seen);
+    if below_top < 0_i32 {
+      set op^.error = 28_u64;
+      return unit;
+    }
+    if op^.added_given {
+      if log^.length > op^.entries_added {
+        set op^.error = 29_u64;
+        return unit;
+      }
+    }
+  }
+  set log^.last_id = op^.id;
+  if op^.added_given {
+    set log^.entries_added = op^.entries_added;
+  }
+  let zero_ms = op^.max_deleted.ms == 0_u64;
+  let zero_seq = op^.max_deleted.seq == 0_u64;
+  if bnot(band(zero_ms, zero_seq)) {
+    set log^.max_deleted_id = op^.max_deleted;
+  }
+  set op^.changed = True();
+  return unit;
+}
+
+fn stream_range_reply(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit reads(log), reads(op), writes(client) {
+  doc "Writes the live entries from low to high, in reverse when reverse, up to count when it is not 0, as an array of [id, [field, value, ...]]; COUNT 0 given answers a null array, as xrangeGenericCommand does.";
+  if op^.count_given {
+    if op^.count == 0_u64 {
+      reply_nil_array(client: client);
+      return unit;
+    }
+  }
+  let no = False();
+  let counted = stream_walk(log: log, low: op^.low, high: op^.high, reverse: op^.reverse, limit: op^.count, emit: no, client: client);
+  reply_array(client: client, count: counted.taken);
+  if counted.taken > 0_u64 {
+    let yes = True();
+    let emitted = stream_walk(log: log, low: op^.low, high: op^.high, reverse: op^.reverse, limit: op^.count, emit: yes, client: client);
+  }
+  return unit;
+}
+
+fn stream_apply(op: &StreamOp, log: &StreamLog, client: &Client) -> result: unit writes(op), writes(log), writes(client) {
+  doc "Runs the stream command op names on a live stream.";
+  if op^.act == 1_u64 {
+    stream_add(log: log, op: op, client: client);
+    if op^.error != 0_u64 {
+      return unit;
+    }
+    if op^.trim != 0_u64 {
+      set op^.removed = stream_trim(log: log, op: op, client: client);
+      if op^.approx {
+        stream_threshold(log: log, op: op);
+      }
+    }
+    return unit;
+  }
+  if op^.act == 2_u64 {
+    set op^.removed = stream_trim(log: log, op: op, client: client);
+    set op^.changed = op^.removed > 0_u64;
+    if op^.approx {
+      stream_threshold(log: log, op: op);
+    }
+    return unit;
+  }
+  if op^.act == 3_u64 {
+    stream_delete(log: log, op: op, client: client);
+    return unit;
+  }
+  if op^.act == 4_u64 {
+    stream_setid(log: log, op: op, client: client);
+    return unit;
+  }
+  if op^.act == 5_u64 {
+    stream_range_reply(log: log, op: op, client: client);
+    return unit;
+  }
+  set op^.number = log^.length;
+  set op^.last = log^.last_id;
+  if op^.act == 7_u64 {
+    if log^.length > 0_u64 {
+      let yes = True();
+      let last = stream_edge(log: log, last: yes, client: client);
+      set op^.live_last = last.seen;
+    }
+  }
+  return unit;
+}
+
+fn stream_act(op: &StreamOp, value: &Entry, client: &Client) -> kind: u64 writes(op), writes(value), writes(client) {
+  doc "Runs op on a live stream, recording done; records wrong for another kind and expired for an expired entry, and returns the kind as kind_of reports it.";
+  let reached = expired(expires: value^.expires, now: client^.now);
+  if reached {
+    set client^.state = state_expired;
+    return 0_u64;
+  }
+  match value^.value {
+    Stream(stream: log) => {
+      set client^.state = state_done;
+      stream_apply(op: op, log: &log^.inner, client: client);
+      return 6_u64;
+    }
+    Text(..) => {
+      set client^.state = state_wrong;
+      return 1_u64;
+    }
+    Items(..) => {
+      set client^.state = state_wrong;
+      return 2_u64;
+    }
+    Members(..) => {
+      set client^.state = state_wrong;
+      return 3_u64;
+    }
+    Fields(..) => {
+      set client^.state = state_wrong;
+      return 4_u64;
+    }
+    Ranked(..) => {
+      set client^.state = state_wrong;
+      return 5_u64;
+    }
+  }
+}
+
+fn stream_slot(op: &StreamOp, slot: &Option<Entry>, client: &Client) -> kind: u64 writes(op), writes(slot), writes(client) {
+  doc "Runs op on the stream an entry holds, leaving the state absent for an empty slot.";
+  set client^.state = state_absent;
+  match slot^ {
+    Some(value: held) => {
+      let kind = stream_act(op: op, value: held, client: client);
+      return kind;
+    }
+    None() => {
+      return 0_u64;
+    }
+  }
+}
+
+fn fresh_stream(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(capture_key), writes(sequence), writes(slot), writes(client) {
+  doc "Stores an empty stream in an entry that holds no live value, as XADD creates its key before it appends.";
+  let made = stream_new();
+  let boxed = box_new::<StreamLog>(value: move made);
+  let value = Value::Stream(stream: move boxed);
+  let stamp = new_access(client: client);
+  let fresh = Entry(value: move value, expires: 0_u64, access: stamp, last_write: 0_u64);
+  let replacement = Some<Entry>(value: move fresh);
+  pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
+  pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: capture_key);
+  return unit;
+}
+
+fn stream_error(client: &Client, code: u64, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(input), reads(args), writes(client) {
+  doc "Writes the error reply a stream command's error code names.";
+  if code == 40_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_arity(client: client, input: input, name: name);
+    return unit;
+  }
+  if code == 41_u64 {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if code == 23_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_word(client: client, word: &text_stream_script_head[0_u64..5_u64]);
+    let written = reply_echoed(client: client, input: input, span: name, limit: name.length);
+    reply_word(client: client, word: &text_stream_script_tail[0_u64..54_u64]);
+    reply_word(client: client, word: &text_stream_crlf[0_u64..2_u64]);
+    return unit;
+  }
+  if code == 1_u64 {
+    reply_error(client: client, word: &text_stream_id[0_u64..58_u64]);
+  } else if code == 2_u64 {
+    reply_error(client: client, word: &text_stream_both[0_u64..78_u64]);
+  } else if code == 3_u64 {
+    reply_error(client: client, word: &text_stream_maxlen[0_u64..37_u64]);
+  } else if code == 4_u64 {
+    reply_error(client: client, word: &text_stream_limit[0_u64..36_u64]);
+  } else if code == 5_u64 {
+    reply_error(client: client, word: &text_stream_limit_alone[0_u64..77_u64]);
+  } else if code == 6_u64 {
+    reply_error(client: client, word: &text_stream_limit_exact[0_u64..67_u64]);
+  } else if code == 7_u64 {
+    reply_error(client: client, word: &text_stream_xtrim[0_u64..63_u64]);
+  } else if code == 8_u64 {
+    reply_error(client: client, word: &text_stream_zero[0_u64..53_u64]);
+  } else if code == 9_u64 {
+    reply_error(client: client, word: &text_stream_exhausted[0_u64..75_u64]);
+  } else if code == 10_u64 {
+    reply_error(client: client, word: &text_stream_smaller[0_u64..80_u64]);
+  } else if code == 11_u64 {
+    reply_error(client: client, word: &text_stream_large[0_u64..39_u64]);
+  } else if code == 12_u64 {
+    reply_error(client: client, word: &text_stream_integer[0_u64..43_u64]);
+  } else if code == 13_u64 {
+    reply_error(client: client, word: &text_stream_syntax[0_u64..16_u64]);
+  } else if code == 14_u64 {
+    reply_error(client: client, word: &text_stream_start[0_u64..37_u64]);
+  } else if code == 15_u64 {
+    reply_error(client: client, word: &text_stream_end[0_u64..35_u64]);
+  } else if code == 16_u64 {
+    reply_error(client: client, word: &text_stream_unbalanced[0_u64..91_u64]);
+  } else if code == 17_u64 {
+    reply_error(client: client, word: &text_stream_group[0_u64..79_u64]);
+  } else if code == 18_u64 {
+    reply_error(client: client, word: &text_stream_noack[0_u64..79_u64]);
+  } else if code == 19_u64 {
+    reply_error(client: client, word: &text_stream_greater[0_u64..101_u64]);
+  } else if code == 20_u64 {
+    reply_error(client: client, word: &text_stream_timeout[0_u64..45_u64]);
+  } else if code == 21_u64 {
+    reply_error(client: client, word: &text_stream_timeout_negative[0_u64..23_u64]);
+  } else if code == 22_u64 {
+    reply_error(client: client, word: &text_stream_timeout_range[0_u64..27_u64]);
+  } else if code == 24_u64 {
+    reply_error(client: client, word: &text_stream_added[0_u64..34_u64]);
+  } else if code == 25_u64 {
+    reply_error(client: client, word: &text_stream_given_deleted[0_u64..80_u64]);
+  } else if code == 26_u64 {
+    reply_error(client: client, word: &text_stream_no_key[0_u64..15_u64]);
+  } else if code == 27_u64 {
+    reply_error(client: client, word: &text_stream_current_deleted[0_u64..75_u64]);
+  } else if code == 28_u64 {
+    reply_error(client: client, word: &text_stream_top[0_u64..73_u64]);
+  } else if code == 29_u64 {
+    reply_error(client: client, word: &text_stream_length[0_u64..82_u64]);
+  } else {
+    reply_error(client: client, word: &text_stream_block[0_u64..69_u64]);
+  }
+  return unit;
+}
+
+fn stream_settings(op: &StreamOp, client: &Client) -> result: unit reads(client), writes(op) {
+  doc "Copies the connection's node limits, stream-node-max-bytes and stream-node-max-entries, into the command.";
+  set op^.node_bytes = client^.stream_node_bytes;
+  set op^.node_entries = client^.stream_node_entries;
+  return unit;
+}
+
+fn xadd_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp, xadd: Bool, loading: Bool) -> valid: Bool reads(input), reads(args), writes(op) {
+  doc "Reads XADD's or XTRIM's options as Redis 7.2.16's streamParseAddOrTrimArgsOrReply does, recording the first error's code: from the third argument, MAXLEN and MINID with an optional ~ or = when at least two arguments follow, LIMIT and, for XADD, NOMKSTREAM, until * or the first other argument, XADD's ID. The default LIMIT with ~ is 100 entries per stream-node-max-entries, 10000 when that is 0, at most 1000000; while a file is replayed it is 0. XADD then needs pairs after its ID and refuses the ID 0-0 before the key is touched.";
+  let count = args^.inner.len;
+  let index = 2_u64;
+  let limit_given = False();
+  let limit_value = 0_u64;
+  set op^.id_index = count;
+  loop @options {
+    if index >= count {
+      break @options;
+    }
+    let last = count -wrap 1_u64;
+    let more = last -wrap index;
+    let span = arg(args: args, index: index);
+    let following = more > 0_u64;
+    let star = stream_lone(input: input, span: span, byte: 42_u8);
+    if band(xadd, star) {
+      set op^.id_index = index;
+      break @options;
+    }
+    let maxlen = option_matches(input: input, span: span, word: &word_maxlen[0_u64..6_u64]);
+    let minid = option_matches(input: input, span: span, word: &word_minid[0_u64..5_u64]);
+    let limit = option_matches(input: input, span: span, word: &word_limit[0_u64..5_u64]);
+    let nomkstream = option_matches(input: input, span: span, word: &word_nomkstream[0_u64..10_u64]);
+    let strategy = bor(maxlen, minid);
+    if band(strategy, following) {
+      if op^.trim != 0_u64 {
+        set op^.error = 2_u64;
+        return False();
+      }
+      set op^.approx = False();
+      let next_index = index +wrap 1_u64;
+      let next = arg(args: args, index: next_index);
+      if more >= 2_u64 {
+        let tilde = stream_lone(input: input, span: next, byte: 126_u8);
+        let equal = stream_lone(input: input, span: next, byte: 61_u8);
+        if tilde {
+          set op^.approx = True();
+          set index = index +wrap 1_u64;
+        } else if equal {
+          set index = index +wrap 1_u64;
+        }
+      }
+      let value_index = index +wrap 1_u64;
+      let value_span = arg(args: args, index: value_index);
+      if maxlen {
+        let number = read_integer(input: input, start: value_span.start, length: value_span.length);
+        if number.state != 1_u64 {
+          set op^.error = 12_u64;
+          return False();
+        }
+        if number.value < 0_i64 {
+          set op^.error = 3_u64;
+          return False();
+        }
+        set op^.maxlen = cvt.wrap::<i64, u64>(number.value);
+        set op^.trim = 1_u64;
+      } else {
+        let strict = True();
+        let no = False();
+        let read = stream_parse_id(input: input, span: value_span, strict: strict, missing: 0_u64, star: no);
+        if bnot(read.valid) {
+          set op^.error = 1_u64;
+          return False();
+        }
+        set op^.minid = read.id;
+        set op^.trim = 2_u64;
+      }
+      set index = value_index;
+      set op^.trim_index = index;
+    } else if band(limit, following) {
+      let value_index = index +wrap 1_u64;
+      let value_span = arg(args: args, index: value_index);
+      let number = read_integer(input: input, start: value_span.start, length: value_span.length);
+      if number.state != 1_u64 {
+        set op^.error = 12_u64;
+        return False();
+      }
+      if number.value < 0_i64 {
+        set op^.error = 4_u64;
+        return False();
+      }
+      set limit_value = cvt.wrap::<i64, u64>(number.value);
+      set limit_given = True();
+      set index = value_index;
+    } else if band(xadd, nomkstream) {
+      set op^.nomkstream = True();
+    } else if xadd {
+      let strict = True();
+      let yes = True();
+      let read = stream_parse_id(input: input, span: span, strict: strict, missing: 0_u64, star: yes);
+      if bnot(read.valid) {
+        set op^.error = 1_u64;
+        return False();
+      }
+      set op^.id = read.id;
+      set op^.id_given = True();
+      set op^.seq_given = read.seq_given;
+      set op^.id_index = index;
+      break @options;
+    } else {
+      set op^.error = 13_u64;
+      return False();
+    }
+    set index = index +wrap 1_u64;
+  }
+  if limit_value != 0_u64 {
+    if op^.trim == 0_u64 {
+      set op^.error = 5_u64;
+      return False();
+    }
+  }
+  if bnot(xadd) {
+    if op^.trim == 0_u64 {
+      set op^.error = 7_u64;
+      return False();
+    }
+  }
+  if loading {
+    set op^.limit = 0_u64;
+  } else if limit_given {
+    if bnot(op^.approx) {
+      set op^.error = 6_u64;
+      return False();
+    }
+    set op^.limit = limit_value;
+  } else if op^.approx {
+    let entries = op^.node_entries;
+    if entries == 0_u64 {
+      set op^.limit = 10000_u64;
+    } else if entries > 10000_u64 {
+      set op^.limit = 1000000_u64;
+    } else {
+      set op^.limit = entries *wrap 100_u64;
+    }
+  } else {
+    set op^.limit = 0_u64;
+  }
+  if bnot(xadd) {
+    set op^.act = 2_u64;
+    return True();
+  }
+  set op^.act = 1_u64;
+  let fields_start = op^.id_index +wrap 1_u64;
+  if fields_start > count {
+    set op^.error = 40_u64;
+    return False();
+  }
+  let given = count -wrap fields_start;
+  let odd = given % 2_u64;
+  let few = given < 2_u64;
+  let uneven = odd != 0_u64;
+  if bor(few, uneven) {
+    set op^.error = 40_u64;
+    return False();
+  }
+  let both = band(op^.id_given, op^.seq_given);
+  let zero_ms = op^.id.ms == 0_u64;
+  let zero_seq = op^.id.seq == 0_u64;
+  let zero = band(zero_ms, zero_seq);
+  if band(both, zero) {
+    set op^.error = 8_u64;
+    return False();
+  }
+  let pairs = box_slots_new::<Bytes>(capacity: given);
+  let raw = 0_u64;
+  for @pairs (index in fields_start..count) {
+    let span = arg(args: args, index: index);
+    let text = bytes_new(input: input, start: span.start, length: span.length);
+    set raw = raw +sat span.length;
+    if pairs.inner.len < pairs.inner.cap {
+      place_back(window: &pairs.inner, value: move text);
+    } else {
+      let dropped = move text;
+    }
+  }
+  swap(first: &pairs, second: &op^.pairs);
+  set op^.raw = raw;
+  return True();
+}
+
+fn interval_parse(input: &[u8], span: Span, missing: u64, start: Bool) -> read: StreamIdRead reads(input) {
+  doc "Reads one end of XRANGE's interval as streamParseIntervalIDOrReply does: an argument of more than one byte starting with ( is read strictly after it and stepped inward, a step past the last possible ID reported with seq_given false; any other is read with - and + allowed.";
+  let first = byte_at(input: input, index: span.start);
+  let open = first == 40_u8;
+  let long = span.length > 1_u64;
+  if band(open, long) {
+    let rest_start = span.start +wrap 1_u64;
+    let rest_length = span.length -wrap 1_u64;
+    let rest = Span(start: rest_start, length: rest_length);
+    let strict = True();
+    let no = False();
+    let read = stream_parse_id(input: input, span: rest, strict: strict, missing: missing, star: no);
+    if bnot(read.valid) {
+      return read;
+    }
+    if start {
+      let next = id_next(id: read.id);
+      if bnot(next.valid) {
+        return StreamIdRead(id: read.id, valid: True(), seq_given: False());
+      }
+      return next;
+    }
+    let previous = id_previous(id: read.id);
+    if bnot(previous.valid) {
+      return StreamIdRead(id: read.id, valid: True(), seq_given: False());
+    }
+    return previous;
+  }
+  let no = False();
+  let read = stream_parse_id(input: input, span: span, strict: no, missing: missing, star: no);
+  return read;
+}
+
+fn xrange_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp, reverse: Bool) -> valid: Bool reads(input), reads(args), writes(op) {
+  doc "Reads XRANGE's or XREVRANGE's interval, which XREVRANGE names end first, and its COUNT options as xrangeGenericCommand does, before the key is looked up: COUNT may repeat, a negative count reads as 0, and any other argument is a syntax error.";
+  let start_index = 2_u64;
+  let end_index = 3_u64;
+  if reverse {
+    set start_index = 3_u64;
+    set end_index = 2_u64;
+  }
+  let start_span = arg(args: args, index: start_index);
+  let yes = True();
+  let no = False();
+  let start = interval_parse(input: input, span: start_span, missing: 0_u64, start: yes);
+  if bnot(start.valid) {
+    set op^.error = 1_u64;
+    return False();
+  }
+  if bnot(start.seq_given) {
+    set op^.error = 14_u64;
+    return False();
+  }
+  let end_span = arg(args: args, index: end_index);
+  let end = interval_parse(input: input, span: end_span, missing: stream_max, start: no);
+  if bnot(end.valid) {
+    set op^.error = 1_u64;
+    return False();
+  }
+  if bnot(end.seq_given) {
+    set op^.error = 15_u64;
+    return False();
+  }
+  let count = args^.inner.len;
+  let index = 4_u64;
+  loop @options {
+    if index >= count {
+      break @options;
+    }
+    let last = count -wrap 1_u64;
+    let more = last -wrap index;
+    let span = arg(args: args, index: index);
+    let counted = option_matches(input: input, span: span, word: &word_count[0_u64..5_u64]);
+    let paired = more >= 1_u64;
+    if band(counted, paired) {
+      let value_index = index +wrap 1_u64;
+      let value_span = arg(args: args, index: value_index);
+      let number = read_integer(input: input, start: value_span.start, length: value_span.length);
+      if number.state != 1_u64 {
+        set op^.error = 12_u64;
+        return False();
+      }
+      set op^.count = 0_u64;
+      if number.value > 0_i64 {
+        set op^.count = cvt.wrap::<i64, u64>(number.value);
+      }
+      set op^.count_given = True();
+      set index = value_index +wrap 1_u64;
+    } else {
+      set op^.error = 13_u64;
+      return False();
+    }
+  }
+  set op^.low = start.id;
+  set op^.high = end.id;
+  set op^.reverse = reverse;
+  set op^.act = 5_u64;
+  return True();
+}
+
+fn xdel_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp) -> result: unit reads(input), reads(args), writes(op) {
+  doc "Reads XDEL's IDs strictly; an invalid one is recorded and answered only once the key is found to hold a stream, as xdelCommand looks the key up first.";
+  let count = args^.inner.len;
+  let named = count -sat 2_u64;
+  let ids = box_slots_new::<StreamId>(capacity: named);
+  let strict = True();
+  let no = False();
+  for @ids (index in 2_u64..count) {
+    let span = arg(args: args, index: index);
+    let read = stream_parse_id(input: input, span: span, strict: strict, missing: 0_u64, star: no);
+    if bnot(read.valid) {
+      if op^.error == 0_u64 {
+        set op^.error = 1_u64;
+      }
+    }
+    if ids.inner.len < ids.inner.cap {
+      place_back(window: &ids.inner, value: read.id);
+    }
+  }
+  swap(first: &ids, second: &op^.ids);
+  set op^.act = 3_u64;
+  return unit;
+}
+
+fn xsetid_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp) -> valid: Bool reads(input), reads(args), writes(op) {
+  doc "Reads XSETID's ID and its ENTRIESADDED and MAXDELETEDID options as xsetidCommand does, before the key is looked up.";
+  let strict = True();
+  let no = False();
+  let id_span = arg(args: args, index: 2_u64);
+  let read = stream_parse_id(input: input, span: id_span, strict: strict, missing: 0_u64, star: no);
+  if bnot(read.valid) {
+    set op^.error = 1_u64;
+    return False();
+  }
+  set op^.id = read.id;
+  let count = args^.inner.len;
+  let index = 3_u64;
+  loop @options {
+    if index >= count {
+      break @options;
+    }
+    let last = count -wrap 1_u64;
+    let more = last -wrap index;
+    let following = more > 0_u64;
+    let span = arg(args: args, index: index);
+    let value_index = index +wrap 1_u64;
+    let value_span = arg(args: args, index: value_index);
+    let added = option_matches(input: input, span: span, word: &word_entries_added[0_u64..12_u64]);
+    let deleted = option_matches(input: input, span: span, word: &word_max_deleted[0_u64..12_u64]);
+    if band(added, following) {
+      let number = read_integer(input: input, start: value_span.start, length: value_span.length);
+      if number.state != 1_u64 {
+        set op^.error = 12_u64;
+        return False();
+      }
+      if number.value < 0_i64 {
+        set op^.error = 24_u64;
+        return False();
+      }
+      set op^.entries_added = cvt.wrap::<i64, u64>(number.value);
+      set op^.added_given = True();
+    } else if band(deleted, following) {
+      let given = stream_parse_id(input: input, span: value_span, strict: strict, missing: 0_u64, star: no);
+      if bnot(given.valid) {
+        set op^.error = 1_u64;
+        return False();
+      }
+      let order = id_order(left: op^.id, right: given.id);
+      if order < 0_i32 {
+        set op^.error = 25_u64;
+        return False();
+      }
+      set op^.max_deleted = given.id;
+    } else {
+      set op^.error = 13_u64;
+      return False();
+    }
+    set index = index +wrap 2_u64;
+  }
+  set op^.act = 4_u64;
+  return True();
+}
+
+fn xread_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp, scripted: Bool, now: u64) -> valid: Bool reads(input), reads(args), writes(op) {
+  doc "Reads XREAD's options as Redis 7.2.16's xreadCommand does: BLOCK with a timeout in milliseconds, refused from a script; COUNT, a negative count reading as 0, which means no limit; STREAMS, whose keys and IDs must pair; GROUP and NOACK, refused as XREADGROUP's; any other argument, or no STREAMS, a syntax error.";
+  let count = args^.inner.len;
+  let index = 1_u64;
+  let streams = 0_u64;
+  loop @options {
+    if index >= count {
+      break @options;
+    }
+    let last = count -wrap 1_u64;
+    let more = last -wrap index;
+    let following = more > 0_u64;
+    let span = arg(args: args, index: index);
+    let value_index = index +wrap 1_u64;
+    let value_span = arg(args: args, index: value_index);
+    let block = option_matches(input: input, span: span, word: &word_block[0_u64..5_u64]);
+    let counted = option_matches(input: input, span: span, word: &word_count[0_u64..5_u64]);
+    let named = option_matches(input: input, span: span, word: &word_streams[0_u64..7_u64]);
+    let group = option_matches(input: input, span: span, word: &word_group[0_u64..5_u64]);
+    let noack = option_matches(input: input, span: span, word: &word_noack[0_u64..5_u64]);
+    let two_more = more >= 2_u64;
+    if band(block, following) {
+      if scripted {
+        set op^.error = 23_u64;
+        return False();
+      }
+      let number = read_integer(input: input, start: value_span.start, length: value_span.length);
+      if number.state != 1_u64 {
+        set op^.error = 20_u64;
+        return False();
+      }
+      if number.value < 0_i64 {
+        set op^.error = 21_u64;
+        return False();
+      }
+      let clock = cvt.wrap::<u64, i64>(now);
+      let room = 9223372036854775807_i64 -wrap clock;
+      if number.value > room {
+        set op^.error = 22_u64;
+        return False();
+      }
+      set op^.blocking = True();
+      set index = value_index;
+    } else if band(counted, following) {
+      let number = read_integer(input: input, start: value_span.start, length: value_span.length);
+      if number.state != 1_u64 {
+        set op^.error = 12_u64;
+        return False();
+      }
+      set op^.count = 0_u64;
+      if number.value > 0_i64 {
+        set op^.count = cvt.wrap::<i64, u64>(number.value);
+      }
+      set index = value_index;
+    } else if band(named, following) {
+      set streams = value_index;
+      let given = count -wrap streams;
+      let odd = given % 2_u64;
+      if odd != 0_u64 {
+        set op^.error = 16_u64;
+        return False();
+      }
+      set op^.first_key = streams;
+      set op^.key_count = given / 2_u64;
+      break @options;
+    } else if band(group, two_more) {
+      set op^.error = 17_u64;
+      return False();
+    } else if noack {
+      set op^.error = 18_u64;
+      return False();
+    } else {
+      set op^.error = 13_u64;
+      return False();
+    }
+    set index = index +wrap 1_u64;
+  }
+  if streams == 0_u64 {
+    set op^.error = 13_u64;
+    return False();
+  }
+  return True();
+}
+
+fn xread_footprint(input: &[u8], args: &Box<Slots<Span>>) -> keys: KeySet reads(input), reads(args) {
+  doc "XREAD's keys for a script or EXEC, found as xread_parse finds them: the first half of the arguments after STREAMS, none when the options would be refused.";
+  let op = stream_op_new();
+  let no = False();
+  let valid = xread_parse(input: input, args: args, op: &op, scripted: no, now: 0_u64);
+  let keys = key_set_new(capacity: op.key_count);
+  if valid {
+    let end = op.first_key +wrap op.key_count;
+    for @keys (index in op.first_key..end) {
+      let place = key_bounds(input: input, args: args, index: index);
+      let key = &input^[place.start..place.end];
+      key_set_insert(keys: &keys, key: key);
+    }
+  }
+  return move keys;
+}
+
+fn stream_write_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, op: &StreamOp, client: &Client) -> removed: Bool reads(access_key), writes(sequence), writes(journal), writes(slot), writes(op), writes(client) {
+  doc "XADD, XTRIM, XDEL and XSETID's work on one held entry; the caller owns the statement and expiry metadata. An expired key is removed and counts as absent; XADD without NOMKSTREAM then creates the stream before it appends.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
+  let kind = stream_slot(op: op, slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if removed {
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
+    set client^.state = state_absent;
+  }
+  let adding = op^.act == 1_u64;
+  let absent = client^.state == state_absent;
+  let making = bnot(op^.nomkstream);
+  let create = band(adding, absent);
+  if band(create, making) {
+    fresh_stream(sequence: sequence, capture_key: access_key, slot: slot, client: client);
+    set op^.created = True();
+    let made = stream_slot(op: op, slot: slot, client: client);
+  }
+  if op^.changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
+  }
+  return removed;
+}
+
+fn stream_log_rewritten(log: &Box<Slots<u8>>, op: &StreamOp, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> result: unit reads(op), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
+  doc "Appends XADD or XTRIM as Redis 7.2.16 propagates it: XADD's * or ms-* replaced by the ID made, and after ~ the ~ replaced by = and the threshold by the one streamRewriteTrimArgument writes, the length after trimming or the first entry's ID; every other argument as sent.";
+  let log_initial_length = log^.inner.len;
+  let count = args^.inner.len;
+  let rewrite_id = bnot(band(op^.id_given, op^.seq_given));
+  let adding = op^.act == 1_u64;
+  let id_rewritten = band(adding, rewrite_id);
+  let marker = op^.trim_index -wrap 1_u64;
+  log_count(log: log, count: count, room: 0_u64, budget: budget);
+  for @arguments (
+    index in 0_u64..count,
+    invariant log_extent: log^.inner.len >= log_initial_length
+  ) {
+    let at_id = index == op^.id_index;
+    let at_marker = index == marker;
+    let at_threshold = index == op^.trim_index;
+    if band(id_rewritten, at_id) {
+      let text = stream_id_text(id: op^.made);
+      log_text(log: log, text: &text, budget: budget);
+    } else if band(op^.approx, at_marker) {
+      log_word(log: log, word: &word_exact[0_u64..1_u64], budget: budget);
+    } else if band(op^.approx, at_threshold) {
+      if op^.trim == 1_u64 {
+        log_decimal(log: log, value: op^.number, budget: budget);
+      } else {
+        let text = stream_id_text(id: op^.last);
+        log_text(log: log, text: &text, budget: budget);
+      }
+    } else {
+      let span = args^.inner[index];
+      log_input(log: log, input: input, span: span, budget: budget);
+    }
+  }
+  return unit;
+}
+
+fn stream_write_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, op: &StreamOp, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(op), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
+  doc "Records a lookup's expired removal, then a stream command that changed the stream: XADD and XTRIM as stream_log_rewritten writes them, XDEL and XSETID as sent. Returns the number of records.";
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
+  if logged {
+    if op^.changed {
+      let rewritten = op^.act <= 2_u64;
+      if rewritten {
+        stream_log_rewritten(log: log, op: op, input: input, args: args, budget: budget);
+      } else {
+        pkg::store::log_command(log: log, input: input, args: args, budget: budget);
+      }
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn stream_write_finish(client: &Client, op: &StreamOp, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(op), reads(input), reads(args), writes(client) {
+  doc "Answers XADD with the ID made, or nil for a missing key with NOMKSTREAM; XTRIM and XDEL with the entries removed, 0 for a missing key; XSETID with OK, or an error for a missing key; any of them with the type refusal or the error the stream raised.";
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let absent = client^.state != state_done;
+  if op^.act == 1_u64 {
+    if op^.error != 0_u64 {
+      stream_error(client: client, code: op^.error, input: input, args: args);
+      return unit;
+    }
+    if absent {
+      reply_nil(client: client);
+      return unit;
+    }
+    let text = stream_id_text(id: op^.made);
+    reply_text(client: client, text: &text);
+    return unit;
+  }
+  if op^.act == 4_u64 {
+    if absent {
+      stream_error(client: client, code: 26_u64, input: input, args: args);
+      return unit;
+    }
+    if op^.error != 0_u64 {
+      stream_error(client: client, code: op^.error, input: input, args: args);
+      return unit;
+    }
+    reply_ok(client: client);
+    return unit;
+  }
+  if absent {
+    reply_integer(client: client, value: 0_i64);
+    return unit;
+  }
+  if op^.error != 0_u64 {
+    stream_error(client: client, code: op^.error, input: input, args: args);
+    return unit;
+  }
+  let removed = cvt.wrap::<u64, i64>(op^.removed);
+  reply_integer(client: client, value: removed);
+  return unit;
+}
+
+fn stream_read_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, op: &StreamOp, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(op), writes(client) {
+  doc "XRANGE, XREVRANGE and XLEN's work on one held entry, writing a range reply for a live stream; the caller owns the statement and expiry metadata.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
+  let kind = stream_slot(op: op, slot: slot, client: client);
+  return unit;
+}
+
+fn stream_read_finish(client: &Client, op: &StreamOp) -> result: unit reads(op), writes(client) {
+  doc "Answers XRANGE and XREVRANGE for a missing key with an empty array, XLEN with the length, 0 for a missing key, and either with the type refusal; a live stream's range was written by the body.";
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let found = client^.state == state_done;
+  if op^.act == 5_u64 {
+    if bnot(found) {
+      reply_array(client: client, count: 0_u64);
+    }
+    return unit;
+  }
+  let length = 0_i64;
+  if found {
+    set length = cvt.wrap::<u64, i64>(op^.number);
+  }
+  reply_integer(client: client, value: length);
+  return unit;
+}
+
+fn run_stream_write(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, op: &StreamOp) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(op), writes(client) waits {
+  doc "Runs a parsed XADD, XTRIM, XDEL or XSETID in one atomic statement on the key's entry that also appends the change to the append-only file's pending bytes; a key found expired counts as absent and its removal is recorded first.";
+  let journal = None<pkg::store::AccessJournal>();
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set op^.now = time^.unix_ms;
+  let logged = store^.logging;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let sequence = if logged {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let removed = stream_write_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, op: op, client: client);
+    if logged {
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      let appended = stream_write_meta(log: &m^.log, logged: logged, removed: removed, op: op, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  stream_write_finish(client: client, op: op, input: input, args: args);
+  return unit;
+}
+
+fn run_stream_read(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, op: &StreamOp) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(op), writes(client) waits {
+  doc "Runs a parsed XRANGE, XREVRANGE or XLEN in one atomic statement on the key's entry; a key found expired is removed afterwards and answered as absent.";
+  let journal = None<pkg::store::AccessJournal>();
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  atomic slot = &store^.keys[key] {
+    stream_read_body(journal: &journal, access_key: key, slot: slot, op: op, client: client);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+    set client^.state = state_absent;
+  }
+  stream_read_finish(client: client, op: op);
+  return unit;
+}
+
+fn xread_held(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, op: &StreamOp, input: &[u8], args: &Box<Slots<Span>>, client: &Client, log: &Box<Slots<u8>>, logged: Bool, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), reads(budget.allowance), writes(sequence), writes(journal), writes(slots), writes(op), writes(client), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "XREAD's work on the held entries of its keys, whose ranks op carries, as Redis 7.2.16's xreadCommand does it: for each key in order the key is looked up, a key of another kind refused, and its ID read, $ as the stream's last ID or 0-0; then every stream whose last live entry is above its ID is served from the next ID, up to COUNT entries, as [key, entries] under RESP2 or a map under RESP3. A key found expired is removed and its removal recorded. Nothing served leaves op's number 0 for the caller's reply.";
+  let log_initial_length = log^.inner.len;
+  let appended = 0_u64;
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  let top = StreamId(ms: stream_max, seq: stream_max);
+  let named = op^.key_count;
+  let gts = box_slots_new::<StreamId>(capacity: named);
+  let serve = box_slots_new::<u64>(capacity: named);
+  let served = 0_u64;
+  for @probe (
+    step in 0_u64..named,
+    invariant log_extent: log^.inner.len >= log_initial_length
+  ) {
+    let key_index = op^.first_key +wrap step;
+    let after_keys = op^.first_key +wrap named;
+    let id_index = after_keys +wrap step;
+    let place = key_bounds(input: input, args: args, index: key_index);
+    let key = &input^[place.start..place.end];
+    let exists = False();
+    if step < op^.ranks.inner.len {
+      let rank = op^.ranks.inner[step];
+      if rank < slots^.len {
+        let slot = &slots^[rank];
+        refresh_access(journal: journal, key: key, slot: slot, client: client);
+        set op^.act = 7_u64;
+        let kind = stream_slot(op: op, slot: slot, client: client);
+        if client^.state == state_expired {
+          pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: key);
+          let lapsed = True();
+          let removal = mset_lapse_meta(log: log, logged: logged, lapsed: lapsed, key: key, budget: budget);
+          set appended = appended +wrap removal;
+          set client^.state = state_absent;
+        }
+        if client^.state == state_wrong {
+          set op^.error = 41_u64;
+          return appended;
+        }
+        set exists = client^.state == state_done;
+      }
+    }
+    let id_span = arg(args: args, index: id_index);
+    let gt = zero;
+    let dollar = stream_lone(input: input, span: id_span, byte: 36_u8);
+    let greater = stream_lone(input: input, span: id_span, byte: 62_u8);
+    if dollar {
+      if exists {
+        set gt = op^.last;
+      }
+    } else if greater {
+      set op^.error = 19_u64;
+      return appended;
+    } else {
+      let strict = True();
+      let no = False();
+      let read = stream_parse_id(input: input, span: id_span, strict: strict, missing: 0_u64, star: no);
+      if bnot(read.valid) {
+        set op^.error = 1_u64;
+        return appended;
+      }
+      set gt = read.id;
+    }
+    let flag = 0_u64;
+    if exists {
+      if op^.number > 0_u64 {
+        let order = id_order(left: op^.live_last, right: gt);
+        if order > 0_i32 {
+          set flag = 1_u64;
+          set served = served +wrap 1_u64;
+        }
+      }
+    }
+    if gts.inner.len < gts.inner.cap {
+      place_back(window: &gts.inner, value: gt);
+    }
+    if serve.inner.len < serve.inner.cap {
+      place_back(window: &serve.inner, value: flag);
+    }
+  }
+  set op^.number = served;
+  if served == 0_u64 {
+    return appended;
+  }
+  if client^.resp == 3_u64 {
+    reply_map(client: client, pairs: served);
+  } else {
+    reply_array(client: client, count: served);
+  }
+  set op^.count_given = False();
+  set op^.reverse = False();
+  set op^.high = top;
+  set op^.act = 5_u64;
+  for @emit (step in 0_u64..named) {
+    let flag = 0_u64;
+    if step < serve.inner.len {
+      set flag = serve.inner[step];
+    }
+    if flag == 1_u64 {
+      if step < gts.inner.len {
+        if step < op^.ranks.inner.len {
+          let rank = op^.ranks.inner[step];
+          if rank < slots^.len {
+            let next = id_next(id: gts.inner[step]);
+            set op^.low = next.id;
+            let key_index = op^.first_key +wrap step;
+            let span = arg(args: args, index: key_index);
+            if client^.resp != 3_u64 {
+              reply_array(client: client, count: 2_u64);
+            }
+            reply_bulk_input(client: client, input: input, start: span.start, length: span.length);
+            let kind = stream_slot(op: op, slot: &slots^[rank], client: client);
+          }
+        }
+      }
+    }
+  }
+  return appended;
+}
+
+fn xread_finish(client: &Client, op: &StreamOp, input: &[u8], args: &Box<Slots<Span>>, held: Bool) -> result: unit reads(op), reads(input), reads(args), writes(client) {
+  doc "Answers an XREAD that served nothing, or raised an error, after xread_held: a null array, as Redis does without BLOCK and under EXEC or a script, where it may not wait; a connection's XREAD with BLOCK is refused, since waiting is not implemented yet (firn-streams-xread-block).";
+  if op^.error != 0_u64 {
+    stream_error(client: client, code: op^.error, input: input, args: args);
+    return unit;
+  }
+  if op^.number != 0_u64 {
+    return unit;
+  }
+  if op^.blocking {
+    if bnot(held) {
+      stream_error(client: client, code: 30_u64, input: input, args: args);
+      return unit;
+    }
+  }
+  reply_nil_array(client: client);
+  return unit;
+}
+
+fn xread_ranks(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp, keys: &KeySet) -> result: unit reads(input), reads(args), reads(keys), writes(op) {
+  doc "Records each XREAD key's rank in the key set, in the order the keys are named.";
+  let ranks = box_slots_new::<u64>(capacity: op^.key_count);
+  let end = op^.first_key +wrap op^.key_count;
+  for @ranks (index in op^.first_key..end) {
+    let place = key_bounds(input: input, args: args, index: index);
+    let key = &input^[place.start..place.end];
+    let rank = script_key_rank(keys: keys, key: key);
+    if ranks.inner.len < ranks.inner.cap {
+      place_back(window: &ranks.inner, value: rank);
+    }
+  }
+  swap(first: &ranks, second: &op^.ranks);
+  return unit;
+}
+
+fn run_xread(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]: answers the entries after each ID in one statement on the keys' entries, as xread_held reads them.";
+  let journal = None<pkg::store::AccessJournal>();
+  let op = stream_op_new();
+  let no = False();
+  let valid = xread_parse(input: input, args: args, op: &op, scripted: no, now: time^.unix_ms);
+  if bnot(valid) {
+    stream_error(client: client, code: op.error, input: input, args: args);
+    return unit;
+  }
+  let keys = key_set_new(capacity: op.key_count);
+  let end = op.first_key +wrap op.key_count;
+  for @keys (index in op.first_key..end) {
+    let place = key_bounds(input: input, args: args, index: index);
+    let key = &input^[place.start..place.end];
+    let rank = key_set_insert(keys: &keys, key: key);
+  }
+  xread_ranks(input: input, args: args, op: &op, keys: &keys);
+  set client^.now = time^.check;
+  let logged = store^.logging;
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let sequence = if logged {
+      let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let log_budget = if logged {
+      let begun = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      give begun;
+    } else {
+      let none = pkg::store::log_budget_new();
+      give none;
+    }
+    let appended = xread_held(sequence: &sequence, journal: &journal, slots: slots, op: &op, input: input, args: args, client: client, log: &m^.log, logged: logged, budget: &log_budget);
+    if logged {
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  xread_finish(client: client, op: &op, input: input, args: args, held: no);
+  return unit;
+}
+
+fn stream_held(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} {
+  doc "The stream commands, kinds 142 XADD to 149 XREAD, through the network command parts over the entries held by EXEC or a script, parsing first as the network does. A script's XREAD refuses BLOCK; under EXEC and in scripts an XREAD that serves nothing answers a null array.";
+  let unlimited_log_budget = pkg::store::log_budget_new();
+  let op = stream_op_new();
+  stream_settings(op: &op, client: client);
+  set op.now = time^.unix_ms;
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  let scripted = False();
+  match journal^ {
+    Some(..) => {
+      set scripted = True();
+    }
+    None() => {
+    }
+  }
+  if kind == 149_u64 {
+    let valid = xread_parse(input: input, args: args, op: &op, scripted: scripted, now: time^.unix_ms);
+    if bnot(valid) {
+      stream_error(client: client, code: op.error, input: input, args: args);
+      return 0_u64;
+    }
+    let footprint_ready = script_entries_ready(kind: kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+    if bnot(footprint_ready) {
+      set fallback^ = True();
+      return 0_u64;
+    }
+    xread_ranks(input: input, args: args, op: &op, keys: declared);
+    let ranks_count = op.ranks.inner.len;
+    for @ranks (index in 0_u64..ranks_count) {
+      if index < op.ranks.inner.len {
+        if op.ranks.inner[index] >= keys^.len {
+          set fallback^ = True();
+          return 0_u64;
+        }
+      }
+    }
+    let appended = xread_held(sequence: sequence, journal: journal, slots: keys, op: &op, input: input, args: args, client: client, log: effects, logged: logged, budget: &unlimited_log_budget);
+    let yes = True();
+    xread_finish(client: client, op: &op, input: input, args: args, held: yes);
+    return appended;
+  }
+  let reading = kind == 143_u64;
+  let reversed = kind == 144_u64;
+  let ranged = bor(reading, reversed);
+  let valid = True();
+  if kind == 142_u64 {
+    let yes = True();
+    set valid = xadd_parse(input: input, args: args, op: &op, xadd: yes, loading: time^.loading);
+  } else if ranged {
+    set valid = xrange_parse(input: input, args: args, op: &op, reverse: reversed);
+  } else if kind == 145_u64 {
+    set op.act = 6_u64;
+  } else if kind == 146_u64 {
+    let no = False();
+    set valid = xadd_parse(input: input, args: args, op: &op, xadd: no, loading: time^.loading);
+  } else if kind == 147_u64 {
+    xdel_parse(input: input, args: args, op: &op);
+  } else {
+    set valid = xsetid_parse(input: input, args: args, op: &op);
+  }
+  if bnot(valid) {
+    stream_error(client: client, code: op.error, input: input, args: args);
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let footprint_ready = script_entries_ready(kind: kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+  if bnot(footprint_ready) {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let rank = script_key_rank(keys: declared, key: key);
+  if rank >= keys^.len {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let slot = &keys^[rank];
+  let length_only = kind == 145_u64;
+  let reads_only = bor(ranged, length_only);
+  if reads_only {
+    stream_read_body(journal: journal, access_key: key, slot: slot, op: &op, client: client);
+    let lapsed = client^.state == state_expired;
+    if lapsed {
+      pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: key);
+      set client^.state = state_absent;
+    }
+    let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key, budget: &unlimited_log_budget);
+    stream_read_finish(client: client, op: &op);
+    return appended;
+  }
+  let removed = stream_write_body(sequence: sequence, journal: journal, access_key: key, slot: slot, op: &op, client: client);
+  let appended = stream_write_meta(log: effects, logged: logged, removed: removed, op: &op, input: input, args: args, key: key, budget: &unlimited_log_budget);
+  stream_write_finish(client: client, op: &op, input: input, args: args);
+  return appended;
+}
+
+fn stream_kind(code: u64, input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "The command kind of a stream command's name code, 142 XADD, 143 XRANGE, 144 XREVRANGE, 145 XLEN, 146 XTRIM, 147 XDEL, 148 XSETID, 149 XREAD; 0 for another name.";
+  if code == code_xadd {
+    return 142_u64;
+  }
+  if code == code_xrange {
+    return 143_u64;
+  }
+  if code == code_xrevrange {
+    let named = name_is(input: input, start: name.start, length: name.length, word: &word_xrevrange[0_u64..9_u64]);
+    if named {
+      return 144_u64;
+    }
+    return 0_u64;
+  }
+  if code == code_xlen {
+    return 145_u64;
+  }
+  if code == code_xtrim {
+    return 146_u64;
+  }
+  if code == code_xdel {
+    return 147_u64;
+  }
+  if code == code_xsetid {
+    return 148_u64;
+  }
+  if code == code_xread {
+    return 149_u64;
+  }
+  return 0_u64;
+}
+
+fn stream_arity(kind: u64) -> arity: i64 pure {
+  doc "The arity Redis 7.2.16's command table gives a stream command.";
+  if kind == 142_u64 {
+    return arity_xadd;
+  }
+  let forward = kind == 143_u64;
+  let reverse = kind == 144_u64;
+  if bor(forward, reverse) {
+    return arity_xrange;
+  }
+  if kind == 145_u64 {
+    return arity_xlen;
+  }
+  if kind == 146_u64 {
+    return arity_xtrim;
+  }
+  if kind == 147_u64 {
+    return arity_xdel;
+  }
+  if kind == 148_u64 {
+    return arity_xsetid;
+  }
+  return arity_xread;
+}
+
+fn stream_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, code: u64, name: Span) -> handled: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "Answers the stream command code names, when it names one, and returns whether it did. Each command is first given the number of arguments Redis's command table admits, checked before authentication as execute checks every command's; its own parsing errors follow authentication.";
+  let kind = stream_kind(code: code, input: input, name: name);
+  if kind == 0_u64 {
+    return False();
+  }
+  let count = args^.inner.len;
+  let open = bnot(client^.locked);
+  let arity = stream_arity(kind: kind);
+  let fits = arity_holds(arity: arity, count: count);
+  let go = band(fits, open);
+  if bnot(go) {
+    refused(client: client, input: input, name: name, fits: fits);
+    return True();
+  }
+  if kind == 149_u64 {
+    run_xread(store: store, input: input, args: args, client: client, time: time);
+    return True();
+  }
+  let op = stream_op_new();
+  stream_settings(op: &op, client: client);
+  let reading = kind == 143_u64;
+  let reversed = kind == 144_u64;
+  let ranged = bor(reading, reversed);
+  let valid = True();
+  if kind == 142_u64 {
+    let yes = True();
+    set valid = xadd_parse(input: input, args: args, op: &op, xadd: yes, loading: time^.loading);
+  } else if ranged {
+    set valid = xrange_parse(input: input, args: args, op: &op, reverse: reversed);
+  } else if kind == 145_u64 {
+    set op.act = 6_u64;
+  } else if kind == 146_u64 {
+    let no = False();
+    set valid = xadd_parse(input: input, args: args, op: &op, xadd: no, loading: time^.loading);
+  } else if kind == 147_u64 {
+    xdel_parse(input: input, args: args, op: &op);
+  } else {
+    set valid = xsetid_parse(input: input, args: args, op: &op);
+  }
+  if bnot(valid) {
+    stream_error(client: client, code: op.error, input: input, args: args);
+    return True();
+  }
+  let length_only = kind == 145_u64;
+  let reads_only = bor(ranged, length_only);
+  if reads_only {
+    run_stream_read(store: store, input: input, args: args, client: client, time: time, op: &op);
+  } else {
+    run_stream_write(store: store, input: input, args: args, client: client, time: time, op: &op);
+  }
+  return True();
+}

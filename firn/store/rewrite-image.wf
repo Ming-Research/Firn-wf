@@ -2,6 +2,7 @@ alias Bytes = pkg::bytes::Bytes;
 alias Key = pkg::bytes::Key;
 alias aof_map_each = std::collections::hash_map::hash_map_each;
 alias aof_map_len = std::collections::hash_map::hash_map_len;
+alias ordered_map_each = std::collections::ordered_map::ordered_map_each;
 
 const rewrite_set: Array<u8, 3> = "SET";
 
@@ -16,6 +17,23 @@ const rewrite_hmset: Array<u8, 5> = "HMSET";
 const rewrite_expire: Array<u8, 9> = "PEXPIREAT";
 
 const rewrite_select: Array<u8, 6> = "SELECT";
+
+const rewrite_xadd: Array<u8, 4> = "XADD";
+
+const rewrite_xsetid: Array<u8, 6> = "XSETID";
+
+const rewrite_maxlen: Array<u8, 6> = "MAXLEN";
+
+const rewrite_entries_added: Array<u8, 12> = "ENTRIESADDED";
+
+const rewrite_max_deleted: Array<u8, 12> = "MAXDELETEDID";
+
+const rewrite_empty_stream: Array<u8, 6> = "00-1xy";
+
+struct StreamMeasure {
+  bytes: u64;
+  key_room: u64;
+}
 
 struct RewriteEmitter {
   key: Bytes;
@@ -61,6 +79,57 @@ fn rewrite_score(env: &RewriteEmitter, key: &Key, value: &f64) -> result: unit r
   return unit;
 }
 
+fn rewrite_stream_node(env: &RewriteEmitter, key: &StreamId, value: &StreamNode) -> result: unit reads(value), writes(env) {
+  doc "Writes one XADD key id field value ... for each live entry of a stream node, in ID order, as Redis 7.2.16's rewriteStreamObject does.";
+  for @items (index in 0_u64..value^.items.inner.len) {
+    if index < value^.items.inner.len {
+      let item = &value^.items.inner[index];
+      if bnot(item^.deleted) {
+        let pairs = item^.pairs.inner.len;
+        let count = pairs +wrap 3_u64;
+        log_count(log: &env^.output, count: count, room: 256_u64, budget: &env^.budget);
+        log_word(log: &env^.output, word: &rewrite_xadd[0_u64..4_u64], budget: &env^.budget);
+        log_text(log: &env^.output, text: &env^.key, budget: &env^.budget);
+        let spelled = stream_id_text(id: item^.id);
+        log_text(log: &env^.output, text: &spelled, budget: &env^.budget);
+        for @pairs (at in 0_u64..pairs) {
+          if at < item^.pairs.inner.len {
+            log_text(log: &env^.output, text: &item^.pairs.inner[at], budget: &env^.budget);
+          }
+        }
+      }
+    }
+  }
+  return unit;
+}
+
+fn rewrite_stream(stream: &StreamLog, emitter: &RewriteEmitter) -> result: unit reads(stream), writes(emitter) {
+  doc "Writes a stream as Redis 7.2.16's rewriteStreamObject does: one XADD per live entry, or XADD key MAXLEN 0 0-1 x y for a stream with none, then XSETID key last-id ENTRIESADDED n MAXDELETEDID id, which a replay needs to restore what the entries alone do not.";
+  if stream^.length == 0_u64 {
+    log_count(log: &emitter^.output, count: 7_u64, room: 256_u64, budget: &emitter^.budget);
+    log_word(log: &emitter^.output, word: &rewrite_xadd[0_u64..4_u64], budget: &emitter^.budget);
+    log_text(log: &emitter^.output, text: &emitter^.key, budget: &emitter^.budget);
+    log_word(log: &emitter^.output, word: &rewrite_maxlen[0_u64..6_u64], budget: &emitter^.budget);
+    log_word(log: &emitter^.output, word: &rewrite_empty_stream[0_u64..1_u64], budget: &emitter^.budget);
+    log_word(log: &emitter^.output, word: &rewrite_empty_stream[1_u64..4_u64], budget: &emitter^.budget);
+    log_word(log: &emitter^.output, word: &rewrite_empty_stream[4_u64..5_u64], budget: &emitter^.budget);
+    log_word(log: &emitter^.output, word: &rewrite_empty_stream[5_u64..6_u64], budget: &emitter^.budget);
+  } else {
+    ordered_map_each::<StreamId, StreamNode, RewriteEmitter, fn rewrite_stream_node, ceiling>(map: &stream^.nodes, env: emitter);
+  }
+  log_count(log: &emitter^.output, count: 7_u64, room: 256_u64, budget: &emitter^.budget);
+  log_word(log: &emitter^.output, word: &rewrite_xsetid[0_u64..6_u64], budget: &emitter^.budget);
+  log_text(log: &emitter^.output, text: &emitter^.key, budget: &emitter^.budget);
+  let last = stream_id_text(id: stream^.last_id);
+  log_text(log: &emitter^.output, text: &last, budget: &emitter^.budget);
+  log_word(log: &emitter^.output, word: &rewrite_entries_added[0_u64..12_u64], budget: &emitter^.budget);
+  log_decimal(log: &emitter^.output, value: stream^.entries_added, budget: &emitter^.budget);
+  log_word(log: &emitter^.output, word: &rewrite_max_deleted[0_u64..12_u64], budget: &emitter^.budget);
+  let deleted = stream_id_text(id: stream^.max_deleted_id);
+  log_text(log: &emitter^.output, text: &deleted, budget: &emitter^.budget);
+  return unit;
+}
+
 fn rewrite_entry(slot: &Option<Entry>, emitter: &RewriteEmitter) -> result: unit reads(slot), writes(emitter) {
   doc "Redis rewriteAppendOnlyFileRio: retain even elapsed expiries, emit at most 64 collection elements per command, and follow each expiring value with its absolute PEXPIREAT. Script caches have no AOF records and firn implements no persisted functions.";
   match slot^ {
@@ -92,6 +161,9 @@ fn rewrite_entry(slot: &Option<Entry>, emitter: &RewriteEmitter) -> result: unit
         Ranked(ranked: stored_ranked) => {
           set emitter^.remaining = aof_map_len::<Key, f64, ceiling>(map: &stored_ranked^.scores);
           aof_map_each::<Key, f64, RewriteEmitter, fn rewrite_score, ceiling>(map: &stored_ranked^.scores, env: emitter);
+        }
+        Stream(stream: stored_stream) => {
+          rewrite_stream(stream: &stored_stream^.inner, emitter: emitter);
         }
       }
       if held^.expires != 0_u64 {
@@ -130,6 +202,26 @@ fn rewrite_measure_score(env: &RewriteMeasure, key: &Key, value: &f64) -> result
   return unit;
 }
 
+fn rewrite_measure_stream(env: &StreamMeasure, key: &StreamId, value: &StreamNode) -> result: unit reads(value), writes(env) {
+  doc "Adds the bytes one stream node's XADD commands can take: per live entry, a header with the key and ID, and each field and value with its framing.";
+  for @items (index in 0_u64..value^.items.inner.len) {
+    if index < value^.items.inner.len {
+      let item = &value^.items.inner[index];
+      if bnot(item^.deleted) {
+        set env^.bytes = env^.bytes +sat env^.key_room;
+        for @pairs (at in 0_u64..item^.pairs.inner.len) {
+          if at < item^.pairs.inner.len {
+            let length = pkg::bytes::bytes_length(bytes: &item^.pairs.inner[at]);
+            let framed = length +sat 32_u64;
+            set env^.bytes = env^.bytes +sat framed;
+          }
+        }
+      }
+    }
+  }
+  return unit;
+}
+
 fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMeasure reads(slot) {
   doc "Allocation-free upper bound before copying a complete image, visiting every payload element; the caller charges it against the rewrite reserve. RESP bulk overhead, 64-element command headers, DEL, expiry and the encoder's reserve lookahead are included; saturating arithmetic cannot admit an oversized image.";
   let measured = RewriteMeasure(bytes: 512_u64, elements: 1_u64);
@@ -160,6 +252,14 @@ fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMe
         Ranked(ranked: stored_ranked) => {
           set measured.elements = aof_map_len::<Key, f64, ceiling>(map: &stored_ranked^.scores);
           aof_map_each::<Key, f64, RewriteMeasure, fn rewrite_measure_score, ceiling>(map: &stored_ranked^.scores, env: &measured);
+        }
+        Stream(stream: stored_stream) => {
+          let key_room = key_length +sat 128_u64;
+          let stream_measure = StreamMeasure(bytes: 0_u64, key_room: key_room);
+          ordered_map_each::<StreamId, StreamNode, StreamMeasure, fn rewrite_measure_stream, ceiling>(map: &stored_stream^.inner.nodes, env: &stream_measure);
+          let closing = key_room *sat 2_u64;
+          set measured.bytes = measured.bytes +sat stream_measure.bytes;
+          set measured.bytes = measured.bytes +sat closing;
         }
       }
     }
