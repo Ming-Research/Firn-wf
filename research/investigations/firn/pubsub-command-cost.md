@@ -146,3 +146,116 @@ slower):
 - The deduction of the question (a cost per command in firn's own code) holds;
   it is not rejected. The cost is spread over `execute`, `execute_client` and
   what the compiler did to the functions around them, so P2 is run.
+
+### P2: reverting the segments
+
+Run 39906790106 (`compare`, 8 interleaved passes of 5 s, depth 16, 2 server CPUs
+on CPUs 2 and 4, clients on CPUs 16-31; no sample is client-limited, the
+largest client busy fraction is 0.64; the images are those of the criteria
+above, built from the commits `33a5ef1` to `fa0dcb4`). Server CPU time per
+request in microseconds, mean of the 8 passes:
+
+| test | before | main | main-twin | v1 | v2 | v3 | v4 | v5 | v6 |
+|---|---|---|---|---|---|---|---|---|---|
+| `get` | 0.2575 | 0.2742 | 0.2736 | 0.2690 | 0.2558 | 0.2546 | 0.2526 | 0.2521 | 0.2526 |
+| `set` | 0.3021 | 0.3185 | 0.3177 | 0.3130 | 0.3115 | 0.3056 | 0.3029 | 0.3019 | 0.3023 |
+| `ping_mbulk` | 0.2345 | 0.2521 | 0.2514 | 0.2449 | 0.2339 | 0.2305 | 0.2299 | 0.2300 | 0.2295 |
+| `lrange_100` | 1.1869 | 1.2043 | 1.2106 | 1.2075 | 1.1827 | 1.1954 | 1.1889 | 1.1775 | 1.1829 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 8 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` | `ping_mbulk` | `lrange_100` |
+|---|---|---|---|---|
+| main / before | 0.936 (0.933-0.945) | 0.950 (0.939-0.959) | 0.929 (0.923-0.937) | 0.984 (0.978-0.994) |
+| main-twin / main | 1.002 (0.997-1.007) | 0.998 (0.993-1.012) | 1.002 (0.996-1.010) | 1.002 (0.984-1.006) |
+| v1 / main (S1, `execute`) | 1.020 (1.016-1.023) | 1.018 (1.006-1.030) | 1.027 (1.023-1.036) | 0.998 (0.990-1.004) |
+| v2 / v1 (S1, `command_kind`) | 1.053 (1.045-1.058) | 1.003 (0.996-1.014) | 1.045 (1.040-1.054) | 1.021 (1.016-1.026) |
+| v3 / v2 (S2) | 1.000 (0.998-1.011) | 1.020 (1.014-1.025) | 1.015 (1.004-1.026) | 0.990 (0.985-0.994) |
+| v4 / v3 (S3) | 1.008 (1.001-1.015) | 1.008 (1.002-1.017) | 1.000 (0.995-1.010) | 1.008 (0.997-1.014) |
+| v5 / v4 (S4) | 1.002 (0.996-1.008) | 1.003 (0.994-1.013) | 1.002 (0.993-1.006) | 1.006 (1.002-1.018) |
+| v6 / v5 (S5) | 1.000 (0.990-1.007) | 1.003 (0.989-1.009) | 1.002 (0.994-1.011) | 0.990 (0.988-1.003) |
+| v6 / before (all removed) | 1.020 (1.011-1.028) | 0.998 (0.992-1.007) | 1.022 (1.011-1.033) | 1.005 (0.997-1.010) |
+
+- The hypothesis that S1 to S5 are the whole cost is not rejected: `v6`
+  against `before` is nowhere wholly on the slower side.
+- S1, the two `pubsub_kind` calls, is most of it for the cheap commands: 7% of
+  the CPU per request on `get` and 7% on `ping_mbulk`, 2% on `set` and 2% on
+  `lrange_100`. S2 costs `set` 2% and `ping_mbulk` 1.5%, S3 about 1% on `get`
+  and `set`. S4 (the two tasks) and S5 (the field order) cost nothing that
+  twin-wide intervals show. `set` is back at `before` only when S1, S2 and S3
+  are all removed (`v2`/`before` 0.973 (0.963-0.977), `v3`/`before` 0.990
+  (0.983-0.994), `v6` at 0.998 (0.992-1.007)): S2 and S3 are the subscriber features
+  themselves and can be made cheap, not removed.
+- Where it goes, `get` (flat profiles of the first pass, nanoseconds per
+  request, 4300-8200 samples per function): `execute_client` with
+  `admission_writes` 44.1 `before`, 51.0 `main`, 49.3 `v1`, 43.9 `v2`, 43.0
+  `v3`; `execute` 8.8, 11.7, 10.9, 8.8, 8.7; `subscriber_refused` 1.4 in
+  `main` and 0 in `v3`. In `before` the compiler had inlined `admission_writes`
+  into `execute_client`; in `main` and `v1` it stands as a function of its own,
+  and in `v2` and later it does too, at 18.9 and 18.0 ns against 23.0 in
+  `main`: the same loop costs 4 ns more in `main`.
+- The loops dominate. The instructions the profile annotates show that, in
+  `before`, 41% and 23% of the cycles of `execute_client` (18.3 and 10.2 ns)
+  are two loops that compare the command's kind with each entry of a list, the
+  longer being the 61-entry scan of `command_writes` and the shorter the
+  34-entry scan of `command_denyoom` (the two loops' cycles are in the ratio
+  1.79, as the entries are), and that every command runs to the end of both, since
+  `GET`, `SET` and `PING` are not in the lists that decide a refusal. In
+  `main` the same two scans cost 22.3 and 10.8 ns: about 33 ns of the 274 ns
+  a `get` costs, and 28.5 ns of 257 ns in `before`.
+
+## Cause
+
+The cost of a command's admission is a scan of two lists, 95 comparisons for
+every command that is on neither list, about 30 ns, which is 11% of the CPU a
+`get` takes. The scans were there before Firn-wf#100 and their cost depends on
+what the compiler does with the functions around them; Firn-wf#100 changed
+that twice: it put the names of nine publish/subscribe commands, compared by
+nine inlined `name_is` loops, at the head of `command_kind` and of `execute`,
+which grows the functions every command passes through (S1: 7%), and it added
+the subscriber checks (S2) and the promotion check in `serve` (S3), 1-2% each,
+which cannot go. The slowdown of the cheap commands is the sum; the larger
+cost of `lrange_100` in `after` that the main line lost again (see P1) is
+probably the same kind of effect, in the runtime's entry lock (deduced, not
+tested).
+
+The root is that a decision of constant cost is made with a scan whose cost
+changes with the code around it; any later change that grows a hot function can
+move it by several percent again.
+
+## The fix
+
+1. `command_writes` and `command_denyoom` read a 256-byte table indexed by the
+   command's kind instead of scanning a list (`commands/admission.wf`). The
+   tables are generated from the lists they replace and checked equal for
+   kinds 0 to 999; the subscription kinds that `command_denyoom` listed in code
+   are in the table. Expected: about 30 ns less per command on every command,
+   more than the 18 ns of the slowdown.
+2. `command_kind` and `execute` try the publish/subscribe names last, after the
+   names that are not publish/subscribe do not match, so that no other command
+   pays for them (S1). A publish/subscribe command pays the chain of the other
+   names first: `execute` reaches `run_pubsub` after its chain of comparisons
+   and the two lookups after it instead of at its head. The delivery path
+   costs nanoseconds there against microseconds for a delivery
+   (pubsub-throughput.md: 350 thousand deliveries a second), but a later
+   change that makes a publication cheap should classify once and route by
+   kind.
+3. S2 and S3 stay.
+
+### Run P3: the fix, probe
+
+Written before P3 runs. The question: does the fix bring the ordinary commands
+to the rate of `before`, and which of its parts does it?
+
+- **Images.** `before` (`00e2bd1`), `main` (`7f8b4f8`), `main-twin`, `f1`
+  (`bc7489e`, the tables only) and `f123` (`7a584d4`, the tables and the
+  classification order).
+- **Settings and measure.** As P2: CPUs 2 and 4 for the servers, 16-31 for the
+  clients, depth 16, `get`, `set`, `ping_mbulk` and `lrange_100`, 6 passes of
+  5 s, no profile; the ratio of server CPU time per request.
+- **Reading.** The fix works when `f123`/`before` is wholly on the faster side
+  or holds 1 for every test. It is rejected as insufficient when that interval
+  is wholly on the slower side for any test; S2 and S3 would then need work of
+  their own. `f1`/`main` and `f123`/`f1` give the part of each step; a part
+  whose interval holds 1 does nothing measurable and is questioned in review.
