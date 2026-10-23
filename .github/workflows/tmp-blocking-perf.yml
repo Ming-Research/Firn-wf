@@ -1,0 +1,24 @@
+# Temporary (firn-scope-blocking-lists): the tests of the performance
+# instruments that item adds, which the gate does not run. Deleted before the
+# branch is ready.
+name: tmp-blocking-perf
+
+on:
+  push:
+    branches: [claude/blocking-lists]
+
+jobs:
+  tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Workload client tests
+        run: cargo test --locked --release --manifest-path research/experiments/redis-bench/workload/Cargo.toml
+
+      - name: Summary, invocation and placement self-tests
+        run: |
+          python3 -I research/experiments/redis-bench/summary.py selftest
+          sh research/experiments/redis-bench/redis-bench.sh invocation-selftest
+          sh research/experiments/redis-bench/redis-bench.sh placement-selftest

@@ -16,7 +16,8 @@
 #                   builds and Redis, interleaved, without AOF
 #                   workload_servers selects competitors alongside all firn images;
 #                   tests pubsub-channel and pubsub-pattern measure publish/subscribe
-#                   delivery at each of `depths` (redis-bench.sh header);
+#                   delivery, and blocking-handoff the hand-off of list elements
+#                   to blocked clients, at each of `depths` (redis-bench.sh header);
 #                   a workload_servers name ending in -latest (redis-latest,
 #                   valkey-latest, valkey-io-latest, dragonfly-latest,
 #                   garnet-latest) is the newest stable release of that project,
@@ -80,11 +81,11 @@ on:
         type: boolean
         default: false
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list pubsub-channel pubsub-pattern"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list pubsub-channel pubsub-pattern blocking-handoff; compare also takes linsert and lmove"
         type: string
         default: ""
       depths:
-        description: Pipeline depths (compare, and the publisher's in the pubsub-* workloads)
+        description: Pipeline depths (compare, and the publisher's or producer's in the pubsub-* and blocking-handoff workloads)
         type: string
         default: "16 1"
       passes:
