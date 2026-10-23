@@ -1,0 +1,374 @@
+alias HandleFactory = std::io::HandleFactory;
+alias IoError = std::io::IoError;
+alias OutputStream = std::io::OutputStream;
+alias WallClock = std::time::WallClock;
+alias WriteFile = std::fs::WriteFile;
+
+const log_months: Array<u8, 36> = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+const log_marks: Array<u8, 4> = ".-*#";
+
+const log_unknown: Array<u8, 39> = "firn: I/O error description unavailable";
+
+const log_extent: u64 = 18446744073709551615_u64;
+
+struct Civil {
+  year: u64;
+  month: u64;
+  day: u64;
+}
+
+fn serverlog_new(clock: WallClock, pid: u64, level: u64) -> made: ServerLog pure {
+  let lines = box_ring_new::<Box<Slots<u8>>>(capacity: 8_u64);
+  let open_queue = False();
+  let state = LogQueue(lines: move lines, closed: open_queue);
+  let queue = shared_new::<LogQueue>(value: move state);
+  return ServerLog(queue: move queue, clock: move clock, pid: pid, level: level);
+}
+
+fn serverlog_share(log: &ServerLog) -> made: ServerLog reads(log) {
+  let queue = shared_share::<LogQueue>(shared: &log^.queue);
+  let clock = std::time::wall_clock_share(clock: &log^.clock);
+  return ServerLog(queue: move queue, clock: move clock, pid: log^.pid, level: log^.level);
+}
+
+fn log_message_new() -> made: Box<Slots<u8>> pure {
+  let made = box_slots_new::<u8>(capacity: 1023_u64);
+  return move made;
+}
+
+fn log_message_byte(message: &Box<Slots<u8>>, byte: u8) -> result: unit writes(message) {
+  if message^.inner.len < message^.inner.cap {
+    place_back(window: &message^.inner, value: byte);
+  }
+  return unit;
+}
+
+fn log_message_append(message: &Box<Slots<u8>>, source: &[u8]) -> result: unit reads(source), writes(message) {
+  let length = source^.len;
+  for @copy (index in 0_u64..length) {
+    let byte = source^[index];
+    log_message_byte(message: message, byte: byte);
+  }
+  return unit;
+}
+
+fn log_message_number(message: &Box<Slots<u8>>, number: u64) -> result: unit writes(message) {
+  let digits = array_filled::<u8, 20>(value: 0_u8);
+  let value = number;
+  let count = 0_u64;
+  loop (
+    invariant stored_digits: count <= 20_u64
+  ) {
+    let digit = value % 10_u64;
+    let wide = digit +sat 48_u64;
+    let byte = cvt.wrap::<u64, u8>(wide);
+    if count < 20_u64 {
+      set digits[count] = byte;
+      set count = count + 1_u64;
+    }
+    set value = value / 10_u64;
+    if value == 0_u64 {
+      break;
+    }
+  }
+  loop (
+    invariant remaining_digits: count <= 20_u64
+  ) {
+    if count == 0_u64 {
+      break;
+    }
+    set count = count - 1_u64;
+    log_message_byte(message: message, byte: digits[count]);
+  }
+  return unit;
+}
+
+fn log_message_error(message: &Box<Slots<u8>>, problem: &IoError) -> result: unit reads(problem), writes(message) {
+  let capacity = 128_u64;
+  loop {
+    let bytes = box_array_filled::<u8>(count: capacity, value: 0_u8);
+    match std::io::error_copy_description(error: problem, destination: &bytes.inner[0_u64..capacity], start: 0_u64, end: capacity) {
+      Ok(value: end) => {
+        invariant description_bound: end <= capacity;
+        log_message_append(message: message, source: &bytes.inner[0_u64..end]);
+        return unit;
+      }
+      Err(error: failure) => {
+        match failure {
+          DescriptionTooSmall(required: needed) => {
+            set capacity = needed;
+          }
+          DescriptionUnavailable() => {
+            log_message_append(message: message, source: &log_unknown[0_u64..39_u64]);
+            return unit;
+          }
+        }
+      }
+    }
+  }
+}
+
+fn log_pair(message: &Box<Slots<u8>>, value: u64) -> result: unit writes(message) {
+  let shifted = value / 10_u64;
+  let tens = shifted % 10_u64;
+  let ones = value % 10_u64;
+  let tens_wide = tens +sat 48_u64;
+  let ones_wide = ones +sat 48_u64;
+  let tens_byte = cvt.wrap::<u64, u8>(tens_wide);
+  let ones_byte = cvt.wrap::<u64, u8>(ones_wide);
+  log_message_byte(message: message, byte: tens_byte);
+  log_message_byte(message: message, byte: ones_byte);
+  return unit;
+}
+
+fn civil_of(days: u64) -> date: Civil pure {
+  doc "The proleptic Gregorian date of a day count since 1970-01-01, by the era and day-of-era split of Howard Hinnant's civil_from_days; every step saturates, which only a day count beyond year 584 million could reach.";
+  let shifted = days +sat 719468_u64;
+  let era = shifted / 146097_u64;
+  let day_of_era = shifted % 146097_u64;
+  let leap_four = day_of_era / 1460_u64;
+  let leap_hundred = day_of_era / 36524_u64;
+  let leap_cycle = day_of_era / 146096_u64;
+  let trimmed = day_of_era -sat leap_four;
+  let regained = trimmed +sat leap_hundred;
+  let settled = regained -sat leap_cycle;
+  let year_of_era = settled / 365_u64;
+  let base = era *sat 400_u64;
+  let year_base = base +sat year_of_era;
+  let whole = year_of_era *sat 365_u64;
+  let fours = year_of_era / 4_u64;
+  let hundreds = year_of_era / 100_u64;
+  let filled = whole +sat fours;
+  let before = filled -sat hundreds;
+  let day_of_year = day_of_era -sat before;
+  let scaled = day_of_year *sat 5_u64;
+  let nudged = scaled +sat 2_u64;
+  let shifted_month = nudged / 153_u64;
+  let passed = shifted_month *sat 153_u64;
+  let passed_nudged = passed +sat 2_u64;
+  let passed_days = passed_nudged / 5_u64;
+  let spent = day_of_year -sat passed_days;
+  let day = spent +sat 1_u64;
+  let month = shifted_month +sat 3_u64;
+  let year = year_base;
+  if shifted_month >= 10_u64 {
+    set month = shifted_month -sat 9_u64;
+    set year = year_base +sat 1_u64;
+  }
+  return Civil(year: year, month: month, day: day);
+}
+
+fn log_stamp(message: &Box<Slots<u8>>, unix_ms: u64, offset: i64) -> result: unit writes(message) {
+  let seconds = unix_ms / 1000_u64;
+  let millis = unix_ms % 1000_u64;
+  let wide = cvt.wrap::<u64, i64>(seconds);
+  let moved = wide +sat offset;
+  if moved < 0_i64 {
+    set moved = 0_i64;
+  }
+  let local = cvt.wrap::<i64, u64>(moved);
+  let days = local / 86400_u64;
+  let clock_seconds = local % 86400_u64;
+  let date = civil_of(days: days);
+  log_pair(message: message, value: date.day);
+  log_message_byte(message: message, byte: 32_u8);
+  let index = date.month -sat 1_u64;
+  let first = index *sat 3_u64;
+  let last = first +sat 3_u64;
+  if first < last {
+    if last <= 36_u64 {
+      log_message_append(message: message, source: &log_months[first..last]);
+    }
+  }
+  log_message_byte(message: message, byte: 32_u8);
+  log_message_number(message: message, number: date.year);
+  log_message_byte(message: message, byte: 32_u8);
+  let hours = clock_seconds / 3600_u64;
+  let into_hour = clock_seconds % 3600_u64;
+  let minutes = into_hour / 60_u64;
+  let rest = clock_seconds % 60_u64;
+  log_pair(message: message, value: hours);
+  log_message_byte(message: message, byte: 58_u8);
+  log_pair(message: message, value: minutes);
+  log_message_byte(message: message, byte: 58_u8);
+  log_pair(message: message, value: rest);
+  log_message_byte(message: message, byte: 46_u8);
+  let hundreds = millis / 100_u64;
+  let hundreds_wide = hundreds +sat 48_u64;
+  let hundreds_byte = cvt.wrap::<u64, u8>(hundreds_wide);
+  let remainder = millis % 100_u64;
+  log_message_byte(message: message, byte: hundreds_byte);
+  log_pair(message: message, value: remainder);
+  return unit;
+}
+
+fn serverlog_line(pid: u64, level: u64, unix_ms: u64, offset: i64, message: &Box<Slots<u8>>) -> line: Box<Slots<u8>> reads(message) {
+  let extra = message^.inner.len;
+  let capacity = extra +sat 80_u64;
+  let line = box_slots_new::<u8>(capacity: capacity);
+  log_message_number(message: &line, number: pid);
+  log_message_byte(message: &line, byte: 58_u8);
+  log_message_byte(message: &line, byte: 77_u8);
+  log_message_byte(message: &line, byte: 32_u8);
+  log_stamp(message: &line, unix_ms: unix_ms, offset: offset);
+  log_message_byte(message: &line, byte: 32_u8);
+  if level < 4_u64 {
+    let mark = log_marks[level];
+    log_message_byte(message: &line, byte: mark);
+  }
+  log_message_byte(message: &line, byte: 32_u8);
+  log_message_append(message: &line, source: &message^.inner[0_u64..extra]);
+  log_message_byte(message: &line, byte: 10_u8);
+  return move line;
+}
+
+fn serverlog_write(log: &ServerLog, level: u64, message: &Box<Slots<u8>>) -> result: unit reads(log), reads(message) waits {
+  if level < log^.level {
+    return unit;
+  }
+  let nanos = std::time::unix_nanoseconds(clock: &log^.clock);
+  let positive = nanos;
+  if nanos < 0_i64 {
+    set positive = 0_i64;
+  }
+  let millis = positive / 1000000_i64;
+  let seconds = positive / 1000000000_i64;
+  let offset = match std::time::local_offset_seconds(clock: &log^.clock, at: seconds) {
+    Some(value: found) => {
+      give found;
+    }
+    None() => {
+      give 0_i64;
+    }
+  }
+  let unix_ms = cvt.wrap::<i64, u64>(millis);
+  let line = serverlog_line(pid: log^.pid, level: level, unix_ms: unix_ms, offset: offset, message: message);
+  serverlog_enqueue(log: log, line: move line);
+  return unit;
+}
+
+fn serverlog_enqueue(log: &ServerLog, line: Box<Slots<u8>>) -> result: unit reads(log) waits {
+  atomic state = &log^.queue {
+    if state^.lines.inner.len >= state^.lines.inner.cap {
+      let current = state^.lines.inner.cap;
+      let doubled = current +sat current;
+      let capacity = imax(doubled, 8_u64);
+      set state^.lines = std::collections::deque::deque_rebase::<Box<Slots<u8>>, log_extent>(values: move state^.lines, capacity: capacity);
+    }
+    if state^.lines.inner.len < state^.lines.inner.cap {
+      place_back(window: &state^.lines.inner, value: move line);
+    } else {
+      let dropped = move line;
+    }
+  }
+  return unit;
+}
+
+fn serverlog_close(log: &ServerLog) -> result: unit reads(log) waits {
+  atomic state = &log^.queue {
+    set state^.closed = True();
+  }
+  return unit;
+}
+
+fn log_ready(queue: &LogQueue) -> ready: Bool reads(queue) {
+  let pending = queue^.lines.inner.len > 0_u64;
+  return bor(pending, queue^.closed);
+}
+
+fn log_next(log: &ServerLog) -> line: Option<Box<Slots<u8>>> reads(log) waits {
+  atomic state = &log^.queue when log_ready(queue: state) {
+    if state^.lines.inner.len > 0_u64 {
+      let line = take_front(window: &state^.lines.inner);
+      return Some<Box<Slots<u8>>>(value: move line);
+    }
+    return None<Box<Slots<u8>>>();
+  }
+}
+
+fn log_stream(factory: &HandleFactory, output: &OutputStream, bytes: &[u8]) -> result: unit reads(bytes), writes(factory), writes(output) waits {
+  let sent = 0_u64;
+  let length = bytes^.len;
+  let deadline = None<std::time::Instant>();
+  let cancel = std::time::cancel_never();
+  loop (
+    invariant pending: sent <= length
+  ) {
+    if sent == length {
+      break;
+    }
+    match std::io::write_once(factory: factory, output: output, source: bytes, start: sent, end: length, deadline: deadline, cancel: &cancel) {
+      Ok(value: next) => {
+        invariant sent_bound: next <= length;
+        if next == sent {
+          break;
+        }
+        set sent = next;
+      }
+      Err(error: problem) => {
+        break;
+      }
+    }
+  }
+  std::time::close_cancel_watch(watch: move cancel);
+  return unit;
+}
+
+fn log_append(factory: &HandleFactory, file: &WriteFile, bytes: &[u8]) -> result: unit reads(bytes), writes(factory), writes(file) waits {
+  let sent = 0_u64;
+  let length = bytes^.len;
+  loop (
+    invariant pending: sent <= length
+  ) {
+    if sent == length {
+      break;
+    }
+    match std::fs::append_once(factory: factory, file: file, source: bytes, start: sent, end: length) {
+      Ok(value: next) => {
+        invariant sent_bound: next <= length;
+        if next == sent {
+          break;
+        }
+        set sent = next;
+      }
+      Err(error: problem) => {
+        break;
+      }
+    }
+  }
+  return unit;
+}
+
+fn serverlog_run(log: ServerLog, factory: HandleFactory, sink: LogSink) -> result: unit pure waits {
+  match move sink {
+    Stream(output: standard) => {
+      loop @lines {
+        match log_next(log: &log) {
+          Some(value: line) => {
+            let length = line.inner.len;
+            log_stream(factory: &factory, output: &standard, bytes: &line.inner[0_u64..length]);
+          }
+          None() => {
+            break @lines;
+          }
+        }
+      }
+    }
+    File(file: appended) => {
+      loop @lines {
+        match log_next(log: &log) {
+          Some(value: line) => {
+            let length = line.inner.len;
+            log_append(factory: &factory, file: &appended, bytes: &line.inner[0_u64..length]);
+          }
+          None() => {
+            break @lines;
+          }
+        }
+      }
+      std::fs::close_write(factory: &factory, file: move appended);
+    }
+  }
+  return unit;
+}

@@ -1,0 +1,115 @@
+alias ExitStatus = std::process::ExitStatus;
+alias HandleFactory = std::io::HandleFactory;
+alias Inputs = std::process::Inputs;
+alias LogSink = pkg::serverlog::LogSink;
+alias ServerLog = pkg::serverlog::ServerLog;
+alias factory_share = std::io::factory_share;
+alias fdlimit_adjust = pkg::fdlimit::fdlimit_adjust;
+alias log_message_append = pkg::serverlog::log_message_append;
+alias log_message_new = pkg::serverlog::log_message_new;
+alias log_message_number = pkg::serverlog::log_message_number;
+alias serverlog_close = pkg::serverlog::serverlog_close;
+alias serverlog_enqueue = pkg::serverlog::serverlog_enqueue;
+alias serverlog_line = pkg::serverlog::serverlog_line;
+alias serverlog_new = pkg::serverlog::serverlog_new;
+alias serverlog_run = pkg::serverlog::serverlog_run;
+alias serverlog_share = pkg::serverlog::serverlog_share;
+alias serverlog_write = pkg::serverlog::serverlog_write;
+
+const word_case: Array<u8, 4> = "case";
+
+const word_debug: Array<u8, 10> = "debug-line";
+
+const word_verbose: Array<u8, 12> = "verbose-line";
+
+const word_notice: Array<u8, 11> = "notice-line";
+
+const word_warning: Array<u8, 12> = "warning-line";
+
+const word_clients: Array<u8, 20> = "scratch: maxclients=";
+
+const word_fatal: Array<u8, 7> = " fatal=";
+
+const word_soft: Array<u8, 6> = " soft=";
+
+const word_hard: Array<u8, 6> = " hard=";
+
+fn say(log: &ServerLog, level: u64, word: &[u8]) -> result: unit reads(log), reads(word) waits {
+  let message = log_message_new();
+  log_message_append(message: &message, source: word);
+  serverlog_write(log: log, level: level, message: &message);
+  return unit;
+}
+
+fn fixed(log: &ServerLog, unix_ms: u64, offset: i64) -> result: unit reads(log) waits {
+  let message = log_message_new();
+  log_message_append(message: &message, source: &word_case[0_u64..4_u64]);
+  let line = serverlog_line(pid: 4242_u64, level: 3_u64, unix_ms: unix_ms, offset: offset, message: &message);
+  serverlog_enqueue(log: log, line: move line);
+  return unit;
+}
+
+fn scenario(log: &ServerLog, factory: &HandleFactory, maxclients: u64) -> result: unit reads(log), writes(factory) waits {
+  let outcome = fdlimit_adjust(factory: factory, log: log, maxclients: maxclients);
+  let soft = 0_u64;
+  let hard = 0_u64;
+  match std::process::open_files_limit(factory: factory) {
+    Ok(value: limits) => {
+      set soft = limits.soft;
+      set hard = limits.hard;
+    }
+    Err(error: problem) => {
+    }
+  }
+  let message = log_message_new();
+  log_message_append(message: &message, source: &word_clients[0_u64..20_u64]);
+  log_message_number(message: &message, number: outcome.maxclients);
+  log_message_append(message: &message, source: &word_fatal[0_u64..7_u64]);
+  let flag = 0_u64;
+  if outcome.fatal {
+    set flag = 1_u64;
+  }
+  log_message_number(message: &message, number: flag);
+  log_message_append(message: &message, source: &word_soft[0_u64..6_u64]);
+  log_message_number(message: &message, number: soft);
+  log_message_append(message: &message, source: &word_hard[0_u64..6_u64]);
+  log_message_number(message: &message, number: hard);
+  serverlog_write(log: log, level: 3_u64, message: &message);
+  return unit;
+}
+
+fn main(inputs: Inputs) -> status: ExitStatus pure waits {
+  let Inputs(args: unused_args, drivers: unused_drivers, cwd: cwd_directory, stdout: stdout, stderr: unused_stderr, handles: handles, stdin: unused_stdin, clock: unused_clock, wall_clock: wall_clock, stops: unused_stops, memory_meter: unused_meter, host_paths: unused_paths, process_id: process_id) = move inputs;
+  let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
+  std::fs::close_directory_write(factory: &handles, directory: move cwd_write);
+  std::fs::close_directory(factory: &handles, directory: move cwd);
+  let pid = match process_id {
+    Some(value: found) => {
+      give found;
+    }
+    None() => {
+      give 0_u64;
+    }
+  }
+  let log = serverlog_new(clock: move wall_clock, pid: pid, level: 2_u64);
+  let writer_log = serverlog_share(log: &log);
+  let writer_factory = factory_share(factory: &handles);
+  let sink = LogSink::Stream(output: move stdout);
+  spawn serverlog_run(log: move writer_log, factory: move writer_factory, sink: move sink);
+  fixed(log: &log, unix_ms: 0_u64, offset: 0_i64);
+  fixed(log: &log, unix_ms: 951782400000_u64, offset: 0_i64);
+  fixed(log: &log, unix_ms: 1709164799999_u64, offset: 0_i64);
+  fixed(log: &log, unix_ms: 1709164799999_u64, offset: 19800_i64);
+  fixed(log: &log, unix_ms: 4102444800000_u64, offset: -18000_i64);
+  fixed(log: &log, unix_ms: 1751241600123_u64, offset: 3600_i64);
+  fixed(log: &log, unix_ms: 1234567890004_u64, offset: -3600_i64);
+  say(log: &log, level: 0_u64, word: &word_debug[0_u64..10_u64]);
+  say(log: &log, level: 1_u64, word: &word_verbose[0_u64..12_u64]);
+  say(log: &log, level: 2_u64, word: &word_notice[0_u64..11_u64]);
+  say(log: &log, level: 3_u64, word: &word_warning[0_u64..12_u64]);
+  scenario(log: &log, factory: &handles, maxclients: 5000_u64);
+  scenario(log: &log, factory: &handles, maxclients: 100_u64);
+  scenario(log: &log, factory: &handles, maxclients: 1990_u64);
+  serverlog_close(log: &log);
+  return std::process::exit_status(code: 0_u8);
+}

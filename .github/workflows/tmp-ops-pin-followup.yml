@@ -1,0 +1,50 @@
+# Temporary quick check for board item firn-ops-pin-followup: compiles the new
+# server log and open-files modules alone in a scratch graph with the newer
+# Whitefoot release (the pin is changed only in this job's workspace) and runs
+# them against date(1) and Redis 7.2.16. Delete this file and tmp-scratch/
+# before the PR is ready.
+name: tmp-ops-pin-followup
+
+on:
+  push:
+    branches: [firn-ops-pin-followup]
+
+concurrency:
+  group: tmp-ops-pin-followup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    name: scratch build and checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Use the newer release in this workspace only
+        run: |
+          printf 'release = wf-63b7cbb03820\n' > whitefoot.pin
+          git -C whitefoot-kit fetch --depth 1 origin 92a9806b0a00250bbe109f9702ec2fc938518fd3
+          git -C whitefoot-kit checkout -q FETCH_HEAD
+
+      - name: Download the compiler
+        run: make compiler
+
+      - name: Install the release's LLVM
+        run: make toolchain
+
+      - name: Restore the Redis build
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis
+        run: tests/redis-suite/reference.sh
+
+      - name: Compile and check the scratch graph
+        run: tmp-scratch/run.sh
