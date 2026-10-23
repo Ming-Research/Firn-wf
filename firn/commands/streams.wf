@@ -1414,7 +1414,7 @@ fn stream_slot(op: &StreamOp, slot: &Option<Entry>, client: &Client) -> kind: u6
   }
 }
 
-fn fresh_stream(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(capture_key), writes(sequence), writes(slot), writes(client) {
+fn fresh_stream(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(capture_key), reads(client), writes(sequence), writes(slot) {
   doc "Stores an empty stream in an entry that holds no live value, as XADD creates its key before it appends.";
   let made = stream_new();
   let boxed = box_new::<StreamLog>(value: move made);
