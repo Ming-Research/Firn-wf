@@ -326,12 +326,12 @@ fn log_append(factory: &HandleFactory, file: &WriteFile, bytes: &[u8]) -> result
 
 fn serverlog_run(log: ServerLog, factory: HandleFactory, sink: LogSink) -> result: unit pure waits {
   match move sink {
-    Stream(output: output) => {
+    Stream(output: standard) => {
       loop @lines {
         match log_next(log: &log) {
           Some(value: line) => {
             let length = line.inner.len;
-            log_stream(factory: &factory, output: &output, bytes: &line.inner[0_u64..length]);
+            log_stream(factory: &factory, output: &standard, bytes: &line.inner[0_u64..length]);
           }
           None() => {
             break @lines;
@@ -339,19 +339,19 @@ fn serverlog_run(log: ServerLog, factory: HandleFactory, sink: LogSink) -> resul
         }
       }
     }
-    File(file: file) => {
+    File(file: appended) => {
       loop @lines {
         match log_next(log: &log) {
           Some(value: line) => {
             let length = line.inner.len;
-            log_append(factory: &factory, file: &file, bytes: &line.inner[0_u64..length]);
+            log_append(factory: &factory, file: &appended, bytes: &line.inner[0_u64..length]);
           }
           None() => {
             break @lines;
           }
         }
       }
-      std::fs::close_write(factory: &factory, file: move file);
+      std::fs::close_write(factory: &factory, file: move appended);
     }
   }
   return unit;
