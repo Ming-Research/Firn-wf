@@ -61,6 +61,8 @@ fn list_signal_at(client: &Client, keys: &KeySet, index: u64, slot: &Option<Entr
         }
         Ranked(..) => {
         }
+        Stream(..) => {
+        }
       }
     }
     None() => {

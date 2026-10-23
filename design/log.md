@@ -5,17 +5,17 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-23 Add blocking list commands
+
+Nodes: firn, firn/aof-rewrite/capture, firn/append-only-file, firn/blocking-lists, firn/connection-ownership, firn/script-attempt-external-effects
+
+Summary: A new node records that a failed list lookup and FIFO waiter registration share one whole-keyspace, Meta and event-hub hold, and that a producer services ready waiters after committing its whole command, EXEC or script and before releasing the hold. Pending requests extend the event hub and promote a connection on its first actual suspension; they keep owned arguments, a never-reused generation and a scalar continuation, and each resumed command repeats memory and persistence admission. Timeout conversion stays an explicit incomplete boundary pending firn-req-extended-float, with only the literal 0 (infinite wait) implemented. Inside a script, blocking commands never register a waiter, and list readiness is drained after the script commits. The AOF capture rule lets list producers and blocking pops journal their own bytes when they change exactly one key. Top-level list producers now stage their effects and copy them into the log, an exception to the append-only file's in-place rule that is measured before the merge. The reference suite's two BRPOPLPUSH/WATCH fixtures are patched to close their clients on failure.
+
 ## 2026-10-23 Store streams in Redis's nodes
 
 Nodes: firn/streams
 
 Summary: firn gains the stream type and its non-blocking commands. A stream is kept in nodes keyed by their master ID with tombstones and Redis's listpack byte sizes, as the owner ruled, so that `~` trimming removes the same whole nodes Redis 7.2.16 removes and XLEN and XTRIM answer as it does ([semantics and node layout](../research/investigations/firn/streams.md#node-layout)). Rejected: an entry map with a node summary map, `~` as exact trimming, and stored listpack bytes.
-
-## 2026-10-22 Add blocking list commands
-
-Nodes: firn, firn/aof-rewrite/capture, firn/append-only-file, firn/blocking-lists, firn/connection-ownership, firn/script-attempt-external-effects
-
-Summary: A new node records that a failed list lookup and FIFO waiter registration share one whole-keyspace, Meta and event-hub hold, and that a producer services ready waiters after committing its whole command, EXEC or script and before releasing the hold. Pending requests extend the event hub and promote a connection on its first actual suspension; they keep owned arguments, a never-reused generation and a scalar continuation, and each resumed command repeats memory and persistence admission. Timeout conversion stays an explicit incomplete boundary pending firn-req-extended-float, with only the literal 0 (infinite wait) implemented. Inside a script, blocking commands never register a waiter, and list readiness is drained after the script commits. The AOF capture rule lets list producers and blocking pops journal their own bytes when they change exactly one key. Top-level list producers now stage their effects and copy them into the log, an exception to the append-only file's in-place rule that is measured before the merge. The reference suite's two BRPOPLPUSH/WATCH fixtures are patched to close their clients on failure.
 
 ## 2026-10-13 Limit concurrent clients with maxclients
 

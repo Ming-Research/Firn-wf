@@ -95,6 +95,9 @@ fn blocking_list_nonempty(slot: &Option<Entry>) -> ready: Bool reads(slot) {
         Ranked(ranked: stored) => {
           return False();
         }
+        Stream(..) => {
+          return False();
+        }
       }
     }
     None() => {
