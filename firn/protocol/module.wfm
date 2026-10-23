@@ -61,10 +61,6 @@ public struct Client {
   public stream_node_bytes: u64;
   public stream_node_entries: u64;
   public id: u64;
-  public pubsub_id: u64;
-  public sub: u64;
-  public psub: u64;
-  public ssub: u64;
   public name: Bytes;
   public authenticated: Bool;
   public locked: Bool;
@@ -74,6 +70,10 @@ public struct Client {
   public since_us: u64;
   public settings: Settings;
   public seen_peak: u64;
+  public pubsub_id: u64;
+  public sub: u64;
+  public psub: u64;
+  public ssub: u64;
 }
 
 public fn split_arguments(input: &[u8], start: u64, end: u64, args: &Box<Slots<Span>>) -> parsed: Parsed writes(input), writes(args) contract {
