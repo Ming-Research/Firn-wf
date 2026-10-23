@@ -56,7 +56,11 @@ leaves the PR's own change as it is does not repeat a measurement.
   list grows by a few hundred elements over the run, so the pivot scan stays one
   step); `lmove` is `LMOVE mylist mylist RIGHT LEFT` on a list of five, which
   rotates and keeps its length. Both send the 3-byte payload of the other tests
-  through 50 connections.
+  through 50 connections. Before the timed runs, each image's server receives 100
+  `LINSERT`s and 101 `LMOVE`s from redis-benchmark itself, and the run fails
+  unless the lists show the result (`verify_list_forms`: 101 elements, and the
+  last element moved to the front): a form that missed its key or wrote nothing
+  would otherwise be measured as a fast miss.
 - **Images.** `base`, `head` and `head-twin` (the head again, as the noise
   control: two builds of one source, measured in the same interleaving), 6
   passes of 5 s per cell, each pass in the reverse order of the one before, no
@@ -151,6 +155,15 @@ orders them on the 14900K, one at a time.
 | B | `workloads` with `workload_images`, `head` and `head-twin` only, `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
 
-The instrument was tried first on a GitHub-hosted runner for function only (no
-rate from it counts): the workload client's unit tests, `summary.py selftest`
-and a short run of each new test and of the hand-off against firn.
+The instrument was tried first on GitHub-hosted runners, for function only (no
+rate from them counts). A hosted runner has two physical cores and the automatic
+placement skips the cell for want of a distinct client core, so those runs name
+`server_cpus` and `client_cpus`. At 7cad8fc: run 39927345922 (`workloads`,
+`blocking-handoff` against `reference` and firn, 20 consumers, depths 16 and 1)
+and run 39927349103 (`compare` with the append-only file on: `set`, `lpush`,
+`linsert`, `lmove`). The check of the forms was watched to fail and to pass at
+its commit 4357091 (run 39929633261, the real forms: passes and measures); with
+the `LINSERT` pivot changed to one that is not in the list it stopped the run
+with `LLEN '1'` (run 39929636578), and with `LMOVE` changed to `LEFT LEFT` it
+stopped the run with the list `a b c d e` (run 39929639885). The two broken
+forms were on throwaway branches, deleted after the runs.
