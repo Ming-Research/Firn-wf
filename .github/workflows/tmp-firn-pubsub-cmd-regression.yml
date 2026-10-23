@@ -1,0 +1,37 @@
+# Temporary (firn-pubsub-cmd-regression): runs the selftest of summary.py, which
+# no other workflow runs, and shows that the case added for `ratios --metric
+# cpu` fails when the ratio is not inverted. Removed before the pull request is
+# ready.
+name: tmp-firn-pubsub-cmd-regression
+
+on:
+  push:
+    branches: [firn-pubsub-cmd-regression]
+
+jobs:
+  selftest:
+    name: summary.py selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: The selftest passes
+        run: python3 -I research/experiments/redis-bench/summary.py selftest
+
+  selftest-broken:
+    name: summary.py selftest fails on a ratio that is not inverted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make the cpu ratio the uninverted one
+        run: |
+          grep -c 'return denominator / numerator if cpu else numerator / denominator' research/experiments/redis-bench/summary.py
+          sed -i 's|return denominator / numerator if cpu else numerator / denominator|return numerator / denominator|' research/experiments/redis-bench/summary.py
+          ! grep -q 'denominator / numerator' research/experiments/redis-bench/summary.py
+      - name: The selftest fails
+        run: |
+          if python3 -I research/experiments/redis-bench/summary.py selftest; then
+            echo "the selftest accepted a cpu ratio that is not inverted" >&2
+            exit 1
+          fi
