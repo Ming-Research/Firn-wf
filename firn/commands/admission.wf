@@ -8,33 +8,22 @@ const oom_error: Array<u8, 55> = "OOM command not allowed when used memory > 'ma
 
 const oom_execabort: Array<u8, 99> = "EXECABORT Transaction discarded because of: OOM command not allowed when used memory > 'maxmemory'.";
 
-const command_denyoom_kinds: Array<u64, 34> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 15_u64, 24_u64, 25_u64, 26_u64, 27_u64, 30_u64, 31_u64, 35_u64, 36_u64, 39_u64, 40_u64, 41_u64, 42_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 69_u64, 72_u64, 74_u64, 75_u64, 90_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64];
+const command_denyoom_map: Array<u8, 256> = "0011111000000001000000001111001100011001111000000000110000001111000001001011000000000000001000000000000111000000000000001100000000000000000000000000000000000000000000000000000000000000000000100010100000000000000000000000000000000000000000000000000000000000";
 
 fn command_denyoom(kind: u64) -> marked: Bool pure {
-  doc "Redis src/commands/*.json DENYOOM flags for firn's held commands, with pub/sub checked against Redis 7.2.16. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
-  let subscribe = kind == 190_u64;
-  let psubscribe = kind == 194_u64;
-  let ssubscribe = kind == 196_u64;
-  let global = bor(subscribe, psubscribe);
-  if bor(global, ssubscribe) {
-    return True();
-  }
-  for (index in 0_u64..34_u64) {
-    if command_denyoom_kinds[index] == kind {
-      return True();
-    }
+  doc "Redis src/commands/*.json DENYOOM flags for firn's held commands, with pub/sub checked against Redis 7.2.16. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF. One lookup in command_denyoom_map, whose byte at position k is 1 when the command of kind k has the flag: kinds 2 to 6, 15, 24 to 27, 30 to 31, 35 to 36, 39 to 42, 52 to 53, 60 to 63, 69, 72, 74 to 75, 90, 103 to 105, 120 to 121, 190, 194, 196; a kind of 256 or more has none, and a command given such a kind needs the map extended.";
+  if kind < 256_u64 {
+    return command_denyoom_map[kind] == '1'_u8;
   }
   return False();
 }
 
-const command_writes_kinds: Array<u64, 61> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 7_u64, 8_u64, 9_u64, 10_u64, 15_u64, 16_u64, 17_u64, 20_u64, 24_u64, 25_u64, 26_u64, 27_u64, 28_u64, 29_u64, 30_u64, 31_u64, 35_u64, 36_u64, 37_u64, 38_u64, 39_u64, 40_u64, 41_u64, 42_u64, 45_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 64_u64, 65_u64, 69_u64, 70_u64, 71_u64, 72_u64, 74_u64, 75_u64, 90_u64, 91_u64, 92_u64, 98_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64, 122_u64, 123_u64, 124_u64, 138_u64, 139_u64, 140_u64, 164_u64, 165_u64];
+const command_writes_map: Array<u8, 256> = "0011111111100001110010001111111100011111111001000000110000001111110001111011000000000000001110000010000111000000000000001111100000000000001110000000000000000000000011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
 fn command_writes(kind: u64) -> marked: Bool pure {
-  doc "Redis 7.0.15 src/commands/*.json WRITE flags for firn's held commands. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
-  for (index in 0_u64..61_u64) {
-    if command_writes_kinds[index] == kind {
-      return True();
-    }
+  doc "Redis 7.0.15 src/commands/*.json WRITE flags for firn's held commands. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF. One lookup in command_writes_map, whose byte at position k is 1 when the command of kind k has the flag: kinds 2 to 10, 15 to 17, 20, 24 to 31, 35 to 42, 45, 52 to 53, 60 to 65, 69 to 72, 74 to 75, 90 to 92, 98, 103 to 105, 120 to 124, 138 to 140, 164 to 165; a kind of 256 or more has none, and a command given such a kind needs the map extended.";
+  if kind < 256_u64 {
+    return command_writes_map[kind] == '1'_u8;
   }
   return False();
 }
