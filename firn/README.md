@@ -2,7 +2,7 @@
 
 firn is a server of Redis's protocol written in Whitefoot. It answers RESP2
 or RESP3, the version a connection's HELLO selects, and inline requests, quoted arguments included, over TCP, pipelined or not,
-and keeps strings, lists, sets, hashes and sorted sets in one keyspace, a
+and keeps strings, lists, sets, hashes, sorted sets and streams in one keyspace, a
 shared map that every connection reaches through atomic statements naming
 the entries of the keys a command uses and the separate expiry, log or server
 metadata objects it also needs. It is named for firn, snow that has lasted a
@@ -62,6 +62,16 @@ clients send on their own:
   fallback; ZSCAN's text selection is described below. Rewritten
   append-only scores use plain `fpconv_dtoa` without the reply's integer
   shortcut;
+- streams: `XADD` with `MAXLEN` and `MINID` (`=` or `~`), `LIMIT` and
+  `NOMKSTREAM`, `XRANGE` and `XREVRANGE` with `COUNT`, `XLEN`, `XTRIM`,
+  `XDEL`, `XSETID` with `ENTRIESADDED` and `MAXDELETEDID`, and `XREAD` with
+  `COUNT`. Entries are kept in nodes split where Redis 7.2.16 splits them, by
+  `stream-node-max-bytes` and `stream-node-max-entries`, so that `~`
+  trimming removes what Redis removes. `XREAD` with `BLOCK` answers at once
+  when a stream has entries to serve and is refused on a connection when
+  none has, since firn does not wait yet; under `EXEC` and in scripts it
+  answers a null array, as Redis does. Consumer groups and `XINFO` are not
+  supported;
 - scripting: `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which observes a kill
   between attempts only while no dataset effects or publication deliveries
@@ -232,7 +242,9 @@ internal encodings, leaving every value as commands read it,
 `hash-max-ziplist-entries`, `hash-max-ziplist-value`, `list-max-ziplist-size`,
 `zset-max-ziplist-entries` and `zset-max-ziplist-value`. firn has none of
 those encodings: it reports their parameters with Redis's defaults and keeps
-what `CONFIG SET` gives them, and they change nothing else.
+what `CONFIG SET` gives them, and they change nothing else, except
+`stream-node-max-bytes` and `stream-node-max-entries`, which decide where a
+stream's next node starts, as they do in Redis.
 `hll-sparse-max-bytes` is not among them, since a HyperLogLog's encoding is
 the string `GET` reads, and firn has no HyperLogLog.
 

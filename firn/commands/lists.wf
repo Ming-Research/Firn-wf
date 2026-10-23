@@ -131,6 +131,8 @@ fn live_list_size(slot: &Option<Entry>, now: u64) -> size: Option<u64> reads(slo
         }
         Ranked(ranked: sorted) => {
         }
+        Stream(..) => {
+        }
       }
     }
     None() => {
@@ -273,6 +275,10 @@ fn push_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -336,6 +342,10 @@ fn pop_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(value
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -435,6 +445,10 @@ fn range_items(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -485,6 +499,10 @@ fn list_length(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -590,6 +608,10 @@ fn index_item(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -654,6 +676,11 @@ fn set_item(env: &Client, value: &Entry, element: Box<Slots<u8>>) -> kind: u64 w
       let dropped = move element;
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      let dropped = move element;
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -775,6 +802,10 @@ fn remove_items(env: &Client, value: &Entry, input: &[u8], element: Span) -> kin
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -885,6 +916,10 @@ fn trim_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -999,6 +1034,11 @@ fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: 
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      let dropped = move element;
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -1088,6 +1128,10 @@ fn seek_items(env: &Seek, value: &Entry, input: &[u8], element: Span, positions:
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -1137,6 +1181,9 @@ fn list_kind(slot: &Option<Entry>, now: u64) -> kind: u64 reads(slot) {
         Ranked(ranked: sorted) => {
           return entry_other;
         }
+        Stream(..) => {
+          return entry_other;
+        }
       }
     }
     None() => {
@@ -1165,6 +1212,9 @@ fn take_element(slot: &Option<Entry>, from_head: Bool, client: &Client) -> poppe
           return None<Box<Slots<u8>>>();
         }
         Ranked(ranked: sorted) => {
+          return None<Box<Slots<u8>>>();
+        }
+        Stream(..) => {
           return None<Box<Slots<u8>>>();
         }
       }
@@ -1198,6 +1248,10 @@ fn place_element(sequence: &pkg::store::WriteSequence, client: &Client, slot: &O
           return unit;
         }
         Ranked(ranked: sorted) => {
+          let dropped = move element;
+          return unit;
+        }
+        Stream(..) => {
           let dropped = move element;
           return unit;
         }
