@@ -422,11 +422,6 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
           std::time::cancel_fire(source: &shutdown);
         }
         pkg::commands::record_memory_peak(store: &store, client: &client);
-        if client.pubsub_id != 0_u64 {
-          set consumed = parsed.next;
-          set promoted = True();
-          break @commands;
-        }
         if client.closing {
           set closing = True();
           break @commands;
@@ -445,6 +440,9 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
           break @commands;
         }
       }
+    }
+    if client.pubsub_id != 0_u64 {
+      set promoted = True();
     }
     if promoted {
       set held = keep_rest(input: &input, from: consumed, held: held);
