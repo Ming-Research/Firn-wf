@@ -1,0 +1,4 @@
+alias ExitStatus = std::process::ExitStatus;
+alias Inputs = std::process::Inputs;
+
+public fn main(inputs: Inputs) -> status: ExitStatus pure waits doc "Scratch program that exercises the server log and the open-files adjustment; deleted before the pull request is ready.";

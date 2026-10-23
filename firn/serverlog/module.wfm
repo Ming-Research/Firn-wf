@@ -1,0 +1,55 @@
+alias HandleFactory = std::io::HandleFactory;
+alias IoError = std::io::IoError;
+alias OutputStream = std::io::OutputStream;
+alias WallClock = std::time::WallClock;
+alias WriteFile = std::fs::WriteFile;
+
+public const level_debug: u64 = 0_u64;
+
+public const level_verbose: u64 = 1_u64;
+
+public const level_notice: u64 = 2_u64;
+
+public const level_warning: u64 = 3_u64;
+
+public const message_limit: u64 = 1023_u64;
+
+public struct LogQueue {
+  doc "Complete log lines in the order contexts handed them over, and whether the sink is to stop once it has written them.";
+  public lines: Box<Ring<Box<Slots<u8>>>>;
+  public closed: Bool;
+}
+
+public struct ServerLog {
+  doc "A handle on the server log: the shared queue of finished lines, the calendar clock that stamps them, the process id they carry and the lowest level that is written. Every context holds a handle of its own, made with serverlog_share.";
+  public queue: Shared<LogQueue>;
+  public clock: WallClock;
+  public pid: u64;
+  public level: u64;
+}
+
+public enum LogSink {
+  doc "Where serverlog_run writes the lines: standard output, or a file opened for appending, which serverlog_run closes.";
+  Stream(public output: OutputStream);
+  File(public file: WriteFile);
+}
+
+public fn serverlog_new(clock: WallClock, pid: u64, level: u64) -> made: ServerLog pure doc "Creates an empty log whose lines carry pid and whose lowest written level is level, one of level_debug to level_warning, as Redis's loglevel orders them.";
+
+public fn serverlog_share(log: &ServerLog) -> made: ServerLog reads(log) doc "Returns a handle on the same queue, clock reading, process id and level.";
+
+public fn log_message_new() -> made: Box<Slots<u8>> pure doc "Creates an empty message with room for message_limit bytes, the most Redis's log keeps of one message.";
+
+public fn log_message_append(message: &Box<Slots<u8>>, source: &[u8]) -> result: unit reads(source), writes(message) doc "Appends the bytes of source, keeping only what fits in message_limit as Redis truncates a longer message.";
+
+public fn log_message_number(message: &Box<Slots<u8>>, number: u64) -> result: unit writes(message) doc "Appends number in decimal digits, within the message limit.";
+
+public fn log_message_error(message: &Box<Slots<u8>>, problem: &IoError) -> result: unit reads(problem), writes(message) doc "Appends the host's description of problem, the text strerror gives Redis, within the message limit.";
+
+public fn serverlog_line(pid: u64, level: u64, unix_ms: u64, offset: i64, message: &Box<Slots<u8>>) -> line: Box<Slots<u8>> reads(message) doc "Returns the complete line Redis's serverLogRaw writes for a message: the process id, the role M, the local time of the Unix millisecond unix_ms moved by offset seconds as dd Mon yyyy hh:mm:ss.mmm, the level's mark and the message, ending in a newline.";
+
+public fn serverlog_write(log: &ServerLog, level: u64, message: &Box<Slots<u8>>) -> result: unit reads(log), reads(message) waits doc "Queues the message as one line stamped with the present time, unless level is below the log's level.";
+
+public fn serverlog_close(log: &ServerLog) -> result: unit reads(log) waits doc "Tells serverlog_run to end once it has written every queued line.";
+
+public fn serverlog_run(log: ServerLog, factory: HandleFactory, sink: LogSink) -> result: unit pure waits doc "Writes the queued lines to the sink in order, one whole line at a time, until serverlog_close has been called and the queue is empty. A line the sink refuses is dropped, as Redis ignores a failed log write.";

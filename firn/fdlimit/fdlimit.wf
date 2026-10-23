@@ -1,0 +1,164 @@
+alias HandleFactory = std::io::HandleFactory;
+alias IoError = std::io::IoError;
+alias ServerLog = pkg::serverlog::ServerLog;
+alias log_message_append = pkg::serverlog::log_message_append;
+alias log_message_error = pkg::serverlog::log_message_error;
+alias log_message_new = pkg::serverlog::log_message_new;
+alias log_message_number = pkg::serverlog::log_message_number;
+alias serverlog_write = pkg::serverlog::serverlog_write;
+
+const fd_unable_head: Array<u8, 43> = "Unable to obtain the current NOFILE limit (";
+
+const fd_unable_tail: Array<u8, 71> = "), assuming 1024 and setting the max clients configuration accordingly.";
+
+const fd_start_head: Array<u8, 28> = "Your current 'ulimit -n' of ";
+
+const fd_start_mid: Array<u8, 89> = " is not enough for the server to start. Please increase your open file limit to at least ";
+
+const fd_start_tail: Array<u8, 10> = ". Exiting.";
+
+const fd_asked_head: Array<u8, 28> = "You requested maxclients of ";
+
+const fd_asked_mid: Array<u8, 20> = " requiring at least ";
+
+const fd_asked_tail: Array<u8, 22> = " max file descriptors.";
+
+const fd_refused_head: Array<u8, 39> = "Server can't set maximum open files to ";
+
+const fd_refused_mid: Array<u8, 22> = " because of OS error: ";
+
+const fd_refused_tail: Array<u8, 1> = ".";
+
+const fd_current_head: Array<u8, 30> = "Current maximum open files is ";
+
+const fd_current_mid: Array<u8, 33> = ". maxclients has been reduced to ";
+
+const fd_current_tail: Array<u8, 82> = " to compensate for low ulimit. If you need higher maxclients increase 'ulimit -n'.";
+
+const fd_raised_head: Array<u8, 42> = "Increased maximum number of open files to ";
+
+const fd_raised_mid: Array<u8, 27> = " (it was originally set to ";
+
+const fd_raised_tail: Array<u8, 2> = ").";
+
+const fd_unknown: Array<u8, 39> = "firn: I/O error description unavailable";
+
+fn fd_text(message: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), writes(message) {
+  log_message_append(message: message, source: word);
+  return unit;
+}
+
+fn fd_step(factory: &HandleFactory, best: u64) -> step: u64 reads(factory) {
+  doc "How far to go below best after a refusal: Redis's 16, or, when best is above the hard limit, the whole number of 16s that brings it to or below the hard limit, where every shorter step would be refused again.";
+  let step = 16_u64;
+  match std::process::open_files_limit(factory: factory) {
+    Ok(value: limits) => {
+      if best > limits.hard {
+        let gap = best -sat limits.hard;
+        let padded = gap +sat 15_u64;
+        let rounds = padded / 16_u64;
+        set step = rounds *sat 16_u64;
+      }
+    }
+    Err(error: unreadable) => {
+    }
+  }
+  return step;
+}
+
+fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles: u64, old: u64) -> outcome: Adjusted reads(log), writes(factory) waits {
+  doc "Redis's loop from adjustOpenFilesLimit that tries maxfiles and then lower limits until the host accepts one above the old soft limit, and the log lines for what came out.";
+  let best = maxfiles;
+  let refusal = None<IoError>();
+  loop @raising {
+    if best <= old {
+      break @raising;
+    }
+    match std::process::raise_open_files_limit(factory: factory, wanted: best) {
+      Ok(..) => {
+        break @raising;
+      }
+      Err(error: problem) => {
+        set refusal = Some<IoError>(value: move problem);
+        let step = fd_step(factory: factory, best: best);
+        if best < step {
+          set best = old;
+          break @raising;
+        }
+        set best = best - step;
+      }
+    }
+  }
+  if best < old {
+    set best = old;
+  }
+  let message = log_message_new();
+  if best >= maxfiles {
+    fd_text(message: &message, word: &fd_raised_head[0_u64..42_u64]);
+    log_message_number(message: &message, number: maxfiles);
+    fd_text(message: &message, word: &fd_raised_mid[0_u64..27_u64]);
+    log_message_number(message: &message, number: old);
+    fd_text(message: &message, word: &fd_raised_tail[0_u64..2_u64]);
+    serverlog_write(log: log, level: pkg::serverlog::level_notice, message: &message);
+    return Adjusted(maxclients: maxclients, fatal: False());
+  }
+  if best <= 32_u64 {
+    fd_text(message: &message, word: &fd_start_head[0_u64..28_u64]);
+    log_message_number(message: &message, number: old);
+    fd_text(message: &message, word: &fd_start_mid[0_u64..89_u64]);
+    log_message_number(message: &message, number: maxfiles);
+    fd_text(message: &message, word: &fd_start_tail[0_u64..10_u64]);
+    serverlog_write(log: log, level: pkg::serverlog::level_warning, message: &message);
+    return Adjusted(maxclients: 0_u64, fatal: True());
+  }
+  let reduced = best -sat 32_u64;
+  fd_text(message: &message, word: &fd_asked_head[0_u64..28_u64]);
+  log_message_number(message: &message, number: maxclients);
+  fd_text(message: &message, word: &fd_asked_mid[0_u64..20_u64]);
+  log_message_number(message: &message, number: maxfiles);
+  fd_text(message: &message, word: &fd_asked_tail[0_u64..22_u64]);
+  serverlog_write(log: log, level: pkg::serverlog::level_warning, message: &message);
+  let second = log_message_new();
+  fd_text(message: &second, word: &fd_refused_head[0_u64..39_u64]);
+  log_message_number(message: &second, number: maxfiles);
+  fd_text(message: &second, word: &fd_refused_mid[0_u64..22_u64]);
+  match move refusal {
+    Some(value: problem) => {
+      log_message_error(message: &second, problem: &problem);
+    }
+    None() => {
+      fd_text(message: &second, word: &fd_unknown[0_u64..39_u64]);
+    }
+  }
+  fd_text(message: &second, word: &fd_refused_tail[0_u64..1_u64]);
+  serverlog_write(log: log, level: pkg::serverlog::level_warning, message: &second);
+  let third = log_message_new();
+  fd_text(message: &third, word: &fd_current_head[0_u64..30_u64]);
+  log_message_number(message: &third, number: best);
+  fd_text(message: &third, word: &fd_current_mid[0_u64..33_u64]);
+  log_message_number(message: &third, number: reduced);
+  fd_text(message: &third, word: &fd_current_tail[0_u64..82_u64]);
+  serverlog_write(log: log, level: pkg::serverlog::level_warning, message: &third);
+  return Adjusted(maxclients: reduced, fatal: False());
+}
+
+fn fdlimit_adjust(factory: &HandleFactory, log: &ServerLog, maxclients: u64) -> outcome: Adjusted reads(log), writes(factory) waits {
+  let maxfiles = maxclients +sat 32_u64;
+  let outcome = Adjusted(maxclients: maxclients, fatal: False());
+  match std::process::open_files_limit(factory: factory) {
+    Err(error: problem) => {
+      let message = log_message_new();
+      fd_text(message: &message, word: &fd_unable_head[0_u64..43_u64]);
+      log_message_error(message: &message, problem: &problem);
+      fd_text(message: &message, word: &fd_unable_tail[0_u64..71_u64]);
+      serverlog_write(log: log, level: pkg::serverlog::level_warning, message: &message);
+      set outcome = Adjusted(maxclients: 992_u64, fatal: False());
+    }
+    Ok(value: limits) => {
+      if limits.soft < maxfiles {
+        set outcome = fd_raise(factory: factory, log: log, maxclients: maxclients, maxfiles: maxfiles, old: limits.soft);
+      }
+    }
+  }
+  return outcome;
+}

@@ -1,6 +1,8 @@
-# Temporary quick check for board item firn-ops-pin-followup: builds firn and
-# its network-test binary with the pinned compiler and runs only the startup
-# configuration cases. Delete this file before the PR is ready.
+# Temporary quick check for board item firn-ops-pin-followup: compiles the new
+# server log and open-files modules alone in a scratch graph with the newer
+# Whitefoot release (the pin is changed only in this job's workspace) and runs
+# them against date(1) and Redis 7.2.16. Delete this file and tmp-scratch/
+# before the PR is ready.
 name: tmp-ops-pin-followup
 
 on:
@@ -13,7 +15,7 @@ concurrency:
 
 jobs:
   quick:
-    name: build and startup cases
+    name: scratch build and checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -23,14 +25,17 @@ jobs:
         with:
           submodules: true
 
-      - name: Download the pinned compiler
+      - name: Use the newer release in this workspace only
+        run: |
+          printf 'release = wf-63b7cbb03820\n' > whitefoot.pin
+          git -C whitefoot-kit fetch --depth 1 origin 92a9806b0a00250bbe109f9702ec2fc938518fd3
+          git -C whitefoot-kit checkout -q FETCH_HEAD
+
+      - name: Download the compiler
         run: make compiler
 
-      - name: Install the pinned release's LLVM
+      - name: Install the release's LLVM
         run: make toolchain
-
-      - name: Select the Rust toolchain
-        run: rustup default stable && cargo --version
 
       - name: Restore the Redis build
         uses: actions/cache@v4
@@ -41,11 +46,5 @@ jobs:
       - name: Build the reference Redis
         run: tests/redis-suite/reference.sh
 
-      - name: Build firn for the network cases
-        run: make firn-test
-
-      - name: Run the startup configuration cases
-        run: |
-          redis_bin=$(tests/redis-suite/reference.sh)
-          FIRN="$GITHUB_WORKSPACE/build/firn-test" REDIS_SERVER="$redis_bin/redis-server" \
-            cargo test --manifest-path tests/Cargo.toml --locked --test network config:: -- --show-output
+      - name: Compile and check the scratch graph
+        run: tmp-scratch/run.sh

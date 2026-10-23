@@ -1,0 +1,12 @@
+alias HandleFactory = std::io::HandleFactory;
+alias ServerLog = pkg::serverlog::ServerLog;
+
+public const reserved_descriptors: u64 = 32_u64;
+
+public struct Adjusted {
+  doc "What fdlimit_adjust settled: the number of clients the open-files limit supports, never more than asked, and whether the limit leaves no room for even one client, which Redis answers by exiting with status 1.";
+  public maxclients: u64;
+  public fatal: Bool;
+}
+
+public fn fdlimit_adjust(factory: &HandleFactory, log: &ServerLog, maxclients: u64) -> outcome: Adjusted reads(log), writes(factory) waits doc "Raises the soft open-files limit to maxclients plus reserved_descriptors as Redis's adjustOpenFilesLimit does, trying 16 fewer after each refusal, and logs what it did. When the host will not go that far it returns the clients the limit supports instead; the host's hard limit is never changed, which Redis lowers to the same value.";
