@@ -1124,11 +1124,14 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     }
     assert_old_manifest(&program);
     // The charged backlog was in the ledger only while the reread held the
-    // switch, when no reply, INFO's included, could be sent; once the attempt
-    // ends, nothing of it may stay excluded.
+    // switch, when no reply, INFO's included, could be sent. Once the attempt
+    // ends, only the AOF buffers stay excluded; firn_aof_rewrite_used then
+    // reports the aborted attempt's ledger, not a live one.
     client.write_all(&resp(&["INFO", "all"])).unwrap();
     let all = bulk_reply(&mut client, "exclusion after the backlog aborted");
-    assert_eq!(assert_rotation_exclusion(&all), 0, "{all}");
+    assert_eq!(info_field(&all, "firn_aof_rewrite_charged").as_deref(), Some("0"), "{all}");
+    assert_eq!(info_field(&all, "mem_not_counted_for_evict"), info_field(&all, "mem_aof_buffer"),
+        "an ended attempt must leave no rewrite charge excluded: {all}");
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);
     let (child, mut restored, _) = start(&program);
