@@ -1050,7 +1050,7 @@ fn stream_add(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit w
   let keys = KeyEnv();
   if tail.found {
     let edited = ordered_map_edit::<StreamIdOrder, StreamNode, StreamAppend, Bool, fn append_into_node, ceiling>(map: &log^.nodes, key: &tail.key, key_env: &keys, edit_env: &offer);
-    match move edited {
+    match edited {
       Ok(value: placed) => {
         set appended = placed;
       }
