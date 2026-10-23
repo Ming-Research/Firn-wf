@@ -82,7 +82,7 @@ fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles:
         break @raising;
       }
       Err(error: problem) => {
-        set refusal = Some<IoError>(value: move problem);
+        set refusal = Some<IoError>(value: problem);
         let step = fd_step(factory: factory, best: best);
         if best < step {
           set best = old;
@@ -126,7 +126,7 @@ fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles:
   fd_text(message: &second, word: &fd_refused_head[0_u64..39_u64]);
   log_message_number(message: &second, number: maxfiles);
   fd_text(message: &second, word: &fd_refused_mid[0_u64..22_u64]);
-  match move refusal {
+  match refusal {
     Some(value: problem) => {
       log_message_error(message: &second, problem: &problem);
     }
