@@ -31,7 +31,7 @@ clients ([design](design/firn.md)).
 - **Performance:** measured with `redis-benchmark` against Redis, Valkey,
   Dragonfly and Garnet ([measurements](research/investigations/firn/DESIGN.md)).
 - **Not yet:** scripts' and transactions' commands beyond those
-  `firn/README.md` lists, `WATCH`, memory limits and eviction, replication
+  `firn/README.md` lists, `WATCH`, replication
   and clustering, among the gaps the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip) lists. firn
   is a research server, not a production database.
 
@@ -53,6 +53,9 @@ redis-cli -p 6379 PING
 names and builds the server; [firn/README.md](firn/README.md#build-and-run)
 explains its arguments and options. `make check` is the gate every change
 passes.
+
+The [operator's guide](docs/operations.md) covers service startup,
+configuration refusals, connection limits, persistence, backup and restore.
 
 ## Repository
 

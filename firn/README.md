@@ -9,6 +9,8 @@ metadata objects it also needs. It is named for firn, snow that has lasted a
 season: stored and compacted.
 
 See [safety guarantees and their evidence](../docs/safety.md).
+For service startup, connection limits and persistence recovery, see the
+[operator's guide](../docs/operations.md).
 
 Its commands are these, which began as the ones `redis-benchmark`'s default
 suite sends, with expiry, an append-only file and the connection commands
@@ -223,8 +225,8 @@ The recorded reference comparison and boundary cases are in
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
-`save`, `timeout`, `auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`,
-and the parameters whose only effect in Redis is on its
+`save`, `timeout`, `maxclients`, `auto-aof-rewrite-percentage` and
+`auto-aof-rewrite-min-size`, and the parameters whose only effect in Redis is on its
 internal encodings, leaving every value as commands read it,
 `hash-max-listpack-entries`, `hash-max-listpack-value`,
 `list-compress-depth`, `list-max-listpack-size`, `set-max-intset-entries`,
@@ -322,9 +324,9 @@ the first stamp of every key it refreshed and firn's LFU random state before
 releasing the keys; completed attempts and attempts that wrote retain them.
 SCRIPT KILL between attempts therefore leaves abandoned refreshes undone.
 
-`CONFIG RESETSTAT` answers OK and zeroes connections accepted, evicted keys
-and active-expiry counts. It preserves `used_memory_peak`, the observed
-heap maximum since startup, as Redis 7.0.15 does.
+`CONFIG RESETSTAT` answers OK and zeroes connections admitted, connections
+rejected, evicted keys and active-expiry counts. It preserves
+`used_memory_peak`, the observed heap maximum since startup, as Redis 7.0.15 does.
 
 `SHUTDOWN` sends no reply, nor the replies its connection holds unsent
 from the commands before it, which Redis 7.0.15 does not send either; its
@@ -366,7 +368,7 @@ last check stops firn in order once it listens. A host that refuses to
 deliver the signals to firn stops it with status 3 before the replay, as an
 address it cannot listen on does after it. Once
 firn has taken a signal, or cancellation has ended its signal wait after a
-`SHUTDOWN` request or its last client leaving after the client limit, a
+`SHUTDOWN` request or its last client leaving after the `firn-clients` test shutdown limit, a
 further SIGTERM or SIGINT ends it at once, without the rest of the drain;
 Redis ends at once, with status 1, on a second SIGINT, but ignores a second
 SIGTERM. `SHUTDOWN ABORT` answers `ERR No shutdown in progress.` after a
@@ -397,7 +399,13 @@ storage, its shared-map tables and nodes, as well as values.
 answers Redis's sections in Redis's order and form. Its fields carry real
 values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
-held, which it counts holding the table whole, as `DBSIZE` does. The other fields it reports have values
+held, which it counts holding the table whole, as `DBSIZE` does.
+`INFO clients` reports `maxclients` and `connected_clients`, excluding
+connections refused by the limit. `INFO stats` reports
+`total_connections_received` for admitted connections only and
+`rejected_connections` for connections refused by the limit, both since
+startup or the last `CONFIG RESETSTAT`.
+The other fields it reports have values
 that are fixed and true of firn: Redis's
 version 7.2.16, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file,
@@ -481,6 +489,8 @@ Supported directives, in files or after `--`, are:
 - `port`, 6379 by default, and `timeout`, seconds before closing an idle
   client, 0 by default for no limit. A final `port 0` disables TCP and exits
   with status 1 because firn has no other listener;
+- `maxclients`, the simultaneous client limit, 10000 by default, accepting
+  integers from 1 through 4294967295 with Redis 7.2.16's validation errors;
 - `bind`, one dotted IPv4 address or `*` for all IPv4 addresses. The default
   is 127.0.0.1; firn keeps its loopback default rather than Redis's default
   bind and protected-mode combination. More than one address and space-split
@@ -499,8 +509,29 @@ Supported directives, in files or after `--`, are:
   `maxmemory-eviction-tenacity`, `lfu-log-factor` and `lfu-decay-time`, using
   the same validation as `CONFIG SET`;
 - `dir .` or `dir ./`, retaining the working directory;
-- `firn-clients`, a **firn-only test directive**: how many clients to accept
-  before stopping, 0 by default for no limit.
+- `firn-clients`, a **firn-only test directive**: how many connections to
+  admit over the server's lifetime before stopping, 0 by default for no
+  limit. Connections refused by `maxclients` do not count. This shutdown
+  count is separate from the simultaneous client limit.
+
+An accepted connection that would exceed `maxclients` receives
+`-ERR max number of clients reached\r\n` and closes before any command is
+served. The reply is best effort: partial sends share one absolute deadline
+one second after the attempt starts. A send error, including expiry of that
+deadline, ends the attempt and closes the connection even if sending is
+incomplete. The host send contract permits zero progress, so this deadline
+alone establishes no strict return-time bound.
+`CONFIG SET maxclients` changes admission for subsequent connections;
+lowering it below the current count leaves every existing client connected.
+The pinned Whitefoot host APIs have no resource-limit facility, so firn
+leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
+`maxclients` at startup or refuse `CONFIG SET` solely because the operating
+system cannot supply enough descriptors; Redis can also refuse its event
+loop's capacity adjustment. The configured application limit does not
+promise descriptor availability. Host accept errors retain their existing
+handling: any `accept` error, descriptor exhaustion included, ends the accept
+loop and stops firn with exit status 0 (see the
+[safety boundaries](../docs/safety.md)).
 
 The interim path rules follow owner card `firn-q-ops-paths-interim` while
 Whitefoot's path support is tracked by `firn-req-host-paths`. Configuration
@@ -525,7 +556,7 @@ also stops startup with status 1 and a cannot-open diagnostic.
 
 Common Redis configuration directives still refused include `daemonize`,
 `supervised`, `pidfile`, `loglevel`, `logfile`, `databases`, `save`,
-`appendfsync`, `protected-mode`, `tcp-backlog`, `tcp-keepalive`, `maxclients`
+`appendfsync`, `protected-mode`, `tcp-backlog`, `tcp-keepalive`
 and `aof-use-rdb-preamble`. Their default values receive no special
 acceptance in this version.
 

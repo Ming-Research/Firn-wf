@@ -11,6 +11,12 @@ Nodes: firn/enumeration, firn/scripts
 
 Summary: SSCAN, HSCAN and ZSCAN walked a large collection whole in one held statement because the standard library's hash map could not resume a scan. With Whitefoot's `hash_map_scan` a collection above Redis's default listpack limits (128 members of a set or sorted set, 512 hash fields, 64 bytes each) is walked in steps of COUNT home buckets from a cursor that is a hash-space position, a sorted set through its member-to-score map; a smaller one still comes back whole with cursor zero. The script rollback decision keeps its logical copy: the new cursor does not depend on the backing a restore rebuilds, so its stated reason and its reopen condition change, not the decision. Replaced: the provisional whole-collection decision for SSCAN, HSCAN and ZSCAN.
 
+## 2026-10-13 Limit concurrent clients with maxclients
+
+Nodes: firn/startup
+
+Summary: firn had no connection limit and rejected_connections stayed 0. The limit now follows Redis, with the one difference that the operator raises `ulimit -n` since firn cannot. Accept errors, descriptor exhaustion included, keep their existing handling, which ends the accept loop and stops firn; Redis logs them and keeps serving, which firn does not yet; that belongs to the separate accept-error change.
+
 ## 2026-10-13 Start firn the way redis-server does
 
 Nodes: firn/startup, firn/measurement-sessions
