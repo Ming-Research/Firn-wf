@@ -79,9 +79,7 @@ fn log_message_number(message: &Box<Slots<u8>>, number: u64) -> result: unit wri
       break;
     }
     set count = count - 1_u64;
-    if count < 20_u64 {
-      log_message_byte(message: message, byte: digits[count]);
-    }
+    log_message_byte(message: message, byte: digits[count]);
   }
   return unit;
 }
