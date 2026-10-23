@@ -215,7 +215,7 @@ that twice: it put the names of nine publish/subscribe commands, compared by
 nine inlined `name_is` loops, at the head of `command_kind` and of `execute`,
 which grows the functions every command passes through (S1: 7%), and it added
 the subscriber checks (S2) and the promotion check in `serve` (S3), 1-2% each,
-which cannot go. The slowdown of the cheap commands is the sum; the larger
+which are the subscriber feature and cannot go, only be made cheap. The slowdown of the cheap commands is the sum; the larger
 cost of `lrange_100` in `after` that the main line lost again (see P1) is
 probably the same kind of effect, in the runtime's entry lock (deduced, not
 tested).
@@ -241,7 +241,15 @@ move it by several percent again.
    (pubsub-throughput.md: 350 thousand deliveries a second), but a later
    change that makes a publication cheap should classify once and route by
    kind.
-3. S2 and S3 stay.
+3. S2: `execute_client` checks subscriber mode only in the promoted owner's
+   instance (`promoted` is a compile-time argument), and `admission_arity`
+   tries the publish/subscribe kinds after the ordinary ones, as
+   `command_kind` does. The ordinary owner hands a connection over at its first
+   successful subscription (`design/firn/connection-ownership.md`), so no
+   connection it serves holds a subscription when it executes a command and
+   the check could never be true there. Added after P3 (below), which found
+   `set` still wholly on the slower side with S1 and the tables fixed.
+4. S3 stays until P4 says it matters.
 
 ### Run P3: the fix, probe
 
@@ -259,3 +267,68 @@ to the rate of `before`, and which of its parts does it?
   is wholly on the slower side for any test; S2 and S3 would then need work of
   their own. `f1`/`main` and `f123`/`f1` give the part of each step; a part
   whose interval holds 1 does nothing measurable and is questioned in review.
+
+### P3 results
+
+Run 39925638103 (`compare`, the images of the criteria above, 6 passes of 5 s,
+depth 16, servers on CPUs 2 and 4, clients on 16-31; the check workflow was
+green on `a822d89`, run 39910958865). No sample was client-limited (client busy
+fraction at most 0.64). Server CPU time per request, mean of 6 passes, in
+microseconds:
+
+| test | before | main | main-twin | f1 | f123 |
+|---|---|---|---|---|---|
+| `get` | 0.2560 | 0.2742 | 0.2747 | 0.2358 | 0.2338 |
+| `set` | 0.3007 | 0.3162 | 0.3183 | 0.3102 | 0.3110 |
+| `ping_mbulk` | 0.2333 | 0.2523 | 0.2522 | 0.2112 | 0.2105 |
+| `lrange_100` | 1.1857 | 1.1997 | 1.2077 | 1.1665 | 1.1693 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 6 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` | `ping_mbulk` | `lrange_100` |
+|---|---|---|---|---|
+| main / before | 0.933 (0.927-0.940) | 0.951 (0.941-0.962) | 0.925 (0.921-0.929) | 0.986 (0.980-0.997) |
+| main-twin / main | 0.998 (0.994-1.002) | 0.995 (0.985-1.001) | 0.998 (0.992-1.010) | 0.994 (0.988-0.999) |
+| f1 / main (tables) | 1.161 (1.157-1.168) | 1.018 (1.013-1.025) | 1.192 (1.185-1.205) | 1.029 (1.020-1.037) |
+| f123 / f1 (names last) | 1.009 (1.002-1.015) | 0.997 (0.993-1.001) | 1.005 (0.996-1.011) | 0.997 (0.996-0.9995) |
+| f1 / before | 1.085 (1.077-1.094) | 0.969 (0.962-0.976) | 1.104 (1.099-1.111) | 1.016 (1.010-1.023) |
+| f123 / before | 1.094 (1.087-1.103) | 0.968 (0.957-0.977) | 1.110 (1.104-1.113) | 1.013 (1.010-1.018) |
+
+- By the criterion written above the fix is insufficient: `f123`/`before` is
+  wholly on the slower side for `set` (3.2% more CPU per request than
+  `before`), and wholly on the faster side for the other three. The rate ratio
+  agrees: `set` 0.969 (0.951-0.981), `get` 1.099 (1.063-1.115), `ping_mbulk`
+  1.109 (1.103-1.113), `lrange_100` 1.005 (0.984-1.025).
+- The tables carry almost all of the gain: `get` and `ping_mbulk` are 8% and
+  10% below `before` in CPU per request with the tables alone; the order of the
+  names adds 0.9% on `get` and nothing measurable elsewhere (the 0.3% on
+  `lrange_100` is inside `main-twin`/`main`, 0.6%). The tables gain `set` only
+  1.8%, against the 5% that `main` lost, of which P2 put 2.0% in S2 and 0.8%
+  in S3: what is left of `set` is S2 and S3.
+- Noise: `main-twin`/`main` holds 1 for three tests, and is 0.6% slower for
+  `lrange_100`.
+
+### Run P4: S2 reduced, probe
+
+Written before P4 runs. The question: does gating the subscriber checks by
+the owner (fix item 3) bring `set` to the rate of `before`, and is S3, which
+stays, what is left if it does not?
+
+- **Images.** `before` (`00e2bd1`), `main` (`7f8b4f8`), `main-twin`, `f123`
+  (`7a584d4`, the tables and the order of the names: P3's last image) and `f4`
+  (the head of the pull request: also the S2 change); and `f4s3`, an
+  experiment image that no pull request merges: `f4` without the promotion to
+  the subscriber loop in `serve` (the change of V4), on the branch
+  `firn-pubsub-cmd-regression-exp2`, to locate S3 should `f4` fall short.
+- **Settings and measure.** As P3.
+- **Reading.** The fix works when `f4`/`before` is wholly on the faster side
+  or holds 1 for every test. If it is wholly on the slower side for any test,
+  `f4s3`/`f4` says how much of it S3 is: an interval wholly on the faster side
+  places the rest in S3 (and `f4s3`/`before` must then hold 1 or be faster,
+  or the rest is not S3 either); one that holds 1 leaves the rest unlocated
+  and the profile of `set` is read for where. `f4`/`f123` gives the part of the
+  S2 change: P2 measured S2 at 2.0% for `set` and 1.5% for `ping_mbulk`, so an
+  interval of `f4`/`f123` that holds 1 for `set` means the change does nothing
+  measurable and is questioned in review. `main-twin`/`main` is the noise of
+  the run, as before.
