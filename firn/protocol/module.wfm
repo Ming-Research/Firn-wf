@@ -59,10 +59,6 @@ public struct Client {
   public lfu_log_factor: u64;
   public lfu_decay_time: u64;
   public id: u64;
-  public pubsub_id: u64;
-  public sub: u64;
-  public psub: u64;
-  public ssub: u64;
   public name: Bytes;
   public authenticated: Bool;
   public locked: Bool;
@@ -72,6 +68,10 @@ public struct Client {
   public since_us: u64;
   public settings: Settings;
   public seen_peak: u64;
+  public pubsub_id: u64;
+  public sub: u64;
+  public psub: u64;
+  public ssub: u64;
 }
 
 public fn parse_request(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, locked: Bool) -> parsed: Parsed writes(input), writes(args) doc "Reads one request from a position of the input, of which held bytes are filled: a RESP array of bulk strings, or an inline command split as Redis splits one, quotes and escapes included. A command's arguments replace what args held, one span each; an inline command's decoded arguments are written back into the input over its line. locked is true for a client that must authenticate first, whose arrays Redis limits.";
