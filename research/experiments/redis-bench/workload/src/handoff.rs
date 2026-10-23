@@ -427,17 +427,22 @@ mod tests {
             let mut senders = Vec::new();
             let delivered = Arc::new(Mutex::new(vec![0u64; consumers]));
             let mut workers = Vec::new();
+            let mut refused = Vec::new();
             for slot in 0..consumers {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 super::super::tests::expect_command(&mut socket, &[b"BLPOP", &key(slot), b"0"]);
+                // Every consumer's BLPOP is refused; the client stops at the
+                // first reply it reads and never connects a producer.
                 if fault == Fault::Unsupported {
                     socket.write_all(b"-ERR unknown command 'BLPOP', with args beginning with: 'bench:q:0' '0' \r\n").unwrap();
-                    return;
+                    refused.push(socket);
+                    continue;
                 }
                 if fault == Fault::Refused {
                     socket.write_all(b"-NOPERM no permission\r\n").unwrap();
-                    return;
+                    refused.push(socket);
+                    continue;
                 }
                 let (tx, rx) = mpsc::channel::<Vec<u8>>();
                 senders.push(tx);
@@ -467,6 +472,14 @@ mod tests {
                     let mut sink = [0; 64];
                     while matches!(socket.read(&mut sink), Ok(n) if n > 0) {}
                 }));
+            }
+            if !refused.is_empty() {
+                // Wait for the client to close the sockets, as a server would.
+                let mut sink = [0; 64];
+                for socket in &mut refused {
+                    while matches!(socket.read(&mut sink), Ok(n) if n > 0) {}
+                }
+                return;
             }
             let (mut producer, _) = listener.accept().unwrap();
             let mut counts = vec![0u64; consumers];
