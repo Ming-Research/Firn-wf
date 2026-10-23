@@ -257,11 +257,11 @@ fn keys_finish(client: &Client, found: &KeySet) -> result: unit reads(found), wr
   return unit;
 }
 
-fn scan_finish(client: &Client, found: &KeySet, next: u64) -> result: unit reads(found), writes(client) {
+fn reply_scan_cursor(client: &Client, cursor: u64) -> result: unit writes(client) {
   doc "The cursor is an unsigned decimal bulk string, including the upper half of u64.";
   let digits = array_filled::<u8, 20>(value: 0_u8);
   let start = 20_u64;
-  let value = next;
+  let value = cursor;
   loop {
     if start > 0_u64 {
       set start = start -wrap 1_u64;
@@ -276,9 +276,14 @@ fn scan_finish(client: &Client, found: &KeySet, next: u64) -> result: unit reads
       break;
     }
   }
-  reply_array(client: client, count: 2_u64);
   let length = 20_u64 -sat start;
   reply_bulk_input(client: client, input: &digits[0_u64..20_u64], start: start, length: length);
+  return unit;
+}
+
+fn scan_finish(client: &Client, found: &KeySet, next: u64) -> result: unit reads(found), writes(client) {
+  reply_array(client: client, count: 2_u64);
+  reply_scan_cursor(client: client, cursor: next);
   keys_finish(client: client, found: found);
   return unit;
 }

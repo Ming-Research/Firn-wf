@@ -2,6 +2,7 @@ alias Bytes = pkg::bytes::Bytes;
 alias Client = pkg::protocol::Client;
 alias Entry = pkg::store::Entry;
 alias Key = pkg::bytes::Key;
+alias KeyHash = pkg::bytes::KeyHash;
 alias Keyspace = pkg::store::Keyspace;
 alias Rank = pkg::store::Rank;
 alias Span = pkg::protocol::Span;
@@ -11,6 +12,8 @@ alias bytes_length = pkg::bytes::bytes_length;
 alias bytes_new = pkg::bytes::bytes_new;
 alias ceiling = pkg::store::ceiling;
 alias hash_map_each = std::collections::hash_map::hash_map_each;
+alias hash_map_len = std::collections::hash_map::hash_map_len;
+alias hash_map_scan = std::collections::hash_map::hash_map_scan;
 alias name_code = pkg::bytes::name_code;
 alias ordered_map_each = std::collections::ordered_map::ordered_map_each;
 alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
@@ -29,13 +32,19 @@ const code_sscan: u64 = 336102380371_u64;
 
 const code_zscan: u64 = 336102380378_u64;
 
-const collection_scan_zero: Array<u8, 1> = "0";
+const collection_scan_compact_bytes: u64 = 64_u64;
+
+const collection_scan_hash_compact: u64 = 512_u64;
+
+const collection_scan_set_compact: u64 = 128_u64;
+
+const collection_scan_sorted_compact: u64 = 128_u64;
 
 struct CollectionScanVisit {
   pattern: Bytes;
   matching: Bool;
   emitting: Bool;
-  compact_scores: Bool;
+  compact: Bool;
   count: u64;
   client: Client;
 }
@@ -45,6 +54,9 @@ fn collection_scan_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: ScanPlan
   let absent = Span(start: 0_u64, length: 0_u64);
   let no = False();
   let plan = ScanPlan(cursor: 0_u64, count: 10_u64, pattern: absent, matching: no, kind: 0_u64, state: 1_u64);
+  let cursor_span = arg(args: args, index: 2_u64);
+  let parsed = scan_cursor(input: input, span: cursor_span);
+  set plan.cursor = parsed.value;
   let index = 3_u64;
   loop {
     if index >= args^.inner.len {
@@ -83,7 +95,7 @@ fn collection_scan_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: ScanPlan
 }
 
 fn collection_scan_cursor(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> accepted: Bool reads(input), reads(args), writes(client) {
-  doc "The cursor is parsed before lookup, even for a missing or wrong-type key. This provisional full traversal accepts every Redis cursor and terminates with zero.";
+  doc "The cursor is parsed before lookup, even for a missing or wrong-type key. Every Redis cursor is accepted: the library's scan takes any position in the hash space.";
   let span = arg(args: args, index: 2_u64);
   let parsed = scan_cursor(input: input, span: span);
   if parsed.valid {
@@ -119,7 +131,19 @@ fn collection_scan_wanted(env: &CollectionScanVisit, name: &Bytes) -> wanted: Bo
   }
 }
 
+fn collection_scan_narrow(env: &CollectionScanVisit, text: &Bytes) -> result: unit reads(text), writes(env) {
+  doc "Counts a member, field or value against the compact bound: one longer than Redis's default listpack value limit takes the collection out of the compact form for as long as it is there.";
+  let length = bytes_length(bytes: text);
+  if length > collection_scan_compact_bytes {
+    set env^.compact = False();
+  }
+  return unit;
+}
+
 fn collection_scan_member(env: &CollectionScanVisit, key: &Key, value: &unit) -> result: unit reads(key), writes(env) {
+  if bnot(env^.emitting) {
+    collection_scan_narrow(env: env, text: &key^.bytes);
+  }
   if collection_scan_wanted(env: env, name: &key^.bytes) {
     if env^.emitting {
       reply_text(client: &env^.client, text: &key^.bytes);
@@ -131,6 +155,10 @@ fn collection_scan_member(env: &CollectionScanVisit, key: &Key, value: &unit) ->
 }
 
 fn collection_scan_field(env: &CollectionScanVisit, key: &Key, value: &Bytes) -> result: unit reads(key), reads(value), writes(env) {
+  if bnot(env^.emitting) {
+    collection_scan_narrow(env: env, text: &key^.bytes);
+    collection_scan_narrow(env: env, text: value);
+  }
   if collection_scan_wanted(env: env, name: &key^.bytes) {
     if env^.emitting {
       reply_text(client: &env^.client, text: &key^.bytes);
@@ -143,25 +171,17 @@ fn collection_scan_field(env: &CollectionScanVisit, key: &Key, value: &Bytes) ->
 }
 
 fn collection_scan_rank(env: &CollectionScanVisit, key: &Rank, value: &unit) -> result: unit reads(key), writes(env) {
-  doc "ZSCAN scores remain bulk strings under RESP3 too. Before emission every member, including those excluded by MATCH, contributes to the current-size classification: at most 128 members and every member at most 64 bytes uses the compact writer, otherwise %.17g.";
+  doc "The whole-collection ZSCAN of a compact sorted set, in score order, with the d2string text of Redis's listpack scan. Scores remain bulk strings under RESP3 too. Before emission every member, including those excluded by MATCH, contributes to the compact classification.";
   if bnot(env^.emitting) {
-    let length = bytes_length(bytes: &key^.member.bytes);
-    if length > 64_u64 {
-      set env^.compact_scores = False();
-    }
+    collection_scan_narrow(env: env, text: &key^.member.bytes);
   }
   if collection_scan_wanted(env: env, name: &key^.member.bytes) {
     if env^.emitting {
       reply_text(client: &env^.client, text: &key^.member.bytes);
-      if env^.compact_scores {
-        let compact = box_slots_new::<u8>(capacity: 32_u64);
-        pkg::scores::append_double_text(out: &compact, x: key^.score);
-        let length = compact.inner.len;
-        reply_bulk_input(client: &env^.client, input: &compact.inner[0_u64..length], start: 0_u64, length: length);
-      } else {
-        let precise = pkg::scores::score_bytes_17g(score: key^.score);
-        reply_text(client: &env^.client, text: &precise);
-      }
+      let compact = box_slots_new::<u8>(capacity: 32_u64);
+      pkg::scores::append_double_text(out: &compact, x: key^.score);
+      let length = compact.inner.len;
+      reply_bulk_input(client: &env^.client, input: &compact.inner[0_u64..length], start: 0_u64, length: length);
     } else {
       set env^.count = env^.count +wrap 2_u64;
     }
@@ -169,20 +189,44 @@ fn collection_scan_rank(env: &CollectionScanVisit, key: &Rank, value: &unit) -> 
   return unit;
 }
 
-fn collection_scan_header(client: &Client, count: u64) -> result: unit writes(client) {
+fn collection_scan_score(env: &CollectionScanVisit, key: &Key, value: &f64) -> result: unit reads(key), reads(value), writes(env) {
+  doc "A step of the bounded ZSCAN of a sorted set that is not compact, over its member-to-score map: the %.17g text of Redis's dictionary scan, a bulk string under RESP3 too.";
+  if collection_scan_wanted(env: env, name: &key^.bytes) {
+    if env^.emitting {
+      reply_text(client: &env^.client, text: &key^.bytes);
+      let precise = pkg::scores::score_bytes_17g(score: value^);
+      reply_text(client: &env^.client, text: &precise);
+    } else {
+      set env^.count = env^.count +wrap 2_u64;
+    }
+  }
+  return unit;
+}
+
+fn collection_scan_header(client: &Client, cursor: u64, count: u64) -> result: unit writes(client) {
   reply_array(client: client, count: 2_u64);
-  reply_bulk_input(client: client, input: &collection_scan_zero[0_u64..1_u64], start: 0_u64, length: 1_u64);
+  reply_scan_cursor(client: client, cursor: cursor);
   reply_array(client: client, count: count);
   return unit;
 }
 
+fn collection_scan_limit(count: u64) -> limit: u64 pure contract {
+  ensures limit > 0_u64;
+} {
+  doc "COUNT is at least one once the options are accepted; the check carries that to the obligation of hash_map_scan's limit.";
+  if count > 0_u64 {
+    return count;
+  }
+  return 1_u64;
+}
+
 fn collection_scan_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, client: &Client, expected: u64) -> lapsed: Bool reads(access_key), reads(input), reads(args), writes(sequence), writes(journal), writes(slot), writes(client) {
-  doc "Collection scans follow firn's existing element order and return every matching element with cursor zero. coord-wfbl-02-01 tracks the missing std HashMap resumable scan: above Redis's compact thresholds this path is unbounded work per call, to be replaced when that interface exists. Both traversals share this entry hold, so their counts and replies describe one collection.";
+  doc "A compact collection (at most 128 members of a set or sorted set, or 512 fields of a hash, none of them nor a hash value longer than 64 bytes) is returned whole with cursor zero whatever cursor and COUNT arrive, as Redis returns its listpack encodings. A larger one takes one hash_map_scan step of COUNT home buckets from the cursor, a sorted set through its member-to-score map. Both traversals of a reply share this entry hold, so their counts and replies describe one collection.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let kind = entry_kind(sequence: sequence, capture_key: access_key, slot: slot, client: client);
   let removed = client^.state == state_expired;
   if kind == 0_u64 {
-    collection_scan_header(client: client, count: 0_u64);
+    collection_scan_header(client: client, cursor: 0_u64, count: 0_u64);
     return removed;
   }
   if kind != expected {
@@ -197,30 +241,66 @@ fn collection_scan_body(sequence: &pkg::store::WriteSequence, journal: &Option<p
   let pattern = bytes_new(input: input, start: plan.pattern.start, length: plan.pattern.length);
   let temporary_client = pkg::protocol::client_new(capacity: 0_u64);
   let no = False();
-  let visit = CollectionScanVisit(pattern: move pattern, matching: plan.matching, emitting: no, compact_scores: no, count: 0_u64, client: move temporary_client);
+  let limit = collection_scan_limit(count: plan.count);
+  let keys = client^.keys;
+  let visit = CollectionScanVisit(pattern: move pattern, matching: plan.matching, emitting: no, compact: no, count: 0_u64, client: move temporary_client);
   swap(first: client, second: &visit.client);
   match slot^ {
     Some(value: held) => {
       match held^.value {
         Members(members: set_of) => {
-          hash_map_each::<Key, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, env: &visit);
-          collection_scan_header(client: &visit.client, count: visit.count);
-          set visit.emitting = True();
-          hash_map_each::<Key, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, env: &visit);
+          let size = hash_map_len::<Key, unit, ceiling>(map: set_of);
+          if size <= collection_scan_set_compact {
+            set visit.compact = True();
+            hash_map_each::<Key, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, env: &visit);
+          }
+          if visit.compact {
+            collection_scan_header(client: &visit.client, cursor: 0_u64, count: visit.count);
+            set visit.emitting = True();
+            hash_map_each::<Key, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, env: &visit);
+          } else {
+            set visit.count = 0_u64;
+            let next = hash_map_scan::<KeyHash, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, cursor: plan.cursor, limit: limit, key_env: &keys, visit_env: &visit);
+            collection_scan_header(client: &visit.client, cursor: next, count: visit.count);
+            set visit.emitting = True();
+            let again = hash_map_scan::<KeyHash, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, cursor: plan.cursor, limit: limit, key_env: &keys, visit_env: &visit);
+          }
         }
         Fields(fields: hash_of) => {
-          hash_map_each::<Key, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, env: &visit);
-          collection_scan_header(client: &visit.client, count: visit.count);
-          set visit.emitting = True();
-          hash_map_each::<Key, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, env: &visit);
+          let size = hash_map_len::<Key, Bytes, ceiling>(map: hash_of);
+          if size <= collection_scan_hash_compact {
+            set visit.compact = True();
+            hash_map_each::<Key, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, env: &visit);
+          }
+          if visit.compact {
+            collection_scan_header(client: &visit.client, cursor: 0_u64, count: visit.count);
+            set visit.emitting = True();
+            hash_map_each::<Key, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, env: &visit);
+          } else {
+            set visit.count = 0_u64;
+            let next = hash_map_scan::<KeyHash, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, cursor: plan.cursor, limit: limit, key_env: &keys, visit_env: &visit);
+            collection_scan_header(client: &visit.client, cursor: next, count: visit.count);
+            set visit.emitting = True();
+            let again = hash_map_scan::<KeyHash, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, cursor: plan.cursor, limit: limit, key_env: &keys, visit_env: &visit);
+          }
         }
         Ranked(ranked: sorted) => {
           let cardinality = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
-          set visit.compact_scores = cardinality <= 128_u64;
-          ordered_map_each::<Rank, unit, CollectionScanVisit, fn collection_scan_rank, ceiling>(map: &sorted^.order, env: &visit);
-          collection_scan_header(client: &visit.client, count: visit.count);
-          set visit.emitting = True();
-          ordered_map_each::<Rank, unit, CollectionScanVisit, fn collection_scan_rank, ceiling>(map: &sorted^.order, env: &visit);
+          if cardinality <= collection_scan_sorted_compact {
+            set visit.compact = True();
+            ordered_map_each::<Rank, unit, CollectionScanVisit, fn collection_scan_rank, ceiling>(map: &sorted^.order, env: &visit);
+          }
+          if visit.compact {
+            collection_scan_header(client: &visit.client, cursor: 0_u64, count: visit.count);
+            set visit.emitting = True();
+            ordered_map_each::<Rank, unit, CollectionScanVisit, fn collection_scan_rank, ceiling>(map: &sorted^.order, env: &visit);
+          } else {
+            set visit.count = 0_u64;
+            let next = hash_map_scan::<KeyHash, f64, CollectionScanVisit, fn collection_scan_score, ceiling>(map: &sorted^.scores, cursor: plan.cursor, limit: limit, key_env: &keys, visit_env: &visit);
+            collection_scan_header(client: &visit.client, cursor: next, count: visit.count);
+            set visit.emitting = True();
+            let again = hash_map_scan::<KeyHash, f64, CollectionScanVisit, fn collection_scan_score, ceiling>(map: &sorted^.scores, cursor: plan.cursor, limit: limit, key_env: &keys, visit_env: &visit);
+          }
         }
         Text(..) => {
         }

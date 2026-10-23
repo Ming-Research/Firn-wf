@@ -1,8 +1,8 @@
 //! Redis 7.2.16 src/db.c scanGenericCommand/parseScanCursorOrReply and
 //! t_set.c/t_hash.c/t_zset.c command wrappers define these expectations.
-//! Collection order and dict cursor positions are deliberately not compared:
-//! design/firn/enumeration.md selects firn's order and one complete batch.
-//! coord-wfbl-02-01 replaces the unbounded large-collection path later.
+//! Collection order and the values of dict cursors are deliberately not
+//! compared: design/firn/enumeration.md selects firn's order, whole replies for
+//! compact collections and Whitefoot's hash-position cursor for larger ones.
 //! Recorder inputs for the literal Redis transcripts below live in
 //! collection-scan-oracle.json; RESP selection is outside each transcript.
 
@@ -104,23 +104,61 @@ fn bulk(bytes: &mut &[u8]) -> Vec<u8> {
     value
 }
 
-fn items(reply: &[u8]) -> Vec<Vec<u8>> {
+/// Splits one scan reply into its cursor and its items.
+fn parts(reply: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let mut remaining = reply;
     assert_eq!(line(&mut remaining), b"*2", "SCAN outer reply: {reply:?}");
-    assert_eq!(bulk(&mut remaining), b"0", "one complete batch must terminate");
+    let cursor = bulk(&mut remaining);
     let header = line(&mut remaining);
     assert_eq!(header[0], b'*', "SCAN inner array in both protocols");
     let length = std::str::from_utf8(&header[1..]).unwrap().parse::<usize>().unwrap();
     let result = (0..length).map(|_| bulk(&mut remaining)).collect();
     assert!(remaining.is_empty(), "trailing bytes: {remaining:?}");
+    (cursor, result)
+}
+
+/// The items of a reply that must be the whole collection: cursor zero.
+fn items(reply: &[u8]) -> Vec<Vec<u8>> {
+    let (cursor, result) = parts(reply);
+    assert_eq!(cursor, b"0", "a compact collection comes back whole, with cursor zero");
     result
+}
+
+/// Follows a scan from cursor zero to cursor zero, with `options` after the
+/// cursor; returns every item in the order received and each call's item count.
+fn scan_all(client: &mut TcpStream, scan: &str, key: &str, options: &[&str]) -> (Vec<Vec<u8>>, Vec<usize>) {
+    let mut cursor = b"0".to_vec();
+    let mut all = Vec::new();
+    let mut sizes = Vec::new();
+    for _ in 0..200_000 {
+        let text = String::from_utf8(cursor.clone()).expect("decimal cursor");
+        let mut args = vec![scan, key, text.as_str()];
+        args.extend_from_slice(options);
+        let (next, got) = parts(&request(client, &args));
+        sizes.push(got.len());
+        all.extend(got);
+        if next == b"0" {
+            return (all, sizes);
+        }
+        cursor = next;
+    }
+    panic!("{scan} {key} did not reach cursor zero");
+}
+
+/// Items grouped by `width` (1 for a set, 2 for a hash or sorted set) and
+/// sorted, so that two scans compare without regard to order.
+fn grouped(flat: &[Vec<u8>], width: usize) -> Vec<Vec<Vec<u8>>> {
+    assert_eq!(flat.len() % width, 0, "items come in groups of {width}");
+    let mut groups: Vec<Vec<Vec<u8>>> = flat.chunks(width).map(|group| group.to_vec()).collect();
+    groups.sort();
+    groups
 }
 
 fn assert_members(reply: &[u8], expected: &[Vec<u8>]) {
     let mut actual = items(reply);
     let mut expected = expected.to_vec();
     actual.sort(); expected.sort();
-    assert_eq!(actual, expected, "every member exactly once in this whole-return policy");
+    assert_eq!(actual, expected, "every member exactly once");
 }
 
 fn assert_pairs(reply: &[u8], expected: &[(Vec<u8>, Vec<u8>)]) {
@@ -224,20 +262,22 @@ fn seed_scores(client: &mut TcpStream) {
 /// Every direct probe checks the recorded bulk frame, including all six score
 /// spellings. EXEC and Lua also check the three spellings that distinguish the
 /// writers. MATCH hides each boundary trigger, so classification must inspect
-/// the whole current zset before filtering.
-fn assert_score_probes(client: &mut TcpStream, expected: &[&[u8]; 6]) {
+/// the whole current zset before filtering. A compact sorted set ignores COUNT;
+/// above the compact bound COUNT must reach every bucket for the one call to
+/// hold the whole answer, so each probe passes the COUNT its form needs.
+fn assert_score_probes(client: &mut TcpStream, expected: &[&[u8]; 6], count: &str) {
     for (member, reply) in SCORE_MEMBERS.iter().zip(expected) {
-        assert_eq!(request(client, &["ZSCAN", "scan:scores", "0", "MATCH", member, "COUNT", "1"]), *reply, "score for {member}");
+        assert_eq!(request(client, &["ZSCAN", "scan:scores", "0", "MATCH", member, "COUNT", count]), *reply, "score for {member}");
     }
     assert_eq!(request(client, &["MULTI"]), b"+OK\r\n");
     let mut replies = b"*3\r\n".to_vec();
     for index in [0, 1, 5] {
-        assert_eq!(request(client, &["ZSCAN", "scan:scores", "0", "MATCH", SCORE_MEMBERS[index]]), b"+QUEUED\r\n");
+        assert_eq!(request(client, &["ZSCAN", "scan:scores", "0", "MATCH", SCORE_MEMBERS[index], "COUNT", count]), b"+QUEUED\r\n");
         replies.extend_from_slice(expected[index]);
     }
     assert_eq!(request(client, &["EXEC"]), replies);
     for index in [0, 1, 5] {
-        assert_eq!(request(client, &["EVAL", "return redis.call('ZSCAN',KEYS[1],0,'MATCH',ARGV[1])", "1", "scan:scores", SCORE_MEMBERS[index]]), expected[index]);
+        assert_eq!(request(client, &["EVAL", "return redis.call('ZSCAN',KEYS[1],0,'MATCH',ARGV[1],'COUNT',ARGV[2])", "1", "scan:scores", SCORE_MEMBERS[index], count]), expected[index]);
     }
 }
 
@@ -252,14 +292,14 @@ fn zscan_score_text_uses_current_cardinality_before_match() {
             assert_eq!(request(&mut client, &["ZADD", "scan:scores", "3", &member]), b":1\r\n");
         }
         assert_eq!(request(&mut client, &["ZCARD", "scan:scores"]), b":128\r\n");
-        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES);
+        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES, "1");
         assert_eq!(request(&mut client, &["ZADD", "scan:scores", "3", "overflow"]), b":1\r\n");
         assert_eq!(request(&mut client, &["ZCARD", "scan:scores"]), b":129\r\n");
-        assert_score_probes(&mut client, &DICT_SCORE_REPLIES);
+        assert_score_probes(&mut client, &DICT_SCORE_REPLIES, "100000");
         // This is the proposed divergence from Redis's persistent skiplist:
         // firn switches back at 128 without retaining any encoding history.
         assert_eq!(request(&mut client, &["ZREM", "scan:scores", "overflow"]), b":1\r\n");
-        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES);
+        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES, "1");
         drop(client); assert_eq!(finished(child).0, 0);
     }
 }
@@ -272,11 +312,11 @@ fn zscan_score_text_uses_current_member_length_before_match() {
         let within = "m".repeat(64);
         let beyond = "é".repeat(32) + "x"; // 65 bytes, only 33 characters.
         assert_eq!(request(&mut client, &["ZADD", "scan:scores", "3", &within]), b":1\r\n");
-        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES);
+        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES, "1");
         assert_eq!(request(&mut client, &["ZADD", "scan:scores", "3", &beyond]), b":1\r\n");
-        assert_score_probes(&mut client, &DICT_SCORE_REPLIES);
+        assert_score_probes(&mut client, &DICT_SCORE_REPLIES, "100000");
         assert_eq!(request(&mut client, &["ZREM", "scan:scores", &beyond]), b":1\r\n");
-        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES);
+        assert_score_probes(&mut client, &COMPACT_SCORE_REPLIES, "1");
         drop(client); assert_eq!(finished(child).0, 0);
     }
 }
@@ -377,15 +417,37 @@ fn binary_match_filters_members_and_fields_not_values() {
     }
 }
 
-/// COUNT remains a hint: compact collections return everything. Above Redis's
-/// compact thresholds, the proposed whole-return policy has the same coverage
-/// guarantee but unbounded work (coord-wfbl-02-01). No dict order is asserted.
+/// One collection at one size. A compact collection is one call with cursor
+/// zero even at COUNT 1. A larger one cannot finish at COUNT 1, so its first
+/// reply carries a nonzero cursor, and following the cursor returns every
+/// member exactly once while nothing changes.
+fn assert_scan(client: &mut TcpStream, scan: &str, key: &str, compact: bool, expected: &[Vec<u8>], width: usize) {
+    let (cursor, first) = parts(&request(client, &[scan, key, "0", "COUNT", "1"]));
+    if compact {
+        assert_eq!(cursor, b"0", "{scan} {key}: a compact collection ignores COUNT");
+        assert_eq!(grouped(&first, width), grouped(expected, width), "{scan} {key}: compact whole");
+    } else {
+        assert_ne!(cursor, b"0".to_vec(), "{scan} {key}: a larger collection continues");
+        if expected.len() > 16 {
+            assert!(first.len() < expected.len(), "{scan} {key}: one step must not hold the collection");
+        }
+    }
+    let (all, _) = scan_all(client, scan, key, &["COUNT", "16"]);
+    assert_eq!(grouped(&all, width), grouped(expected, width), "{scan} {key}: every member once");
+}
+
+/// Compact bounds are Redis's default listpack limits: 128 members of a set or
+/// sorted set, 512 fields of a hash, each at most 64 bytes, a hash's values too.
+/// firn applies them to the current content, with no encoding history, and
+/// treats an all-integer set as it treats any other set.
 #[test]
-fn complete_batches_at_size_and_length_boundaries() {
+fn compact_collections_return_whole_and_larger_ones_scan_in_steps() {
     for protocol in [2, 3] {
         let (child, mut client) = start(protocol);
-        let mut names = Vec::new();
-        let mut integers = Vec::new();
+        let mut members: Vec<Vec<u8>> = Vec::new();
+        let mut integers: Vec<Vec<u8>> = Vec::new();
+        let mut pairs: Vec<Vec<u8>> = Vec::new();
+        let mut scored: Vec<Vec<u8>> = Vec::new();
         for index in 0..513 {
             let member = format!("m{index:03}");
             let integer = index.to_string();
@@ -394,27 +456,195 @@ fn complete_batches_at_size_and_length_boundaries() {
             request(&mut client, &["SADD", "many:i", &integer]);
             request(&mut client, &["HSET", "many:h", &member, &value]);
             request(&mut client, &["ZADD", "many:z", "3", &member]);
-            names.push((member.as_bytes().to_vec(), value.as_bytes().to_vec()));
+            members.push(member.as_bytes().to_vec());
             integers.push(integer.into_bytes());
-            if [1, 128, 129, 512, 513].contains(&(index + 1)) {
-                let members: Vec<_> = names.iter().map(|(member, _)| member.clone()).collect();
-                assert_members(&request(&mut client, &["SSCAN", "many:s", "0", "COUNT", "1"]), &members);
-                assert_members(&request(&mut client, &["SSCAN", "many:i", "0", "COUNT", "1"]), &integers);
-                assert_pairs(&request(&mut client, &["HSCAN", "many:h", "0", "COUNT", "1"]), &names);
-                let scores: Vec<_> = members.iter().map(|member| (member.clone(), b"3".to_vec())).collect();
-                assert_pairs(&request(&mut client, &["ZSCAN", "many:z", "0", "COUNT", "1"]), &scores);
+            pairs.push(member.as_bytes().to_vec());
+            pairs.push(value.into_bytes());
+            scored.push(member.as_bytes().to_vec());
+            scored.push(b"3".to_vec());
+            let size = index + 1;
+            if [1, 128, 129, 512, 513].contains(&size) {
+                assert_scan(&mut client, "SSCAN", "many:s", size <= 128, &members, 1);
+                assert_scan(&mut client, "SSCAN", "many:i", size <= 128, &integers, 1);
+                assert_scan(&mut client, "HSCAN", "many:h", size <= 512, &pairs, 2);
+                assert_scan(&mut client, "ZSCAN", "many:z", size <= 128, &scored, 2);
             }
         }
+        // 64 bytes keeps a collection compact, 65 does not, in a member or
+        // field and also in a hash's value.
         for length in [64, 65] {
             let member = "m".repeat(length);
             let value = "v".repeat(length);
-            request(&mut client, &["DEL", "long:s", "long:h", "long:z"]);
+            request(&mut client, &["DEL", "long:s", "long:h", "long:v", "long:z"]);
             request(&mut client, &["SADD", "long:s", &member]);
-            request(&mut client, &["HSET", "long:h", &member, &value]);
+            request(&mut client, &["HSET", "long:h", &member, "v"]);
+            request(&mut client, &["HSET", "long:v", "f", &value]);
             request(&mut client, &["ZADD", "long:z", "3", &member]);
-            assert_members(&request(&mut client, &["SSCAN", "long:s", "0", "COUNT", "1"]), &[member.as_bytes().to_vec()]);
-            assert_pairs(&request(&mut client, &["HSCAN", "long:h", "0", "COUNT", "1"]), &[(member.as_bytes().to_vec(), value.into_bytes())]);
-            assert_pairs(&request(&mut client, &["ZSCAN", "long:z", "0", "COUNT", "1"]), &[(member.into_bytes(), b"3".to_vec())]);
+            let compact = length == 64;
+            assert_scan(&mut client, "SSCAN", "long:s", compact, &[member.as_bytes().to_vec()], 1);
+            assert_scan(&mut client, "HSCAN", "long:h", compact, &[member.as_bytes().to_vec(), b"v".to_vec()], 2);
+            assert_scan(&mut client, "HSCAN", "long:v", compact, &[b"f".to_vec(), value.into_bytes()], 2);
+            assert_scan(&mut client, "ZSCAN", "long:z", compact, &[member.into_bytes(), b"3".to_vec()], 2);
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// A large collection is followed in many small steps, each as large as COUNT
+/// says and no larger, and MATCH filters every step.
+#[test]
+fn large_collections_scan_in_bounded_steps() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        let mut members = Vec::new();
+        let mut pairs = Vec::new();
+        let mut scored = Vec::new();
+        for index in 0..2000 {
+            let member = format!("m{index:04}");
+            let value = format!("v{index:04}");
+            request(&mut client, &["SADD", "big:s", &member]);
+            request(&mut client, &["HSET", "big:h", &member, &value]);
+            request(&mut client, &["ZADD", "big:z", "0.1", &member]);
+            members.push(member.as_bytes().to_vec());
+            pairs.push(member.as_bytes().to_vec());
+            pairs.push(value.into_bytes());
+            scored.push(member.into_bytes());
+            // Above the compact bound a sorted set writes scores as %.17g.
+            scored.push(b"0.10000000000000001".to_vec());
+        }
+        for (scan, key, width, expected) in [("SSCAN", "big:s", 1, &members), ("HSCAN", "big:h", 2, &pairs), ("ZSCAN", "big:z", 2, &scored)] {
+            let (all, sizes) = scan_all(&mut client, scan, key, &["COUNT", "20"]);
+            assert_eq!(grouped(&all, width), grouped(expected, width), "{scan}: every member once");
+            assert!(sizes.len() > 20, "{scan}: {} calls is too few for 2000 members at COUNT 20", sizes.len());
+            let most = sizes.iter().map(|size| size / width).max().unwrap();
+            assert!(most < 200, "{scan}: a step of COUNT 20 returned {most} members");
+            // MATCH applies to every step and the cursor still ends at zero.
+            let (matched, _) = scan_all(&mut client, scan, key, &["MATCH", "m19*", "COUNT", "50"]);
+            let want: Vec<Vec<u8>> = expected.chunks(width).filter(|group| group[0].starts_with(b"m19")).flatten().cloned().collect();
+            assert_eq!(grouped(&matched, width), grouped(&want, width), "{scan}: MATCH over steps");
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// Any cursor is accepted; COUNT sizes the step, and a COUNT beyond the table
+/// holds the whole collection with cursor zero, as it does in Redis.
+#[test]
+fn any_cursor_is_accepted_and_count_sizes_the_step() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        for index in 0..1000 {
+            let member = format!("m{index:04}");
+            request(&mut client, &["SADD", "any:s", &member]);
+            request(&mut client, &["HSET", "any:h", &member, "v"]);
+            request(&mut client, &["ZADD", "any:z", "3", &member]);
+        }
+        for (scan, key, width) in [("SSCAN", "any:s", 1), ("HSCAN", "any:h", 2), ("ZSCAN", "any:z", 2)] {
+            for cursor in ["1", "12345", "9223372036854775808", "18446744073709551615"] {
+                let (_, got) = parts(&request(&mut client, &[scan, key, cursor, "COUNT", "10"]));
+                assert!(got.len() / width < 100, "{scan} from {cursor}: {} members for COUNT 10", got.len() / width);
+            }
+            let (cursor, got) = parts(&request(&mut client, &[scan, key, "0", "COUNT", "1000000"]));
+            assert_eq!(cursor, b"0", "{scan}: COUNT beyond the table finishes in one call");
+            assert_eq!(got.len(), 1000 * width, "{scan}: the whole collection");
+            // Nothing changed between two calls from one cursor, so they agree.
+            let (cursor, _) = parts(&request(&mut client, &[scan, key, "0", "COUNT", "10"]));
+            assert_ne!(cursor, b"0".to_vec(), "{scan}: the first of many steps");
+            let text = String::from_utf8(cursor).unwrap();
+            assert_eq!(request(&mut client, &[scan, key, &text, "COUNT", "10"]), request(&mut client, &[scan, key, &text, "COUNT", "10"]), "{scan}: one cursor, one step");
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// Adds or removes one member of the named kind of collection.
+fn change(client: &mut TcpStream, scan: &str, key: &str, add: bool, member: &str) {
+    let command = match (scan, add) {
+        ("SSCAN", true) => vec!["SADD", key, member],
+        ("SSCAN", false) => vec!["SREM", key, member],
+        ("HSCAN", true) => vec!["HSET", key, member, "v"],
+        ("HSCAN", false) => vec!["HDEL", key, member],
+        ("ZSCAN", true) => vec!["ZADD", key, "1", member],
+        _ => vec!["ZREM", key, member],
+    };
+    request(client, &command);
+}
+
+/// The guarantee Redis gives a scan: every member present from the first call
+/// to the last comes back at least once, whatever else is added and removed
+/// between calls, even a burst that makes the table grow and a removal that
+/// leaves vacated buckets for a rebuild. New and removed members may or may not
+/// appear. Each step is as small as COUNT 4 says, so the scan crosses the burst.
+#[test]
+fn members_present_throughout_are_returned_while_the_collection_changes() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        for (scan, key, width) in [("SSCAN", "churn:s", 1), ("HSCAN", "churn:h", 2), ("ZSCAN", "churn:z", 2)] {
+            let kept: Vec<String> = (0..700).map(|index| format!("keep{index:04}")).collect();
+            for member in &kept {
+                change(&mut client, scan, key, true, member);
+            }
+            let mut seen = std::collections::HashSet::new();
+            let mut cursor = "0".to_string();
+            let mut fresh = 0;
+            let mut oldest = 0;
+            let mut burst = Vec::new();
+            for step in 0..200_000 {
+                let (next, got) = parts(&request(&mut client, &[scan, key, &cursor, "COUNT", "4"]));
+                for group in got.chunks(width) {
+                    seen.insert(group[0].clone());
+                }
+                if next == b"0" {
+                    break;
+                }
+                cursor = String::from_utf8(next).unwrap();
+                assert!(step < 199_999, "{scan}: no end in sight");
+                for _ in 0..5 {
+                    change(&mut client, scan, key, true, &format!("fresh{fresh:06}"));
+                    fresh += 1;
+                }
+                for _ in 0..5 {
+                    change(&mut client, scan, key, false, &format!("fresh{oldest:06}"));
+                    oldest += 1;
+                }
+                if step == 3 {
+                    for index in 0..1500 {
+                        let member = format!("burst{index:04}");
+                        change(&mut client, scan, key, true, &member);
+                        burst.push(member);
+                    }
+                }
+                if step == 8 {
+                    for member in burst.drain(..) {
+                        change(&mut client, scan, key, false, &member);
+                    }
+                }
+            }
+            for member in &kept {
+                assert!(seen.contains(member.as_bytes()), "{scan}: {member} was present throughout and never returned");
+            }
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// Scripts follow a large scan across calls in one attempt, for a declared key
+/// and, through the retry with the whole keyspace held, an undeclared one.
+#[test]
+fn scripts_follow_a_large_scan_to_cursor_zero() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        for index in 0..1000 {
+            let member = format!("m{index:04}");
+            request(&mut client, &["SADD", "script:s", &member]);
+            request(&mut client, &["HSET", "script:h", &member, "v"]);
+            request(&mut client, &["ZADD", "script:z", "3", &member]);
+        }
+        let source = "local c='0'; local n=0; repeat local r=redis.call(ARGV[1],ARGV[2],c,'COUNT',20); c=r[1]; n=n+#r[2] until c=='0'; return n";
+        for (scan, key, count) in [("SSCAN", "script:s", 1000), ("HSCAN", "script:h", 2000), ("ZSCAN", "script:z", 2000)] {
+            for declared in [key, "script:other"] {
+                assert_eq!(request(&mut client, &["EVAL", source, "1", declared, scan, key]), format!(":{count}\r\n").as_bytes(), "{scan} with KEYS[1] {declared}");
+            }
         }
         drop(client); assert_eq!(finished(child).0, 0);
     }

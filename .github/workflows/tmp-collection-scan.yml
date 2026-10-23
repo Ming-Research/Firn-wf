@@ -1,0 +1,99 @@
+# Temporary (firn-collection-scan-bounded): builds firn for the network cases
+# and runs only the collection-scan cases, and runs the Redis suite's scan
+# unit, so a fix is answered without the full gate. Removed before the branch
+# is ready.
+name: tmp-collection-scan
+
+on:
+  push:
+
+concurrency:
+  group: tmp-collection-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  network:
+    name: collection-scan network cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Cache the pinned Redis oracle
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build firn for the network cases
+        run: make firn-test
+
+      - name: Run the collection-scan cases
+        run: |
+          redis_bin=$(tests/redis-suite/reference.sh)
+          FIRN=build/firn-test REDIS_SERVER="$redis_bin/redis-server" \
+            cargo test --manifest-path tests/Cargo.toml --locked --test network collection_scan:: -- --show-output
+
+  suite-scan:
+    name: Redis suite unit/scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install the suite's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tcl patch
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis
+        run: tests/redis-suite/reference.sh
+
+      - name: Save the Redis build
+        if: ${{ steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build firn
+        run: make firn
+
+      - name: Run unit/scan
+        run: tests/redis-suite/run.sh --out build/scan-suite --units unit/scan firn build/firn
+
+      - name: Check the scan tests against the ratchet
+        run: |
+          cat build/scan-suite/summary.txt
+          awk -F'\t' '$1 == "unit/scan" || $1 ~ /^#/' tests/redis-suite/passing.tsv > build/scan-suite/passing-scan.tsv
+          python3 -B tests/redis-suite/ratchet.py check build/scan-suite/tests.tsv --passing build/scan-suite/passing-scan.tsv --unstable tests/redis-suite/unstable.tsv
