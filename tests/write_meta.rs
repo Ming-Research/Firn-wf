@@ -10,7 +10,7 @@ fn start(clients: &[u8]) -> (ProgramChild, TcpStream, u16) {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), clients]).with_port(&port_lease);
+    let child = firn().spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[b"--port", text.as_bytes(), b"--firn-clients", clients]).with_port(&port_lease);
     let client = connect_when_ready(port, &child);
     (child, client, port)
 }

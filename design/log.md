@@ -11,6 +11,18 @@ Nodes: firn/reported-facts, firn/transactions
 
 Summary: CLIENT LIST gives other connections only the fields they set themselves, with the subscription counts the event hub already keeps for pub/sub (the decision pubsub-registries records), because the four per-command fields could be shared only by a contended write to the client table on every command; replication and MONITOR, whose suite checks read another connection's flags, are outside firn's supported features. An unreported address is empty as in Redis 7.2.16's genClientAddrString, not the placeholder the parent decision rejects. Redis 7.2.16 queues the CLIENT subcommands, which lack NO_MULTI, and runs them in execCommand, so firn runs them inside EXEC's atomic statement, which also holds the event hub when the queue holds a pub/sub command or CLIENT LIST, instead of refusing their transaction with EXECABORT; changed connection records are published inside that statement so no connection sees new keys with old connection facts. The pinned compiler takes the client table with Meta on every EXEC, so acquiring it only when CLIENT is queued is recorded as not implemented; its cost was not measured, since the run against Redis, Valkey, Dragonfly and Garnet has no base and candidate pairs.
 
+## 2026-10-13 Limit concurrent clients with maxclients
+
+Nodes: firn/startup
+
+Summary: firn had no connection limit and rejected_connections stayed 0. The limit now follows Redis, with the one difference that the operator raises `ulimit -n` since firn cannot. Accept errors, descriptor exhaustion included, keep their existing handling, which ends the accept loop and stops firn; Redis logs them and keeps serving, which firn does not yet; that belongs to the separate accept-error change.
+
+## 2026-10-13 Start firn the way redis-server does
+
+Nodes: firn/startup, firn/measurement-sessions
+
+Summary: firn read no config file, logged nothing and took four positional arguments; an operator replacing redis-server found it treating the config path as a port. It now starts and is configured as redis-server is, with two stated differences (one `bind` address; bare arguments refused) and a temporary path limit that Whitefoot's request for opening ordinary paths removes. The benchmark script chooses the old or new startup form per version so comparisons across the change still run.
+
 ## 2026-10-21 Install a finished AOF rewrite while appends keep failing
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/append-only-file
