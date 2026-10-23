@@ -4,6 +4,7 @@
 
 mod support;
 mod config;
+mod operations;
 mod memory_limit;
 mod aof_write_errors;
 mod aof_sync_fault;
