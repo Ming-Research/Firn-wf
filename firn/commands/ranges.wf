@@ -758,8 +758,7 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     zrange_body(journal: &journal, access_key: key, slot: slot, client: client, walk: &walk);
   }
   if client^.state == state_expired {
-    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    remove_expired(store: store, key: key, now: client^.now);
   }
   zrange_finish(client: client);
   return unit;
@@ -861,8 +860,7 @@ fn run_zcount(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     zcount_body(journal: &journal, access_key: key, slot: slot, client: client, walk: &walk);
   }
   if client^.state == state_expired {
-    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    remove_expired(store: store, key: key, now: client^.now);
     set client^.number = 0_u64;
   }
   zcount_finish(client: client);
@@ -1069,8 +1067,7 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
     if store^.logging {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = zremrange_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   zremrange_finish(client: client);

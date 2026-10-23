@@ -569,8 +569,7 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
                 }
               }
               if bnot(retry) {
-                let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-                set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+                pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
                 let seconds = client^.unix_us / 1000000_u64;
                 pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
               }
@@ -668,8 +667,7 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
               }
               if bnot(retry) {
                 pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
-                let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-                set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+                pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
               }
             }
           }

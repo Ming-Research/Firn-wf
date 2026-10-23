@@ -1103,12 +1103,16 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_old_manifest(&program);
-    let value = vec![b'n'; 16 * 1024];
-    let mut writes = 0;
+    // A reply waits until its record is in the file, and the reread holds the
+    // file, so one connection adds at most one record to the backlog: each
+    // write comes from a connection of its own, whose reply is read at the end.
+    let value = vec![b'n'; 256 * 1024];
+    let mut writers = Vec::new();
     let mut reconciled = false;
     loop {
-        request(&mut client, &[b"SET", b"hot", &value]);
-        writes += 1;
+        let mut writer = connect_when_ready(port, &child);
+        writer.write_all(&wire(&[b"SET", b"hot", &value])).unwrap();
+        writers.push(writer);
         let info = rewrite_info(&mut client);
         // The rotation is held open here, so the collecting buffer's growth
         // charges the ledger and stays charged until the attempt ends: the
@@ -1130,8 +1134,11 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         }
         assert!(Instant::now() < deadline, "post-cut backlog never aborted");
     }
-    assert!(writes > 1);
+    assert!(writers.len() > 1);
     assert!(reconciled, "the exclusion was never checked while the backlog was charged");
+    for mut writer in writers {
+        assert_eq!(read_reply(&mut writer), Reply::Line(b"+OK".to_vec()));
+    }
     assert_old_manifest(&program);
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);

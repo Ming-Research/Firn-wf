@@ -431,8 +431,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
               set removed = True();
             }
           }
-          let aof_sequence = pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &log_budget);
-          set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+          pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &log_budget);
         }
         if bnot(over) {
           return False();

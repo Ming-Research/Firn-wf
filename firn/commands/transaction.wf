@@ -327,8 +327,7 @@ fn run_exec_events(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time,
       log_count(log: &m^.log, count: 1_u64, room: 16_u64, budget: &log_budget);
       log_word(log: &m^.log, word: &word_exec_log[0_u64..4_u64], budget: &log_budget);
     }
-    let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: unix_seconds);
   }
   transaction_reset(transaction: transaction);
@@ -405,8 +404,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       log_count(log: &m^.log, count: 1_u64, room: 16_u64, budget: &log_budget);
       log_word(log: &m^.log, word: &word_exec_log[0_u64..4_u64], budget: &log_budget);
     }
-    let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   transaction_reset(transaction: transaction);
   return unit;

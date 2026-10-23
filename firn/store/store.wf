@@ -171,15 +171,14 @@ fn expire_key(store: &Keyspace, key: &[u8], at: u64) -> result: unit reads(store
         log_removal(log: &m^.log, key: key, budget: &log_budget);
       }
     }
-    let expiry_sequence = sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
 }
 
-fn remove_expired(store: &Keyspace, key: &[u8], now: u64) -> appended_sequence: u64 reads(store), reads(key) waits {
-  doc "Removes the key when its expiry has passed at now, for a command that found it expired in a statement that only read it, recording the removal as log_removal does; a key set again since keeps its value. Returns the appended removal sequence, or zero when no record was appended.";
+fn remove_expired(store: &Keyspace, key: &[u8], now: u64) -> result: unit reads(store), reads(key) waits {
+  doc "Removes the key when its expiry has passed at now, for a command that found it expired in a statement that only read it, recording the removal as log_removal does; a key set again since keeps its value.";
   let logged = store^.logging;
-  let appended_sequence = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let loading = False();
     let sequence = sequence_new(meta: m, loading: loading);
@@ -199,9 +198,9 @@ fn remove_expired(store: &Keyspace, key: &[u8], now: u64) -> appended_sequence: 
         log_removal(log: &m^.log, key: key, budget: &log_budget);
       }
     }
-    set appended_sequence = sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
-  return appended_sequence;
+  return unit;
 }
 
 fn expire_batch(store: &Keyspace, now: u64, env: &KeyEnv, batch: &Box<Slots<Due>>) -> more: Bool reads(store), reads(env), writes(batch) waits {
@@ -653,7 +652,7 @@ fn log_group_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.l
   return budget;
 }
 
-fn log_group_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> appended_sequence: u64 reads(budget.allowance), reads(budget.group_start), reads(budget.records), reads(meta.aof_append_error), writes(sequence), writes(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(meta.aof_failed_sequence), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+fn log_group_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(budget.allowance), reads(budget.group_start), reads(budget.records), writes(sequence), writes(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
   requires budget^.group_start <= meta^.log.inner.len;
   ensures budget^.group_start == entry(budget)^.group_start;
   ensures budget^.group_start <= meta^.log.inner.len;
@@ -663,8 +662,8 @@ fn log_group_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -
     log_group_prefix(log: &meta^.log, budget: budget);
     log_append(log: &meta^.log, bytes: &log_group_exec[0_u64..14_u64], budget: budget);
   }
-  let appended_sequence = sequence_commit(meta: meta, sequence: sequence, budget: budget);
-  return appended_sequence;
+  sequence_commit(meta: meta, sequence: sequence, budget: budget);
+  return unit;
 }
 
 fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) contract {
@@ -684,6 +683,48 @@ fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.
   set budget.enabled = band(meta^.rewrite.rotating, serving);
   set budget.allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
   return budget;
+}
+
+fn aof_reply_ready(meta: &Meta, sequence: u64) -> ready: Bool reads(meta.log), reads(meta.aof_pending_length), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error) {
+  doc "Whether output that observed the commit sequence may leave: every record through it is in the file, or an append failure released it, or an append error is saved, while which Redis 7.2.16 everysec sends the replies it produced (aof.c:1191-1213). At the saturated sequence an old maximum watermark cannot tell a later record apart, so only both buffers being empty releases it.";
+  match meta^.aof_append_error {
+    Some(..) => {
+      return True();
+    }
+    None() => {
+    }
+  }
+  if sequence == 18446744073709551615_u64 {
+    let collecting_empty = meta^.log.inner.len == 0_u64;
+    let pending_empty = meta^.aof_pending_length == 0_u64;
+    return band(collecting_empty, pending_empty);
+  }
+  let written = meta^.aof_written_sequence >= sequence;
+  let failed = meta^.aof_failed_sequence >= sequence;
+  return bor(written, failed);
+}
+
+fn aof_reply_sequence(store: &Keyspace) -> sequence: u64 reads(store) waits {
+  doc "The commit sequence that output produced so far may have observed, zero without an append-only file.";
+  if store^.logging {
+  } else {
+    return 0_u64;
+  }
+  let sequence = 0_u64;
+  atomic m = &store^.meta {
+    set sequence = m^.commit_seq;
+  }
+  return sequence;
+}
+
+fn aof_reply_wait(store: &Keyspace, sequence: u64) -> result: unit reads(store) waits {
+  doc "Waits until output that observed the commit sequence may leave, as aof_reply_ready decides; zero, output that observed no logged state, does not wait.";
+  if sequence == 0_u64 {
+    return unit;
+  }
+  atomic m = &store^.meta when aof_reply_ready(meta: m, sequence: sequence) {
+  }
+  return unit;
 }
 
 fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) {

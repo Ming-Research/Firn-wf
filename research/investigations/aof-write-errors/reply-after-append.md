@@ -946,8 +946,7 @@ command is in the file, as Redis 7.2.16 does
 ([beforeSleep](https://github.com/redis/redis/blob/7.2.16/src/server.c#L1721-L1739)),
 without #97's writer handoff on every batch, and keep AOF-on throughput within
 noise of main? Reject the design if the kill case (acknowledged writes after
-SIGKILL and restart) loses any write; if pipelined replies change order or a
-read waits for a later write; if bytes are marked written before a complete
+SIGKILL and restart) loses any write; if pipelined replies change order; if bytes are marked written before a complete
 successful append; if the aof-sync-fault job, the write-error cases or the
 rewrite cases change an expected result; or if the throughput criterion below
 fails.
@@ -957,10 +956,20 @@ fails.
 Collection is unchanged: a command appends its record to Meta's collecting
 buffer under its existing hold and commits its sequence. What changes:
 
-1. **Dependency.** The command returns its committed sequence to the
-   connection under the same hold (#97's `aof_sequence`, with
-   [reply boundaries](#proposal-and-ordering-argument) so a read in a
-   pipeline waits only for the write before it).
+1. **Dependency.** Output waits for the commit sequence it could have
+   observed: before a connection sends the replies it holds, and before a
+   subscribed connection's output context sends a frame, it reads the
+   commit sequence and waits until it is written. Redis 7.2.16 sends every
+   reply and message of an event-loop iteration after that iteration's AOF
+   write, so after a process kill no client has seen a value the file lacks;
+   #97's per-command sequences and [reply
+   boundaries](#proposal-and-ordering-argument) let a read show another
+   client's unwritten write, and are dropped (decision card
+   `firn-group-commit-reads`, option A). Every collected record takes a
+   sequence, an AOF-only record included, so the commit sequence covers
+   it. A reply that observed nothing still waits for earlier records: the
+   cost is one Meta read per send with an append-only file, and a read
+   sent while writes are in flight waits for the next group, as in Redis.
 2. **Desk.** The active `AofLog` (file, boundary, manifest, directories) and
    the pending buffer move from the writer's locals into a shared object, the
    desk: a one-slot window holding them, the written-through sequence and the
@@ -1024,8 +1033,9 @@ Written before measuring. On the 14900K through `redis-bench.yml`, with
 `make firn-lto`, AOF everysec, no rewrite during the window, servers on two
 and on eight P-cores and clients on E-cores 16-31: interleave main, a twin of
 main and the candidate, plus Redis 7.2.16 with the same AOF settings for
-context, for SET and MSET at pipeline 1 and 16, four rounds initially. For
-each command, pipeline and core count, reject when candidate/main is below
+context, for SET, MSET and GET (whose replies now read the commit
+sequence) at pipeline 1 and 16, four rounds initially. For each command,
+pipeline and core count, reject when candidate/main is below
 the lowest twin/main ratio minus 0.05. Report per-round rates, p50/p99 and
 the noise. If the release exposes the runtime's guard counters, also report
 follower wakes that found their guard false; otherwise report them as

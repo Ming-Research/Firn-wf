@@ -298,8 +298,7 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if logged {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   push_finish(client: client);
@@ -395,8 +394,7 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     if logged {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   pop_finish(client: client);
@@ -482,8 +480,7 @@ fn run_lrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     lrange_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    remove_expired(store: store, key: key, now: client^.now);
   }
   lrange_finish(client: client);
   return unit;
@@ -531,8 +528,7 @@ fn run_llen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     llen_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    remove_expired(store: store, key: key, now: client^.now);
     set client^.number = 0_u64;
   }
   llen_finish(client: client);
@@ -636,8 +632,7 @@ fn run_lindex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     lindex_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    remove_expired(store: store, key: key, now: client^.now);
   }
   lindex_finish(client: client);
   return unit;
@@ -714,8 +709,7 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if logged {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   lset_finish(client: client);
@@ -838,8 +832,7 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if logged {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   lrem_finish(client: client);
@@ -950,8 +943,7 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     if logged {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   ltrim_finish(client: client);
@@ -1064,8 +1056,7 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     if logged {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   linsert_finish(client: client);
@@ -1177,8 +1168,7 @@ fn run_lpos(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     lpos_body(journal: &journal, access_key: key, client: client, slot: slot, input: input, args: args, seek: &seek, positions: &positions);
   }
   if seek.state == state_expired {
-    let aof_sequence = remove_expired(store: store, key: key, now: seek.now);
-    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+    remove_expired(store: store, key: key, now: seek.now);
   }
   lpos_finish(client: client, seek: &seek, positions: &positions);
   return unit;
@@ -1335,8 +1325,7 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     if logged {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
-      let aof_sequence = pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   lmove_finish(client: client);

@@ -256,8 +256,7 @@ fn run_collection_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, 
     if store^.logging {
       let budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = ttl_meta(log: &m^.log, logged: store^.logging, removed: lapsed, key: key, budget: &budget);
-      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
-      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
     }
   }
   return unit;
