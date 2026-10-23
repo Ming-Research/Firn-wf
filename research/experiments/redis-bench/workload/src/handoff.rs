@@ -460,6 +460,12 @@ mod tests {
                         if socket.read_exact(&mut got).is_err() { return; }
                         assert_eq!(got, expected);
                     }
+                    // A server does not close its blocked clients when the
+                    // producer goes: wait for the client to close them, or a
+                    // consumer that has yet to see the run end could meet the
+                    // close first.
+                    let mut sink = [0; 64];
+                    while matches!(socket.read(&mut sink), Ok(n) if n > 0) {}
                 }));
             }
             let (mut producer, _) = listener.accept().unwrap();
