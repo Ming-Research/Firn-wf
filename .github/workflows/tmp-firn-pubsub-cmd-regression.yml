@@ -2,8 +2,9 @@
 # no other workflow runs, and shows that the case added for `ratios --metric
 # cpu` fails when the ratio is not inverted; runs the network case added for
 # the commands that follow a subscription in one write, and shows that it fails
-# when the ordinary owner no longer stops at the first subscription. Removed
-# before the pull request is ready.
+# when the ordinary owner no longer stops at the first subscription but hands
+# the connection over only after the commands of the read. Removed before the
+# pull request is ready.
 name: tmp-firn-pubsub-cmd-regression
 
 on:
@@ -60,7 +61,7 @@ jobs:
             pubsub::commands_after_a_subscription_in_one_write_see_subscriber_mode -- --show-output
 
   boundary-broken:
-    name: the case fails without the stop at the first subscription
+    name: the case fails when the hand-over waits for the end of the read
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -68,13 +69,14 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
-      # The experiment commit leaves the promotion out of serve: the check of
-      # client.pubsub_id after every command and the hand-over after it.
-      - name: Take serve without the promotion
+      # The experiment commit checks client.pubsub_id once per read, after the
+      # loop over its commands, instead of after every command: the commands
+      # that follow a subscription in the read run in the ordinary owner.
+      - name: Take serve with the check once per read
         run: |
-          git fetch origin firn-pubsub-cmd-regression-exp2
-          git checkout e811c013112108e0ae35594b0facfe92c7b769ab -- firn/server/server.wf
-          ! grep -q 'pubsub_id != 0_u64' firn/server/server.wf
+          git fetch origin firn-pubsub-cmd-regression-exp3
+          git checkout 6263405e3b591fbc075a07a291fb4e370bf8289e -- firn/server/server.wf
+          ! git diff --quiet HEAD -- firn/server/server.wf
       - name: Download the pinned compiler
         run: make compiler
       - name: Install the pinned release's LLVM
@@ -90,7 +92,7 @@ jobs:
           if FIRN="$PWD/build/firn-test" cargo test --manifest-path tests/Cargo.toml --locked --test network \
             pubsub::commands_after_a_subscription_in_one_write_see_subscriber_mode -- --show-output >"$log" 2>&1; then
             cat "$log"
-            echo "the case passed with an ordinary owner that never stops at a subscription" >&2
+            echo "the case passed with an ordinary owner that hands over only at the end of the read" >&2
             exit 1
           fi
           cat "$log"
