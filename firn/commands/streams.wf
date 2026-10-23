@@ -315,30 +315,42 @@ fn id_next(id: StreamId) -> next: StreamIdRead pure {
   doc "The ID after id, as streamIncrID steps one; not valid after max-max.";
   if id.seq == stream_max {
     if id.ms == stream_max {
-      return StreamIdRead(id: id, valid: False(), seq_given: True());
+      let true_1 = True();
+      let false_2 = False();
+      return StreamIdRead(id: id, valid: false_2, seq_given: true_1);
     }
     let ms = id.ms +wrap 1_u64;
     let stepped = StreamId(ms: ms, seq: 0_u64);
-    return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+    let true_3 = True();
+    let true_4 = True();
+    return StreamIdRead(id: stepped, valid: true_3, seq_given: true_4);
   }
   let seq = id.seq +wrap 1_u64;
   let stepped = StreamId(ms: id.ms, seq: seq);
-  return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+  let true_5 = True();
+  let true_6 = True();
+  return StreamIdRead(id: stepped, valid: true_5, seq_given: true_6);
 }
 
 fn id_previous(id: StreamId) -> previous: StreamIdRead pure {
   doc "The ID before id, as streamDecrID steps one; not valid before 0-0.";
   if id.seq == 0_u64 {
     if id.ms == 0_u64 {
-      return StreamIdRead(id: id, valid: False(), seq_given: True());
+      let true_7 = True();
+      let false_8 = False();
+      return StreamIdRead(id: id, valid: false_8, seq_given: true_7);
     }
     let ms = id.ms -wrap 1_u64;
     let stepped = StreamId(ms: ms, seq: stream_max);
-    return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+    let true_9 = True();
+    let true_10 = True();
+    return StreamIdRead(id: stepped, valid: true_9, seq_given: true_10);
   }
   let seq = id.seq -wrap 1_u64;
   let stepped = StreamId(ms: id.ms, seq: seq);
-  return StreamIdRead(id: stepped, valid: True(), seq_given: True());
+  let true_11 = True();
+  let true_12 = True();
+  return StreamIdRead(id: stepped, valid: true_11, seq_given: true_12);
 }
 
 fn stream_space(byte: u8) -> space: Bool pure {
@@ -357,10 +369,12 @@ fn stream_part(input: &[u8], start: u64, end: u64) -> part: StreamPart reads(inp
   let strict = read_integer(input: input, start: start, length: length);
   if strict.state == 1_u64 {
     if strict.value < 0_i64 {
-      return StreamPart(value: 0_u64, valid: False());
+      let false_13 = False();
+      return StreamPart(value: 0_u64, valid: false_13);
     }
     let value = cvt.wrap::<i64, u64>(strict.value);
-    return StreamPart(value: value, valid: True());
+    let true_14 = True();
+    return StreamPart(value: value, valid: true_14);
   }
   let position = start;
   loop @spaces {
@@ -414,19 +428,24 @@ fn stream_part(input: &[u8], start: u64, end: u64) -> part: StreamPart reads(inp
   let left = position < end;
   let refused = bor(none, left);
   if bor(refused, overflow) {
-    return StreamPart(value: 0_u64, valid: False());
+    let false_15 = False();
+    return StreamPart(value: 0_u64, valid: false_15);
   }
   if negative {
     let negated = 0_u64 -wrap value;
-    return StreamPart(value: negated, valid: True());
+    let true_16 = True();
+    return StreamPart(value: negated, valid: true_16);
   }
-  return StreamPart(value: value, valid: True());
+  let true_17 = True();
+  return StreamPart(value: value, valid: true_17);
 }
 
 fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: Bool) -> read: StreamIdRead reads(input) {
   doc "Reads an ID argument as Redis 7.2.16's streamGenericParseIDOrReply does: at most 127 bytes, read up to its first zero byte; - and + alone are 0-0 and max-max, refused when strict; otherwise milliseconds, then after the first dash the sequence, or missing without a dash. With star, ms-* gives the milliseconds and leaves the sequence to XADD.";
   let zero = StreamId(ms: 0_u64, seq: 0_u64);
-  let refused = StreamIdRead(id: zero, valid: False(), seq_given: True());
+  let true_18 = True();
+  let false_19 = False();
+  let refused = StreamIdRead(id: zero, valid: false_19, seq_given: true_18);
   if span.length > 127_u64 {
     return refused;
   }
@@ -454,10 +473,14 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
       return refused;
     }
     if lone_minus {
-      return StreamIdRead(id: zero, valid: True(), seq_given: True());
+      let true_20 = True();
+      let true_21 = True();
+      return StreamIdRead(id: zero, valid: true_20, seq_given: true_21);
     }
     let top = StreamId(ms: stream_max, seq: stream_max);
-    return StreamIdRead(id: top, valid: True(), seq_given: True());
+    let true_22 = True();
+    let true_23 = True();
+    return StreamIdRead(id: top, valid: true_22, seq_given: true_23);
   }
   let dash = end;
   let length = end -sat start;
@@ -475,7 +498,9 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
   }
   if dash >= end {
     let whole = StreamId(ms: ms.value, seq: missing);
-    return StreamIdRead(id: whole, valid: True(), seq_given: True());
+    let true_24 = True();
+    let true_25 = True();
+    return StreamIdRead(id: whole, valid: true_24, seq_given: true_25);
   }
   let seq_start = dash +wrap 1_u64;
   let seq_length = end -sat seq_start;
@@ -484,7 +509,9 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
       let byte = byte_at(input: input, index: seq_start);
       if byte == 42_u8 {
         let partial = StreamId(ms: ms.value, seq: 0_u64);
-        return StreamIdRead(id: partial, valid: True(), seq_given: False());
+        let true_26 = True();
+        let false_27 = False();
+        return StreamIdRead(id: partial, valid: true_26, seq_given: false_27);
       }
     }
   }
@@ -493,7 +520,9 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
     return refused;
   }
   let whole = StreamId(ms: ms.value, seq: seq.value);
-  return StreamIdRead(id: whole, valid: True(), seq_given: True());
+  let true_28 = True();
+  let true_29 = True();
+  return StreamIdRead(id: whole, valid: true_28, seq_given: true_29);
 }
 
 fn stream_lone(input: &[u8], span: Span, byte: u8) -> lone: Bool reads(input) {
@@ -666,7 +695,8 @@ fn stream_node_new(id: StreamId, pairs: Box<Slots<Bytes>>) -> node: StreamNode p
   }
   let same = True();
   let size = item_size(pairs: &pairs, same: same, id: id, master: id);
-  let item = StreamItem(id: id, deleted: False(), same: same, pairs: move pairs, size: size);
+  let false_30 = False();
+  let item = StreamItem(id: id, deleted: false_30, same: same, pairs: move pairs, size: size);
   let items = box_slots_new::<StreamItem>(capacity: 4_u64);
   if items.inner.len < items.inner.cap {
     place_back(window: &items.inner, value: move item);
@@ -731,7 +761,8 @@ fn head_link(link: &Slots<Box<OrderedNode<StreamId, StreamNode>>, 1>, find: &Str
 fn stream_floor(log: &StreamLog, target: StreamId) -> find: StreamFind reads(log) {
   doc "The key of the node that would hold target: the greatest node key at most target, if any.";
   let zero = StreamId(ms: 0_u64, seq: 0_u64);
-  let find = StreamFind(target: target, found: False(), key: zero);
+  let false_31 = False();
+  let find = StreamFind(target: target, found: false_31, key: zero);
   floor_link(link: &log^.nodes.root, find: &find);
   return find;
 }
@@ -739,7 +770,8 @@ fn stream_floor(log: &StreamLog, target: StreamId) -> find: StreamFind reads(log
 fn stream_head(log: &StreamLog) -> find: StreamFind reads(log) {
   doc "The key of the first node, if any; its first entry, deleted or not, has this ID.";
   let zero = StreamId(ms: 0_u64, seq: 0_u64);
-  let find = StreamFind(target: zero, found: False(), key: zero);
+  let false_32 = False();
+  let find = StreamFind(target: zero, found: false_32, key: zero);
   head_link(link: &log^.nodes.root, find: &find);
   return find;
 }
@@ -908,7 +940,8 @@ fn stream_walk(log: &StreamLog, low: StreamId, high: StreamId, reverse: Bool, li
     set target = low;
   }
   let find = stream_floor(log: log, target: target);
-  let walk = StreamWalk(low: low, high: high, bound: find.key, bounded: find.found, reverse: reverse, limit: limit, taken: 0_u64, ended: False(), emit: emit, seen: low);
+  let false_33 = False();
+  let walk = StreamWalk(low: low, high: high, bound: find.key, bounded: find.found, reverse: reverse, limit: limit, taken: 0_u64, ended: false_33, emit: emit, seen: low);
   if reverse {
     if bnot(find.found) {
       return walk;
@@ -945,7 +978,8 @@ fn append_into_node(env: &StreamAppend, key: &StreamId, value: &StreamNode) -> a
   let size = item_size(pairs: &env^.pairs, same: same, id: env^.id, master: master);
   let pairs = box_slots_new::<Bytes>(capacity: 0_u64);
   swap(first: &pairs, second: &env^.pairs);
-  let item = StreamItem(id: env^.id, deleted: False(), same: same, pairs: move pairs, size: size);
+  let false_34 = False();
+  let item = StreamItem(id: env^.id, deleted: false_34, same: same, pairs: move pairs, size: size);
   let capacity = value^.items.inner.cap;
   if value^.items.inner.len >= capacity {
     let doubled = capacity +wrap capacity;
@@ -1196,7 +1230,9 @@ fn stream_delete(log: &StreamLog, op: &StreamOp, client: &Client) -> result: uni
       let target = op^.ids.inner[index];
       let find = stream_floor(log: log, target: target);
       if find.found {
-        let mark = StreamDelete(target: target, hit: False(), emptied: False());
+        let false_35 = False();
+        let false_36 = False();
+        let mark = StreamDelete(target: target, hit: false_35, emptied: false_36);
         let edited = ordered_map_edit::<StreamIdOrder, StreamNode, StreamDelete, unit, fn delete_entry, ceiling>(map: &log^.nodes, key: &find.key, key_env: &keys, edit_env: &mark);
         if mark.hit {
           if mark.emptied {
@@ -1256,7 +1292,8 @@ fn stream_setid(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit
   }
   let zero_ms = op^.max_deleted.ms == 0_u64;
   let zero_seq = op^.max_deleted.seq == 0_u64;
-  if bnot(band(zero_ms, zero_seq)) {
+  let zero_given = band(zero_ms, zero_seq);
+  if bnot(zero_given) {
     set log^.max_deleted_id = op^.max_deleted;
   }
   set op^.changed = True();
@@ -1678,13 +1715,17 @@ fn interval_parse(input: &[u8], span: Span, missing: u64, start: Bool) -> read: 
     if start {
       let next = id_next(id: read.id);
       if bnot(next.valid) {
-        return StreamIdRead(id: read.id, valid: True(), seq_given: False());
+        let true_37 = True();
+        let false_38 = False();
+        return StreamIdRead(id: read.id, valid: true_37, seq_given: false_38);
       }
       return next;
     }
     let previous = id_previous(id: read.id);
     if bnot(previous.valid) {
-      return StreamIdRead(id: read.id, valid: True(), seq_given: False());
+      let true_39 = True();
+      let false_40 = False();
+      return StreamIdRead(id: read.id, valid: true_39, seq_given: false_40);
     }
     return previous;
   }
@@ -1975,7 +2016,8 @@ fn stream_log_rewritten(log: &Box<Slots<u8>>, op: &StreamOp, input: &[u8], args:
   doc "Appends XADD or XTRIM as Redis 7.2.16 propagates it: XADD's * or ms-* replaced by the ID made, and after ~ the ~ replaced by = and the threshold by the one streamRewriteTrimArgument writes, the length after trimming or the first entry's ID; every other argument as sent.";
   let log_initial_length = log^.inner.len;
   let count = args^.inner.len;
-  let rewrite_id = bnot(band(op^.id_given, op^.seq_given));
+  let id_whole = band(op^.id_given, op^.seq_given);
+  let rewrite_id = bnot(id_whole);
   let adding = op^.act == 1_u64;
   let id_rewritten = band(adding, rewrite_id);
   let marker = op^.trim_index -wrap 1_u64;
