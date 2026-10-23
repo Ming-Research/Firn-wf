@@ -48,6 +48,8 @@ jobs:
           exit $status
       - name: Build firn-test
         run: make firn-test
+      - name: List ceiling cases
+        run: make list-ceiling
       - name: Stream network cases
         run: |
           redis_bin=$(REDIS_COMPAT_CACHE="$PWD/build/redis-compat-cache" tests/redis-suite/reference.sh)
