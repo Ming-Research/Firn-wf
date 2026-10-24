@@ -136,26 +136,34 @@ A storage error can still prevent durability. See
 
 ## Translate a small redis.conf
 
-firn accepts command-line options, not a Redis configuration file. Unknown
-options fail startup. These mappings cover a small standalone setup.
+firn reads a Redis-style configuration file named as its first argument,
+`firn redis.conf`, with a path relative to its working directory, and takes
+the same directives on the command line as `--name value`; command-line
+values override the file. A directive firn does not run, or a value it
+rejects, stops startup with status 1 and a `FATAL CONFIG FILE ERROR` on
+stderr, so a copied redis.conf fails at the first line it cannot honor
+instead of running with a setting that does nothing. These mappings cover a
+small standalone setup.
 
 | Redis setting | firn equivalent or limitation |
 | --- | --- |
-| `port 6379` | `--port 6379` |
-| `bind 127.0.0.1` | `--bind 127.0.0.1`; one IPv4 address, or `*` for all |
-| `appendonly yes` / `no` | `--appendonly yes` / `no`; off by default |
-| `appendfsync everysec` | Fixed everysec policy; no `--appendfsync`, `always`, or `no` policy |
-| `dir /path/to/data` | Change the working directory before launching; no `--dir` |
-| `appendfilename appendonly.aof` | `--appendfilename appendonly.aof`; naming it alone does not enable AOF |
-| `maxmemory 64mb` | Runtime `CONFIG SET maxmemory 64mb` only; resets on restart, no `--maxmemory` |
-| `maxmemory-policy allkeys-lru` | Runtime `CONFIG SET maxmemory-policy allkeys-lru` only; resets on restart, no corresponding launch option |
-| `maxclients 100` | Unsupported; `--clients 100` counts all accepted clients over the server's lifetime and then stops, so it is not equivalent |
-| `timeout 60` | `--timeout 60`; zero means no idle limit |
-| `requirepass secret` | `--requirepass secret`, or runtime `CONFIG SET requirepass secret`, which resets on restart; see the [password guidance](#start-docker-image-path) above |
-| `save ""` | Empty snapshot schedule only; no RDB snapshots or `--save` |
+| `port 6379` | `port 6379` |
+| `bind 127.0.0.1` | `bind 127.0.0.1`; one IPv4 address, or `*` for all; no IPv6 and no second address |
+| `appendonly yes` / `no` | `appendonly yes` / `no`; off by default |
+| `appendfilename appendonly.aof` | `appendfilename appendonly.aof`; naming it alone does not enable AOF |
+| `appendfsync everysec` | Refused, although everysec is the fixed policy; remove the line. No `always` or `no` policy |
+| `dir /path/to/data` | `dir .` or `dir ./` only; change the working directory before launching |
+| `maxmemory 64mb` | `maxmemory 64mb` |
+| `maxmemory-policy allkeys-lru` | `maxmemory-policy allkeys-lru` |
+| `maxclients 100` | `maxclients 100`; default 10000. firn does not raise the descriptor limit, so set `ulimit -n` above it |
+| `timeout 60` | `timeout 60`; zero means no idle limit |
+| `requirepass secret` | `requirepass secret`, or runtime `CONFIG SET requirepass secret`, which resets on restart; see the [password guidance](#start-docker-image-path) above |
+| `save ""` | Refused: firn has no RDB snapshots; remove the line |
 
-See [firn's command and option reference](../firn/README.md#build-and-run)
-for its remaining options and compatibility limits.
+The [operator's guide](operations.md#run-as-a-service) shows a complete
+configuration file started as a foreground service, and the
+[invocation reference](../firn/README.md#build-and-run) lists every accepted
+directive and the common Redis directives that are still refused.
 
 ## What release CI checks
 
