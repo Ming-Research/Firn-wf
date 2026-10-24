@@ -30,7 +30,8 @@ impl Drop for LeasedPort {
 
 /// A loopback port reserved against reuse by another test in this process.
 /// Clones share the reservation until the last owner drops it; the operating
-/// system listener is released so the server can bind the port itself.
+/// system claim (`PortClaim`) is released so the server can bind the port
+/// itself. Until it does, nothing listens on the port.
 #[derive(Clone)]
 pub struct PortLease {
     reservation: Arc<LeasedPort>,
