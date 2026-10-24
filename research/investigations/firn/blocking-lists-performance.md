@@ -240,3 +240,102 @@ depth 1 (p99 0.010 ms), against firn's 101304 (p99 0.760 ms) and 78384 (p99
 0.081 ms): firn is 0.354 and 0.687 of Redis, and the cell criteria need 1.4 and
 1.0. The client work fraction is 0.044 and 0.300 for firn, so these cells are
 not client-limited.
+
+### A1: cost on existing commands, append-only file off
+
+Run 40049518328 (`compare`, `base` = `05f7e89`, `head` = `da1e2c3`, `head-twin`
+= `da1e2c3`, the 22 tests, depths 16 and 1, 2 server CPUs, 6 passes of 5 s,
+profile `lpush 16;lmove 16`). Per cell, `summary.py ratios`: head/base median
+over the passes with the 95% interval of the mean log ratio, and twin/head
+likewise. 44 cells: 11 faster, 24 no detected change, 9 slower; the twin
+interval lies across 1 in 43 cells and wholly below 1 in one (`lmove` depth
+16, 0.9579-0.9960). The client is the limit (CPUs busy above 0.90) in
+`lrange_500` and `lrange_600` at depth 16, which are not judged (both are
+faster or unchanged).
+
+The 8 cells of the four list producers are wholly on the slower side, and
+`lrange_100` at depth 1 is a ninth, by 1.5% (0.9848, interval 0.9758-0.9987,
+twin interval 0.9942-1.0237):
+
+| test | depth | base (requests/s) | head (requests/s) | head/base | 95% interval |
+|---|---|---|---|---|---|
+| lpush | 16 | 4242766 | 1330255 | 0.3135 | 0.3002-0.3284 |
+| rpush | 16 | 4206656 | 1328298 | 0.3167 | 0.3076-0.3277 |
+| linsert | 16 | 2168374 | 686202 | 0.3130 | 0.3066-0.3225 |
+| lmove | 16 | 3952587 | 1209726 | 0.3077 | 0.2931-0.3205 |
+| lpush | 1 | 776783 | 674080 | 0.8761 | 0.8438-0.9319 |
+| rpush | 1 | 770692 | 676096 | 0.8789 | 0.8634-0.9095 |
+| linsert | 1 | 684838 | 587560 | 0.8631 | 0.8407-0.8836 |
+| lmove | 1 | 771334 | 643328 | 0.8321 | 0.8191-0.8418 |
+
+The file is off, so the staged copy into it does not run, and the 64-byte
+buffer is allocated in both images' paths alike. The profile of the first
+`lpush 16` pass has `wf_cmap_hold` (the runtime function that takes the
+whole-keyspace hold) at 51.16% of the cycles in `head` and `try_entry` (the
+per-key entry hold) at 14.13% in `base`; `lmove 16` has `wf_cmap_hold` at
+48.16% in `head` and `try_entry` at 17.05% in `base`. The allocator and
+`memcpy` are each below 1% in `head` (`malloc` 0.57%, `__memmove_avx_unaligned_erms`
+0.36% in `lpush 16`). So the cost of these commands is the whole-keyspace,
+metadata, event-hub and server-state hold that
+[blocking-lists.md](../../../design/firn/blocking-lists.md) gives every list
+producer (`run_list_producer`), which serialises the two server contexts,
+and not the staged copy or its buffer: neither of the other two options of
+[firn-q-list-producer-staging](../../../design/firn/append-only-file.md) (restore
+the in-place append, reuse a buffer) would remove it. This is read from one
+profile of one pass per image; the ratio of the cells is the measurement,
+the attribution to the hold is inferred and would be confirmed by a
+`head` variant whose producers take only the key's entry.
+
+The other 35 cells have no interval wholly on the slower side. The 11 faster
+cells are all at depth 16 (0.6% to 5.2% above `base`, `get` 1.0468,
+`ping_mbulk` 1.0523); their cause was not investigated, since the criteria
+ask only about the slower side.
+
+Table, all 44 cells (head/base and twin/head: median, 95% interval):
+
+| test | depth | head/base | interval | verdict | twin/head | interval |
+|---|---|---|---|---|---|---|
+| get | 1 | 1.0160 | 0.9931-1.0255 | no detected change | 0.9999 | 0.9883-1.0167 |
+| get | 16 | 1.0468 | 1.0370-1.0581 | faster | 1.0024 | 0.9898-1.0098 |
+| hset | 1 | 1.0120 | 0.9917-1.0451 | no detected change | 0.9991 | 0.9541-1.0271 |
+| hset | 16 | 1.0089 | 0.9766-1.0338 | no detected change | 0.9977 | 0.9908-1.0099 |
+| incr | 1 | 1.0028 | 0.9911-1.0215 | no detected change | 0.9959 | 0.9891-1.0094 |
+| incr | 16 | 1.0116 | 1.0057-1.0167 | faster | 0.9985 | 0.9920-1.0102 |
+| linsert | 1 | 0.8631 | 0.8407-0.8836 | slower | 1.0102 | 0.9913-1.0253 |
+| linsert | 16 | 0.3130 | 0.3066-0.3225 | slower | 0.9983 | 0.9629-1.0253 |
+| lmove | 1 | 0.8321 | 0.8191-0.8418 | slower | 1.0051 | 0.9927-1.0119 |
+| lmove | 16 | 0.3077 | 0.2931-0.3205 | slower | 0.9790 | 0.9579-0.9960 |
+| lpop | 1 | 1.0158 | 0.9824-1.0625 | no detected change | 0.9971 | 0.9810-1.0178 |
+| lpop | 16 | 1.0321 | 1.0127-1.0598 | faster | 0.9898 | 0.9798-1.0137 |
+| lpush | 1 | 0.8761 | 0.8438-0.9319 | slower | 0.9991 | 0.9895-1.0141 |
+| lpush | 16 | 0.3135 | 0.3002-0.3284 | slower | 1.0153 | 0.9731-1.0492 |
+| lrange_100 | 1 | 0.9848 | 0.9758-0.9987 | slower | 1.0114 | 0.9942-1.0237 |
+| lrange_100 | 16 | 1.0179 | 1.0023-1.0442 | faster | 0.9996 | 0.9735-1.0221 |
+| lrange_300 | 1 | 0.9983 | 0.9916-1.0076 | no detected change | 1.0087 | 0.9989-1.0206 |
+| lrange_300 | 16 | 1.0103 | 1.0074-1.0151 | faster | 0.9999 | 0.9966-1.0048 |
+| lrange_500 | 1 | 1.0062 | 0.9963-1.0128 | no detected change | 0.9888 | 0.9825-1.0030 |
+| lrange_500 | 16 | 1.0021 | 0.9968-1.0062 | no detected change | 0.9998 | 0.9959-1.0064 |
+| lrange_600 | 1 | 1.0009 | 0.9970-1.0040 | no detected change | 0.9967 | 0.9896-1.0010 |
+| lrange_600 | 16 | 1.0062 | 1.0013-1.0093 | faster | 0.9973 | 0.9943-1.0029 |
+| mset | 1 | 1.0107 | 0.9899-1.0209 | no detected change | 0.9955 | 0.9802-1.0120 |
+| mset | 16 | 1.0305 | 0.9674-1.0960 | no detected change | 0.9826 | 0.9431-1.0422 |
+| ping_inline | 1 | 1.0031 | 0.9968-1.0093 | no detected change | 0.9981 | 0.9860-1.0075 |
+| ping_inline | 16 | 1.0352 | 1.0205-1.0490 | faster | 1.0006 | 0.9917-1.0235 |
+| ping_mbulk | 1 | 1.0065 | 0.9885-1.0265 | no detected change | 0.9976 | 0.9772-1.0076 |
+| ping_mbulk | 16 | 1.0523 | 1.0429-1.0625 | faster | 0.9992 | 0.9886-1.0166 |
+| rpop | 1 | 1.0101 | 0.9902-1.0510 | no detected change | 1.0015 | 0.9756-1.0193 |
+| rpop | 16 | 1.0205 | 1.0105-1.0299 | faster | 0.9976 | 0.9827-1.0183 |
+| rpush | 1 | 0.8789 | 0.8634-0.9095 | slower | 0.9905 | 0.9788-1.0075 |
+| rpush | 16 | 0.3167 | 0.3076-0.3277 | slower | 0.9895 | 0.9489-1.0714 |
+| sadd | 1 | 1.0242 | 0.9992-1.0723 | no detected change | 0.9848 | 0.9158-1.0450 |
+| sadd | 16 | 1.0102 | 0.9962-1.0389 | no detected change | 1.0047 | 0.9847-1.0119 |
+| set | 1 | 1.0004 | 0.9942-1.0155 | no detected change | 1.0036 | 0.9935-1.0160 |
+| set | 16 | 1.0183 | 0.9888-1.0312 | no detected change | 1.0003 | 0.9890-1.0250 |
+| spop | 1 | 1.0060 | 0.9869-1.0286 | no detected change | 0.9990 | 0.9500-1.0300 |
+| spop | 16 | 1.0474 | 1.0152-1.0835 | faster | 0.9796 | 0.9340-1.0301 |
+| xadd | 1 | 1.0022 | 0.9828-1.0184 | no detected change | 0.9965 | 0.9863-1.0145 |
+| xadd | 16 | 1.0114 | 0.9406-1.0514 | no detected change | 0.9958 | 0.9465-1.0578 |
+| zadd | 1 | 0.9977 | 0.9782-1.0197 | no detected change | 0.9925 | 0.9864-1.0006 |
+| zadd | 16 | 1.0035 | 0.9871-1.0219 | no detected change | 0.9962 | 0.9711-1.0093 |
+| zpopmin | 1 | 1.0136 | 0.9970-1.0268 | no detected change | 0.9927 | 0.9764-1.0029 |
+| zpopmin | 16 | 1.0383 | 1.0179-1.0820 | faster | 0.9917 | 0.9622-1.0036 |
