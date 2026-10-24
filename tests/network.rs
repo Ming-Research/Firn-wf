@@ -12682,13 +12682,17 @@ fn firn_restores_first_access_stamps_on_script_retries() {
 /// With the append-only file off, a script over declared keys holds no Meta
 /// while Lua runs, so the attempt learns that it wrote only from its local
 /// sequence token's changed flag. A script that wrote must then run to its end
-/// without being restarted, as it does with a held sequence: SCRIPT KILL is
-/// answered OK while it runs but only a restart, which a written attempt never
-/// makes, would let the kill take effect. A final counter of 1 cannot tell the
-/// two apart, because a restart restores the write and runs it again, so the
-/// case observes the kill: the script returns its result and leaves the
-/// counter, where an attempt that missed its write would be stopped at its
-/// next restart with the counter restored to absent.
+/// without being restarted, as it does with a held sequence, so a SCRIPT KILL
+/// sent while it runs cannot stop it: only a restart checks for a kill. A
+/// final counter of 1 cannot tell the two apart, because a restart restores
+/// the write and runs it again, so the case sends the kill and requires the
+/// script's result and the counter, where an attempt that missed its write
+/// would be stopped at its next restart with the counter restored to absent.
+/// A script that has begun to write holds its driver to its end, so a kill
+/// sent from a connection on that driver is served after the script and has
+/// nothing to stop; the case then ends without a kill, and a script that did
+/// restart is stopped whichever driver serves the kill, because its restarts
+/// wait and so let the driver serve it.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_a_declared_script_that_wrote_to_its_end_past_a_kill_without_an_aof() {
@@ -12700,18 +12704,26 @@ fn firn_runs_a_declared_script_that_wrote_to_its_end_past_a_kill_without_an_aof(
     let mut running = connect_when_ready(port, &child);
     let mut other = connect_when_ready(port, &child);
     let script = "redis.call('INCR',KEYS[1]); \
-        local n=0; for i=1,3000000 do n=n+i end; return redis.call('GET',KEYS[1])";
+        local n=0; for i=1,2000000 do n=n+i end; return redis.call('GET',KEYS[1])";
     running.write_all(&resp(&["EVAL", script, "1", "counter"])).expect("start the writing script");
-    let until = Instant::now() + Duration::from_secs(5);
+    running.set_nonblocking(true).expect("poll the script's connection");
+    let until = Instant::now() + Duration::from_secs(20);
     loop {
         let reply = memory_request(&mut other, &["SCRIPT", "KILL"]);
         if reply == "+OK\r\n" {
             break;
         }
         assert_eq!(reply, "-NOTBUSY No scripts in execution right now.\r\n");
+        let mut byte = [0_u8; 1];
+        match running.peek(&mut byte) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("poll the script's connection: {error}"),
+        }
         assert!(Instant::now() < until, "script did not start");
         std::thread::sleep(Duration::from_millis(1));
     }
+    running.set_nonblocking(false).expect("read the script's reply");
     assert_eq!(whole_reply(&mut running, "the script that wrote"), "$1\r\n1\r\n");
     assert_eq!(memory_request(&mut other, &["GET", "counter"]), "$1\r\n1\r\n");
     drop(running);
