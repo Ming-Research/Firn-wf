@@ -1,0 +1,36 @@
+# Temporary (firn-accept-emfile-ready-reset), on the work branch and its
+# old-lease variant only, deleted before the branch is ready: runs the
+# harness's port-lease cases and the experiment that counts how often the
+# first connection to a freshly leased port is not refused, without the
+# firn build and the rest of the gate.
+name: tmp-lease-race
+
+on:
+  push:
+    branches:
+      - firn-accept-emfile-ready-reset
+      - firn-accept-emfile-ready-reset-old-lease
+
+jobs:
+  lease:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version && nproc
+
+      - name: Build the network cases
+        run: cargo test --manifest-path tests/Cargo.toml --locked --test network --no-run
+
+      - name: The harness's own cases, the lease stress case among them
+        run: |
+          cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
+            support::tests:: --show-output
+
+      - name: How often the first connection to a leased port is not refused
+        if: always()
+        run: |
+          cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
+            --ignored tmp_natural_start_race_rate --nocapture

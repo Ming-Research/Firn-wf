@@ -957,6 +957,160 @@ mod tests {
         assert_eq!(ports.len(), 400);
     }
 
+    #[repr(C)]
+    struct Timespec {
+        seconds: i64,
+        nanoseconds: i64,
+    }
+
+    unsafe extern "C" {
+        fn nanosleep(request: *const Timespec, remaining: *mut Timespec) -> i32;
+    }
+
+    /// Runs `/bin/true` after a pause between fork and exec, the stretch in
+    /// which a child still holds a copy of every descriptor that was open
+    /// when it was forked.
+    fn run_slow_exec_child() {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("/bin/true");
+        // SAFETY: the closure calls only nanosleep, which is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                let pause = Timespec { seconds: 0, nanoseconds: 2_000_000 };
+                nanosleep(&pause, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        let status = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn slow-exec witness");
+        assert!(status.success(), "slow-exec witness: {status:?}");
+    }
+
+    /// Nothing listens on a leased port until its server does, so a peer that
+    /// connects to it must be refused. A child that another thread forks while
+    /// a lease is being taken holds a copy of the lease's socket until its own
+    /// exec; if that socket listens, the child accepts the peer and resets it
+    /// at the exec, which is how a server's readiness check once read
+    /// "Connection reset by peer" before the server had started.
+    #[test]
+    fn leased_port_refuses_connections_while_a_concurrent_spawn_runs() {
+        const SPAWNERS: usize = 4;
+        const LEASERS: usize = 2;
+        const LEASES_PER_THREAD: usize = 5_000;
+        let stop = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(std::sync::Barrier::new(SPAWNERS + LEASERS));
+        let spawners: Vec<_> = (0..SPAWNERS)
+            .map(|_| {
+                let (stop, ready) = (Arc::clone(&stop), Arc::clone(&ready));
+                std::thread::spawn(move || {
+                    ready.wait();
+                    while !stop.load(Ordering::Relaxed) {
+                        run_slow_exec_child();
+                    }
+                })
+            })
+            .collect();
+        let leasers: Vec<_> = (0..LEASERS)
+            .map(|_| {
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    ready.wait();
+                    let mut accepted = Vec::new();
+                    for _ in 0..LEASES_PER_THREAD {
+                        let lease = lease_port();
+                        let address = std::net::SocketAddr::from(([127, 0, 0, 1], lease.port()));
+                        match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                            outcome => accepted.push((lease.port(), format!("{outcome:?}"))),
+                        }
+                    }
+                    accepted
+                })
+            })
+            .collect();
+        let leased: Vec<_> = leasers.into_iter().map(|thread| thread.join()).collect();
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().expect("spawning thread");
+        }
+        let accepted: Vec<_> = leased
+            .into_iter()
+            .flat_map(|leases| leases.expect("leasing thread"))
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "{} of {} connections to freshly leased ports were not refused: {accepted:?}",
+            accepted.len(),
+            LEASERS * LEASES_PER_THREAD
+        );
+    }
+
+    /// Temporary (firn-accept-emfile-ready-reset): the rate at which the
+    /// first connection to a freshly leased port is not refused when four
+    /// threads lease a port and spawn a child through the harness at the
+    /// same moment, as the first four accept_errors cases do.
+    #[test]
+    #[ignore = "temporary experiment run by the tmp-lease-race workflow"]
+    fn tmp_natural_start_race_rate() {
+        use std::sync::atomic::AtomicUsize;
+        const THREADS: usize = 4;
+        const ROUNDS: usize = 3_000;
+        let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let resets = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let (barrier, hits, resets) =
+                    (Arc::clone(&barrier), Arc::clone(&hits), Arc::clone(&resets));
+                std::thread::spawn(move || {
+                    for _ in 0..ROUNDS {
+                        barrier.wait();
+                        let lease = lease_port();
+                        let mut command = Command::new("prlimit");
+                        command
+                            .args(["--nofile=256:256", "--", "/bin/sleep", "5"])
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped());
+                        let child = ProgramChild::spawn(&mut command)
+                            .expect("spawn prlimit witness")
+                            .with_port(&lease);
+                        let address = std::net::SocketAddr::from(([127, 0, 0, 1], lease.port()));
+                        match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                            Err(error) => panic!("unexpected connect error: {error}"),
+                            Ok(mut stream) => {
+                                hits.fetch_add(1, Ordering::Relaxed);
+                                stream.write_all(b"PING\r\n").expect("write PING");
+                                stream.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+                                let mut byte = [0_u8; 1];
+                                if let Err(error) = stream.read(&mut byte) {
+                                    if error.kind() == std::io::ErrorKind::ConnectionReset {
+                                        resets.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        }
+                        drop(child);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("round thread");
+        }
+        eprintln!(
+            "tmp-lease-race: {} connections accepted and {} reset, of {} first connections to freshly leased ports",
+            hits.load(Ordering::Relaxed),
+            resets.load(Ordering::Relaxed),
+            THREADS * ROUNDS
+        );
+    }
+
     #[test]
     fn readiness_does_not_retry_a_timeout_after_a_completed_handshake() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
