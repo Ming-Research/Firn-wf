@@ -983,7 +983,10 @@ fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool) -> passed: Bo
     let destination_made = case_stored_length(store: &store, key: destination_key, expected: 1_u64);
     let staged = case_ready_count(client: &client);
     let none_staged = staged == 0_u64;
-    set passed = band(band(handled, replied), band(band(source_left, destination_made), none_staged));
+    let answered = band(handled, replied);
+    let lists = band(source_left, destination_made);
+    let kept = band(lists, none_staged);
+    set passed = band(answered, kept);
   } else {
     let key = &case_key[0_u64..1_u64];
     let input = &case_narrow_push_input[0_u64..11_u64];
@@ -1000,7 +1003,9 @@ fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool) -> passed: Bo
     let made = case_stored_length(store: &store, key: key, expected: 2_u64);
     let staged = case_ready_count(client: &client);
     let none_staged = staged == 0_u64;
-    set passed = band(band(handled, replied), band(made, none_staged));
+    let answered = band(handled, replied);
+    let kept = band(made, none_staged);
+    set passed = band(answered, kept);
   }
   return passed;
 }
