@@ -354,8 +354,61 @@ fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSeq
   return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
 }
 
+fn answer_call_entries_quiet<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(declared), reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
+  requires slots^.len == declared^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "answer_call_entries for a script with the AOF off: the same command and reply conversion, but the call takes no Meta, so the script holds only its declared keys while Lua runs. The sequence is the local unmetered token, whose changed flag completion folds into the attempt's written flag.";
+  let id = 0_u32;
+  let argc = 0_u64;
+  match halo::embed::pending_call(engine: engine) {
+    Some(value: call) => {
+      set id = call.id;
+      set argc = call.argc;
+    }
+    None() => {
+      return Outcome::HostStopped();
+    }
+  }
+  let input = box_slots_new::<u8>(capacity: 64_u64);
+  let spans = box_slots_new::<Span>(capacity: 8_u64);
+  for @arguments (i in 0_u64..argc) {
+    let v = halo::embed::pending_argument(engine: engine, index: i);
+    let text = command_argument(vm: &engine^.vm, v: v);
+    let start = input.inner.len;
+    value_bytes(vm: &engine^.vm, v: text, out: &input);
+    let end = input.inner.len;
+    let length = end -sat start;
+    push_arg(args: &spans, start: start, length: length);
+  }
+  let n = input.inner.len;
+  let reply_start = client^.at;
+  let protocol = client^.resp;
+  let scripted = cvt::<u8, u64>(env^.resp);
+  set client^.resp = scripted;
+  set client^.now = time^.check;
+  let logged = False();
+  let result = ScriptCommands::call_entries_quiet(sequence: sequence, memory: &env^.memory, journal: &env^.access, slots: slots, declared: declared, undo: undo, due: due, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  set client^.resp = protocol;
+  let appended = 0_u64;
+  match result {
+    Completed(appended: count) => {
+      set appended = count;
+    }
+    NeedWholeMap() => {
+      set env^.need_whole = True();
+      set client^.at = reply_start;
+      return Outcome::HostStopped();
+    }
+  }
+  return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
+}
+
 fn complete_command_call(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, client: &Client, id: u32, appended: u64, reply_start: u64, budget: u64) -> outcome: Outcome reads(sequence), writes(engine), writes(env), writes(client) {
   if sequence^.taken {
+    set env^.held.wrote = True();
+  }
+  if sequence^.changed {
     set env^.held.wrote = True();
   }
   if appended > 0_u64 {
@@ -384,7 +437,7 @@ fn complete_command_call(sequence: &pkg::store::WriteSequence, engine: &Engine, 
 }
 
 fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool, read_only: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
-  doc "EVAL or EVALSHA, including their read-only variants: checks the number of keys and finds or compiles the script, then runs it in attempts, initially in one atomic statement holding the immutable declared entry set and metadata for never-subscribed connections, with sticky whole-keyspace plus event-hub retry after an undeclared, global or pub/sub command. Compile-time start_whole 0 keeps that original path, while start_whole 1 starts promoted connections in whole-keyspace mode so every accepted script result, including one that only touches declared keys, commits its reply under the same hold as its visible effects; this does not change Lua KEYS. The first pub/sub command requests retry before selecting any recipients; the declared attempt restores earlier writes. Every whole-map attempt holds the hub from its start, including attempts without publications, so a later publication never needs to abandon already accepted whole-map effects. Publications stay private until the Lua result or error reply has been formed and are committed under that same hold; a publication with selected recipients prevents budget abandonment, while a zero-recipient publication has no external delivery to duplicate and may retry. Abandonment restores logical entry copies and access stamps, resets client and engine state, and drops unpublished effects and sequence/capture scratch before release. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then only if SCRIPT FLUSH came after the registry check and before the script first took the engine, as if the FLUSH came first; the first take counts the script and records its kill mark atomically with taking the engine, and FLUSH waits for it until it ends, including between attempts. An attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing restores every first-refresh journal entry and the client random state used by LFU before releasing the keys, then is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits to take the engine again is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
+  doc "EVAL or EVALSHA, including their read-only variants: checks the number of keys and finds or compiles the script, then runs it in attempts, initially in one atomic statement holding the immutable declared entry set, and metadata while the keyspace keeps an append-only file, for never-subscribed connections, with sticky whole-keyspace plus event-hub retry after an undeclared, global or pub/sub command. Compile-time start_whole 0 keeps that original path, while start_whole 1 starts promoted connections in whole-keyspace mode so every accepted script result, including one that only touches declared keys, commits its reply under the same hold as its visible effects; this does not change Lua KEYS. The first pub/sub command requests retry before selecting any recipients; the declared attempt restores earlier writes. Every whole-map attempt holds the hub from its start, including attempts without publications, so a later publication never needs to abandon already accepted whole-map effects. Publications stay private until the Lua result or error reply has been formed and are committed under that same hold; a publication with selected recipients prevents budget abandonment, while a zero-recipient publication has no external delivery to duplicate and may retry. Abandonment restores logical entry copies and access stamps, resets client and engine state, and drops unpublished effects and sequence/capture scratch before release. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then only if SCRIPT FLUSH came after the registry check and before the script first took the engine, as if the FLUSH came first; the first take counts the script and records its kill mark atomically with taking the engine, and FLUSH waits for it until it ends, including between attempts. An attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing restores every first-refresh journal entry and the client random state used by LFU before releasing the keys, then is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits to take the engine again is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
   if by_sha {
@@ -579,8 +632,12 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
               let saved = pkg::store::attempt_undo_new();
               let undo = Some<pkg::store::AttemptUndo>(value: move saved);
               let due = pkg::store::attempt_due_new();
-              let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-              let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+              let sequence = pkg::store::sequence_inert();
+              let log_budget = pkg::store::log_budget_new();
+              if logged {
+                set sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+                set log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+              }
               let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
               loop (
                 invariant aligned: t^.len == declared.len
@@ -613,7 +670,11 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
                     if env.held.wrote {
                       set more = 18446744073709551615_u64;
                     }
-                    set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    if logged {
+                      set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    } else {
+                      set outcome = answer_call_entries_quiet::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    }
                   }
                   Done(..) => {
                     let v = Value::Nil();
@@ -666,8 +727,12 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
                 }
               }
               if bnot(retry) {
-                pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
-                pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+                if logged {
+                  pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
+                  pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+                } else if pkg::store::attempt_due_pending(staged: &due) {
+                  pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
+                }
               }
             }
           }

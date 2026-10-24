@@ -1,0 +1,65 @@
+# Temporary quick workflow for firn-script-meta-free: builds firn and runs only
+# the new network case, five times, on the branch as written and on a mutant
+# that does not fold the sequence token's changed flag into the attempt's
+# written flag. The case must pass every time on the first and fail every
+# time on the second, with the killed-script reply. Removed before the branch
+# is ready.
+name: tmp-script-meta-free
+
+on:
+  push:
+    branches: [claude/goofy-ritchie-04f04b]
+
+concurrency:
+  group: tmp-script-meta-free-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  as-written:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: make compiler
+      - run: make toolchain
+      - run: rustup default stable && cargo --version
+      - name: Build firn for the network cases
+        run: make firn-test
+      - name: The case passes five times
+        run: |
+          for round in 1 2 3 4 5; do
+            FIRN=$PWD/build/firn-test cargo test --manifest-path tests/Cargo.toml --locked --test network \
+              firn_runs_a_declared_script_that_wrote_to_its_end_past_a_kill_without_an_aof -- --show-output || exit 1
+          done
+
+  mutant:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: make compiler
+      - run: make toolchain
+      - run: rustup default stable && cargo --version
+      - name: Drop the fold of changed into the written flag
+        run: |
+          perl -0pi -e 's/  if sequence\^\.changed \{\n    set env\^\.held\.wrote = True\(\);\n  \}\n//' firn/scripting/entry.wf
+          git diff --stat
+          git diff --quiet firn/scripting/entry.wf && { echo "the mutation did not apply"; exit 1; }
+          git diff firn/scripting/entry.wf
+      - name: Build the mutant for the network cases
+        run: make firn-test
+      - name: The case fails five times, on the killed script
+        run: |
+          for round in 1 2 3 4 5; do
+            if FIRN=$PWD/build/firn-test cargo test --manifest-path tests/Cargo.toml --locked --test network \
+                firn_runs_a_declared_script_that_wrote_to_its_end_past_a_kill_without_an_aof -- --show-output > "round-$round.log" 2>&1; then
+              cat "round-$round.log"
+              echo "the mutant passed round $round"
+              exit 1
+            fi
+            grep -q 'Script killed by user with SCRIPT KILL' "round-$round.log" || { cat "round-$round.log"; echo "round $round failed for another reason"; exit 1; }
+          done

@@ -12679,6 +12679,46 @@ fn firn_restores_first_access_stamps_on_script_retries() {
     assert_eq!(finished(child).0, 0);
 }
 
+/// With the append-only file off, a script over declared keys holds no Meta
+/// while Lua runs, so the attempt learns that it wrote only from its local
+/// sequence token's changed flag. A script that wrote must then run to its end
+/// without being restarted, as it does with a held sequence: SCRIPT KILL is
+/// answered OK while it runs but only a restart, which a written attempt never
+/// makes, would let the kill take effect. A final counter of 1 cannot tell the
+/// two apart, because a restart restores the write and runs it again, so the
+/// case observes the kill: the script returns its result and leaves the
+/// counter, where an attempt that missed its write would be stopped at its
+/// next restart with the counter restored to absent.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_a_declared_script_that_wrote_to_its_end_past_a_kill_without_an_aof() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"2"]).with_port(&port_lease);
+    let mut running = connect_when_ready(port, &child);
+    let mut other = connect_when_ready(port, &child);
+    let script = "redis.call('INCR',KEYS[1]); \
+        local n=0; for i=1,3000000 do n=n+i end; return redis.call('GET',KEYS[1])";
+    running.write_all(&resp(&["EVAL", script, "1", "counter"])).expect("start the writing script");
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let reply = memory_request(&mut other, &["SCRIPT", "KILL"]);
+        if reply == "+OK\r\n" {
+            break;
+        }
+        assert_eq!(reply, "-NOTBUSY No scripts in execution right now.\r\n");
+        assert!(Instant::now() < until, "script did not start");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(whole_reply(&mut running, "the script that wrote"), "$1\r\n1\r\n");
+    assert_eq!(memory_request(&mut other, &["GET", "counter"]), "$1\r\n1\r\n");
+    drop(running);
+    drop(other);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// An abandoned attempt restores metadata before releasing the keyspace.
 /// SCRIPT KILL still reaches the pool and leaves those stamps restored.
 #[cfg(target_os = "linux")]

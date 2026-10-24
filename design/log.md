@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-24 A declared-key script holds no Meta while Lua runs when no AOF is kept
+
+Nodes: firn/scripts
+
+Summary: With the append-only file off, a declared-entry script attempt takes its sequence numbers from a local token, skips the append-only-file health check and takes Meta only to commit its staged expiry queue, so scripts on different keys serialize on their keys alone; attempts with the file on and whole-keyspace attempts keep the full-attempt hold, and the first-WRITE health check of a legacy script is stated for the file-on case only. Generic staging of every Meta access (A), solving live health checks first (B) and waiting for the engine pool (C) were not chosen. The throughput effect is unmeasured; its measurement plan is in `research/investigations/script-meta-free/README.md`.
+
 ## 2026-10-23 Store streams in Redis's nodes
 
 Nodes: firn/streams
