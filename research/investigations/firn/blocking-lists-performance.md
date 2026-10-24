@@ -360,3 +360,115 @@ Table, all 44 cells (head/base and twin/head: median, 95% interval):
 | zadd | 16 | 1.0035 | 0.9871-1.0219 | no detected change | 0.9962 | 0.9711-1.0093 |
 | zpopmin | 1 | 1.0136 | 0.9970-1.0268 | no detected change | 0.9927 | 0.9764-1.0029 |
 | zpopmin | 16 | 1.0383 | 1.0179-1.0820 | faster | 0.9917 | 0.9622-1.0036 |
+
+### A1 again: the narrowed hold (`7a4e4de`)
+
+Run 40082579797 (`compare`, `base` = `05f7e89`, `head` = `head-twin` = `7a4e4de`,
+the 20 tests of the default suite plus `linsert`, `lmove` and `lpush_new`,
+depths 16 and 1, 2 server CPUs on CPUs 2 and 4, clients on CPUs 16-31, 6 passes
+of 5 s, the append-only file off, profile `lpush 16;lmove 16;lpush_new 16`; the
+placement is that of the first A1 run). 46
+cells: 9 faster, 30 no detected change, 7 slower. The twin interval lies across
+1 in 45 cells and wholly below 1 in one (`ping_mbulk` depth 1, 0.9875, interval
+0.9818-0.9932), which is the noise of this run. The client is the limit
+(CPUs busy above 0.90) in `lrange_500` and `lrange_600` at depth 16 (35 of the
+828 pass rows of the three lines), which are not judged (the first is unchanged, the second faster).
+
+**The claim "a write onto an existing list runs as it did before the PR" is
+rejected for five cells, and the claim "creating a list under the hold costs
+nothing measurable" for both `lpush_new` cells.** The 7 cells wholly on the slower
+side:
+
+| test | depth | base (requests/s) | head (requests/s) | head/base | 95% interval |
+|---|---|---|---|---|---|
+| lpush_new | 16 | 3208521 | 1006388 | 0.3130 | 0.3070-0.3185 |
+| lpush_new | 1 | 735375 | 589262 | 0.8013 | 0.7879-0.8166 |
+| lmove | 16 | 3935176 | 3707904 | 0.9393 | 0.8972-0.9688 |
+| lpush | 16 | 4255664 | 4025858 | 0.9410 | 0.9291-0.9700 |
+| rpush | 16 | 4255518 | 4045741 | 0.9508 | 0.9425-0.9605 |
+| linsert | 1 | 687950 | 677634 | 0.9827 | 0.9743-0.9944 |
+| lpush | 1 | 779102 | 768174 | 0.9883 | 0.9790-0.9982 |
+
+Against the first A1 run (`da1e2c3`, every list producer held whole), the
+narrowing returned the cells it was made for: `lpush`, `rpush`, `linsert` and
+`lmove` at depth 16 went from 0.31 to 0.94-1.00 of `base`, and at depth 1 from
+0.83-0.88 to 0.98-0.99; `lrange_100` at depth 1, 1.5% slower in the first run, is
+unchanged now. So the attribution of that cost to the whole-keyspace hold, which
+the first run inferred from one profile, holds. Two costs remain, and they have
+different causes.
+
+*Creation of a list (`lpush_new`, 0.3130 and 0.8013).* Nearly every request
+creates its list, so nearly every request takes the whole-keyspace hold. The
+first `lpush_new 16` pass of `head` spends 38.78% of its cycles in
+`wf_cmap_hold` (the runtime function that takes the whole-keyspace hold) and
+10.66% in `wf__table_lock_entry`, against 5.53% in the entry lock and no whole
+hold in `base`; the allocator takes about 2% in `head` (`__libc_malloc2` 0.79%,
+`_int_malloc` 0.71%, `malloc` 0.51%). The cost is the hold, not the staged
+buffer or its copy, which the file being off does not run in any case; the copy
+is measured by A2. The ratio, 0.31 at depth 16, is the one the first A1 run found
+for every list producer (0.3077 to 0.3167), which is what the same hold taken on
+every request would give.
+
+*Writes onto an existing list (0.94-0.99 at five cells).* These commands take no
+whole hold now, but the profile of the first `lpush 16` pass of `head` has
+`wf_context_allocate` at 2.14% (1.19% in `base`), `wf__context_frame_release`
+at 1.04% (0.85%), and `run_list_write_entries.resume` (0.98%) and
+`run_list_write.resume` (0.65%), the two functions that the command now passes
+through before `run_push` and that `base` does not have; `lmove 16` has
+`wf_context_allocate` at 2.06% (1.48%) and `wf__context_frame_release` at 1.72%
+(1.15%). The dispatcher called `run_push` directly in `base`; in `head` it calls
+`run_list_write`, which calls `run_list_write_entries`, which calls `run_push`,
+three suspendable functions in place of one. This is read from one profile of one
+pass per image, so the attribution of the 2% to 6% to these frames is inferred;
+removing them is the test.
+
+Table, all 46 cells (head/base and twin/head: median, 95% interval):
+
+| test | depth | head/base | interval | verdict | twin/head | interval |
+|---|---|---|---|---|---|---|
+| get | 1 | 1.0014 | 0.9866-1.0168 | no detected change | 0.9977 | 0.9866-1.0151 |
+| get | 16 | 1.0424 | 1.0311-1.0550 | faster | 1.0089 | 0.9957-1.0150 |
+| hset | 1 | 1.0142 | 0.9931-1.0284 | no detected change | 0.9992 | 0.9685-1.0229 |
+| hset | 16 | 1.0003 | 0.9683-1.0292 | no detected change | 1.0000 | 0.9849-1.0261 |
+| incr | 1 | 0.9952 | 0.9797-1.0384 | no detected change | 1.0044 | 0.9801-1.0217 |
+| incr | 16 | 1.0121 | 1.0059-1.0223 | faster | 1.0029 | 0.9952-1.0099 |
+| linsert | 1 | 0.9827 | 0.9743-0.9944 | slower | 0.9995 | 0.9853-1.0104 |
+| linsert | 16 | 0.9958 | 0.9781-1.0110 | no detected change | 0.9986 | 0.9944-1.0113 |
+| lmove | 1 | 0.9850 | 0.9700-1.0059 | no detected change | 1.0021 | 0.9893-1.0144 |
+| lmove | 16 | 0.9393 | 0.8972-0.9688 | slower | 0.9887 | 0.9635-1.0113 |
+| lpop | 1 | 0.9936 | 0.9878-1.0044 | no detected change | 0.9960 | 0.9889-1.0176 |
+| lpop | 16 | 1.0197 | 1.0087-1.0314 | faster | 0.9968 | 0.9838-1.0170 |
+| lpush | 1 | 0.9883 | 0.9790-0.9982 | slower | 1.0011 | 0.9852-1.0094 |
+| lpush | 16 | 0.9410 | 0.9291-0.9700 | slower | 1.0037 | 0.9719-1.0262 |
+| lpush_new | 1 | 0.8013 | 0.7879-0.8166 | slower | 0.9958 | 0.9814-1.0136 |
+| lpush_new | 16 | 0.3130 | 0.3070-0.3185 | slower | 1.0096 | 0.9890-1.0316 |
+| lrange_100 | 1 | 0.9989 | 0.9935-1.0038 | no detected change | 0.9997 | 0.9924-1.0085 |
+| lrange_100 | 16 | 1.0199 | 1.0036-1.0307 | faster | 1.0008 | 0.9880-1.0135 |
+| lrange_300 | 1 | 0.9897 | 0.9814-1.0010 | no detected change | 1.0033 | 0.9914-1.0137 |
+| lrange_300 | 16 | 1.0054 | 0.9914-1.0205 | no detected change | 1.0080 | 0.9934-1.0152 |
+| lrange_500 | 1 | 1.0017 | 0.9962-1.0159 | no detected change | 0.9942 | 0.9834-1.0029 |
+| lrange_500 | 16 | 1.0000 | 0.9905-1.0264 | no detected change | 0.9990 | 0.9866-1.0048 |
+| lrange_600 | 1 | 0.9996 | 0.9863-1.0242 | no detected change | 0.9962 | 0.9919-1.0040 |
+| lrange_600 | 16 | 1.0035 | 1.0009-1.0061 | faster | 0.9985 | 0.9866-1.0032 |
+| mset | 1 | 1.0052 | 0.9817-1.0273 | no detected change | 1.0037 | 0.9729-1.0291 |
+| mset | 16 | 1.0585 | 1.0193-1.0999 | faster | 0.9316 | 0.8993-1.0235 |
+| ping_inline | 1 | 1.0220 | 0.9853-1.0754 | no detected change | 0.9955 | 0.9836-1.0057 |
+| ping_inline | 16 | 1.0421 | 1.0272-1.0503 | faster | 1.0096 | 0.9884-1.0182 |
+| ping_mbulk | 1 | 1.0104 | 0.9887-1.0420 | no detected change | 0.9875 | 0.9818-0.9932 |
+| ping_mbulk | 16 | 1.0502 | 1.0439-1.0662 | faster | 0.9977 | 0.9923-1.0088 |
+| rpop | 1 | 1.0037 | 0.9955-1.0073 | no detected change | 1.0064 | 0.9942-1.0128 |
+| rpop | 16 | 1.0051 | 0.9964-1.0147 | no detected change | 1.0026 | 0.9868-1.0128 |
+| rpush | 1 | 0.9805 | 0.9453-1.0105 | no detected change | 1.0153 | 0.9773-1.0415 |
+| rpush | 16 | 0.9508 | 0.9425-0.9605 | slower | 0.9978 | 0.9799-1.0126 |
+| sadd | 1 | 0.9868 | 0.9705-1.0031 | no detected change | 1.0035 | 0.9932-1.0270 |
+| sadd | 16 | 1.0151 | 0.9885-1.0329 | no detected change | 0.9856 | 0.9588-1.0168 |
+| set | 1 | 1.0170 | 0.9994-1.0335 | no detected change | 0.9971 | 0.9879-1.0054 |
+| set | 16 | 1.0012 | 0.9917-1.0168 | no detected change | 0.9994 | 0.9848-1.0071 |
+| spop | 1 | 0.9883 | 0.9753-1.0079 | no detected change | 1.0064 | 0.9878-1.0249 |
+| spop | 16 | 1.0046 | 0.9850-1.0226 | no detected change | 1.0087 | 0.9738-1.0379 |
+| xadd | 1 | 1.0143 | 1.0001-1.0269 | faster | 0.9951 | 0.9823-1.0069 |
+| xadd | 16 | 1.0220 | 0.9818-1.0803 | no detected change | 1.0044 | 0.9669-1.0575 |
+| zadd | 1 | 0.9931 | 0.9713-1.0158 | no detected change | 1.0128 | 0.9735-1.0464 |
+| zadd | 16 | 1.0093 | 0.9912-1.0291 | no detected change | 0.9871 | 0.9785-1.0091 |
+| zpopmin | 1 | 0.9957 | 0.9814-1.0166 | no detected change | 1.0213 | 0.9938-1.0355 |
+| zpopmin | 16 | 1.0003 | 0.9686-1.0294 | no detected change | 1.0127 | 0.9796-1.0459 |
