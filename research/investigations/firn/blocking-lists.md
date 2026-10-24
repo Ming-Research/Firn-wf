@@ -23,10 +23,11 @@ whole original command. An unsuccessful retry retains its original deadline
 and generation. Successful moves append newly ready destinations after the
 already queued keys. No connection wakes to compete for the value itself.
 
-Potential producers run existing held command parts. Only actual Redis
+Producers that create a list run existing held command parts (see [producer
+holds](#producer-holds)). Only actual Redis
 `dbAdd`-equivalent list creation stages a ready key: new LPUSH/RPUSH lists,
 new move destinations and list-valued RENAME/COPY targets. LPUSHX/RPUSHX and
-LINSERT enter the producer boundary but do not create a missing list. SET,
+LINSERT do not create a missing list. SET,
 DEL and type-changing replacement do not wake list requests. MOVE, RESTORE,
 SORT and SWAPDB have no command implementation in this base; future support
 needs its own exact dbAdd/dbSetValue analysis, not a blanket write hook.
@@ -49,6 +50,49 @@ settings, its own sequence and its own AOF records after any producer
 MULTI/EXEC wrapper. Its reply commits before another owner can execute a
 causally dependent command. A nonpromoted producer retains its existing
 private reply buffer; receipt order across different sockets is not promised.
+
+## Producer holds
+
+The first version ran every top-level list write through the held command
+parts under the whole-keyspace, Meta, event-hub and server-state hold, as
+`run_list_producer` does. Measured on the 14900K with two server CPUs and the
+append-only file off ([the record](blocking-lists-performance.md#a1-cost-on-existing-commands-append-only-file-off)),
+it ran LPUSH, RPUSH, LINSERT and LMOVE at 0.31 of the rate of main at pipeline
+depth 16 and at 0.83 to 0.88 at depth 1; about half the cycles were in the
+runtime's whole-keyspace hold, and the allocation and copy of the staged
+effects were each under 1%.
+
+A list write that cannot create a list does not need that hold:
+
+- A request registers under the whole hold only when its failed lookup finds
+  no live list at any key it names, and it is served when a list is created at
+  one of them (Redis `dbAdd`). SET, deletion and a replacement by another kind
+  neither serve nor remove it. So no key that holds a live list has a
+  registered request once a hold is released: the producer that created the
+  list served it before releasing.
+- A write onto a live list therefore readies nobody. An entry hold excludes the
+  whole hold, so a registration and such a write on one key never overlap.
+- LINSERT, LPUSHX and RPUSHX never create a list and always run holding their
+  key's entry and Meta. LPUSH and RPUSH do so when the entry holds a live list
+  (`list_kind` is `entry_wanted`); LMOVE and RPOPLPUSH unless the source holds a
+  live list and the destination, another key, holds none (`lmove_creates`). A
+  destination holding another kind is refused and creates nothing.
+- The test is a live list, not an existing entry. A request stays registered
+  on a key that a string with an expiry has taken. Once the expiry has passed,
+  and before anything removed the entry, a push to that key deletes the string
+  and creates a list, which readies the request; an existence test would run
+  it holding the entry only and serve nobody. The same holds for an entry
+  whose list has expired.
+- RENAME, RENAMENX and COPY always create their target and run
+  `run_list_producer`; a promoted connection runs every list write there too
+  ([ownership](connection-waits.md#ownership-and-delivery)).
+
+The entry-holding run answers nothing before it decides. When it finds that
+the command would create a list it returns, having changed no entry; the only
+state it leaves is the client's prepared elements, which the held part
+prepares again. A run that cannot create a list is the code main ran for
+these commands (`run_push`, `run_linsert`, `run_lmove_named`, `run_lmove` in
+`firn/commands/lists.wf`) with the test added.
 
 ## Ownership
 
@@ -218,8 +262,10 @@ readiness staging or new per-command hub access. Setup adds two owned Client
 fields and a retained WallClock handle to Keyspace; source inspection cannot
 prove these have zero cache/layout cost. Use the existing
 [performance experiment](connection-waits.md#performance-experiment-specified-before-implementation)
-to test the no-measurable-regression requirement. List producers deliberately
-pay whole-map/Meta/hub/server-state exclusion even with zero waiters.
+to test the no-measurable-regression requirement. List producers that create a
+list, and RENAME, RENAMENX and COPY, deliberately pay whole-map/Meta/hub/
+server-state exclusion even with zero waiters; the other list writes do not
+([producer holds](#producer-holds)).
 Current per-key FIFOs use the existing growing owned membership arrays; removal
 shifts the tail, so serving N clients on one key can require quadratic array
 movement. The private ready queue also deduplicates linearly. The FIFO-load
@@ -449,7 +495,8 @@ base grew with pushes times list length. Restart then replays that base
 before it listens. The fix keeps the whole-map hold and restores the one-key
 sequence for those five commands; RENAME, RENAMENX, COPY, LMOVE and
 RPOPLPUSH can change two keys and keep the general sequence, as their former
-paths did. A network case pushes 200 times onto a 20,032-element list inside
+paths did. (The writes that cannot create a list later went back to their
+entries' own hold, where they open the same sequence.) A network case pushes 200 times onto a 20,032-element list inside
 a rewrite window and bounds the rewritten base at 12 MiB; one image per push
 would add about 28 MB to its 9 MB dataset.
 
@@ -606,7 +653,7 @@ served waiter frames its own effects: an expired key removed before the pop
 or move gives `MULTI`, `DEL`, `LPOP`/`LMOVE`, `EXEC`; one effect stays bare.
 `blocking_commit` applies the rule to the three sites that append blocking
 effects (the immediate attempt, a served waiter and the list producers that
-share the held path). This is read from the Redis 7.2.16 source
+create a list and share the held path). This is read from the Redis 7.2.16 source
 (`src/blocked.c` `unblockClientOnKey`, `src/server.c`
 `propagatePendingCommands`) and rests on main's recorded lazy-expiry groups for
 ordinary commands. Redis 7.2.16 recorded the remaining cases in run

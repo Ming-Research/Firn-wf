@@ -891,7 +891,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_list_producer(store: store, kind: 60_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      run_list_write(store: store, kind: 60_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -902,7 +902,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_list_producer(store: store, kind: 61_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      run_list_write(store: store, kind: 61_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -1001,7 +1001,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_list_producer(store: store, kind: 72_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      run_list_write(store: store, kind: 72_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -1023,7 +1023,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_list_producer(store: store, kind: 62_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      run_list_write(store: store, kind: 62_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -1034,7 +1034,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_list_producer(store: store, kind: 63_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      run_list_write(store: store, kind: 63_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -1045,7 +1045,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_list_producer(store: store, kind: 74_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      run_list_write(store: store, kind: 74_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -1058,7 +1058,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
         refused(client: client, input: input, name: name, fits: fits);
       }
       if go {
-        run_list_producer(store: store, kind: 75_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+        run_list_write(store: store, kind: 75_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
       }
       return unit;
     }

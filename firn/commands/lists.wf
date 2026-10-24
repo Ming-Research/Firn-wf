@@ -282,6 +282,41 @@ fn push_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
   }
 }
 
+fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, front: Bool, existing: Bool) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "LPUSH key element [element ...] and RPUSH: pushes each element in turn at the list's head (front) or tail, creating the list for an absent key, and answers its length; LPUSHX and RPUSHX (existing) push only onto a list that exists and answer 0 for an absent key. A key whose expiry has been reached is removed first, the removal recorded before the push. Returns False, having answered nothing, when LPUSH or RPUSH finds no live list at the key and so would create one: only a push that creates a list can make a blocked client ready, and run_list_producer, which holds the keyspace and the event hub together, runs that one again. A push onto a live list, and LPUSHX and RPUSHX, which never create, are complete here and return True.";
+  let journal = None<pkg::store::AccessJournal>();
+  push_parse(input: input, args: args, client: client, time: time, front: front);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let logged = store^.logging;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    if bnot(existing) {
+      let held = list_kind(slot: slot, now: client^.now);
+      if held != entry_wanted {
+        return False();
+      }
+    }
+    let sequence = if logged {
+      if aof_refuse(meta: m, client: client) {
+        return True();
+      }
+      let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
+    if logged {
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  push_finish(client: client);
+  return True();
+}
+
 fn pop_one(list: &Box<Ring<Box<Slots<u8>>>>, from_head: Bool) -> popped: Option<Box<Slots<u8>>> writes(list) {
   doc "Removes and returns the element at the list's head or tail, none for an empty list.";
   if list^.inner.len > 0_u64 {
@@ -1042,6 +1077,38 @@ fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: 
   }
 }
 
+fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "LINSERT key BEFORE|AFTER pivot element: inserts the element just before or after the first element equal to the pivot and answers the list's new length, -1 when no element equals the pivot and 0 for an absent key. BEFORE and AFTER are read in either case up to a zero byte, as Redis's strcasecmp reads them, and anything else is a syntax error before the key is looked up. It never creates a list, so it never makes a blocked client ready and always returns True, with its answer given.";
+  let journal = None<pkg::store::AccessJournal>();
+  let ready = linsert_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
+    return True();
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let logged = store^.logging;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let sequence = if logged {
+      if aof_refuse(meta: m, client: client) {
+        return True();
+      }
+      let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+    if logged {
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  linsert_finish(client: client);
+  return True();
+}
+
 fn note_position(positions: &Box<Slots<u64>>, position: u64) -> result: unit writes(positions) {
   doc "Adds a matched position, growing the space for them when it is full.";
   let capacity = positions^.inner.cap;
@@ -1282,6 +1349,69 @@ fn end_named(input: &[u8], span: Span) -> end: u64 reads(input) {
     return 2_u64;
   }
   return 0_u64;
+}
+
+fn lmove_creates(slots: &Entries<Entry>, source: u64, destination: u64, now: u64) -> creates: Bool reads(slots) {
+  doc "Whether LMOVE or RPOPLPUSH over these entries would push an element onto a destination that holds no live list: the source, another key, holds a live list and the destination holds nothing, or only an entry whose expiry has been reached at now. A destination holding another kind is refused and creates nothing.";
+  if source == destination {
+    return False();
+  }
+  if source < slots^.len {
+    let found = list_kind(slot: &slots^[source], now: now);
+    if found == entry_wanted {
+      if destination < slots^.len {
+        let target = list_kind(slot: &slots^[destination], now: now);
+        let vacant = target == entry_none;
+        let lapsed = target == entry_lapsed;
+        return bor(vacant, lapsed);
+      }
+    }
+  }
+  return False();
+}
+
+fn run_lmove_named(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT: reads the two ends, the source's first, refusing anything but LEFT or RIGHT as a syntax error before any key is looked up, and moves the element as run_lmove does, returning what it returns; a syntax error is answered and returns True.";
+  let ready = lmove_parse(input: input, args: args, client: client);
+  if bnot(ready) {
+    return True();
+  }
+  let from_head = client^.low == 0_i64;
+  let to_head = client^.high == 0_i64;
+  let done = run_lmove(store: store, input: input, args: args, client: client, env: env, time: time, from_head: from_head, to_head: to_head);
+  return done;
+}
+
+fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_head: Bool, to_head: Bool) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT and RPOPLPUSH source destination, which moves from the tail to the head: removes the element at the source list's head (from_head) or tail, pushes it onto the destination list's head (to_head) or tail, creating the destination for an absent key and removing the source when it is left empty, and answers the element; a source equal to the destination rotates the list. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, an absent source answers the null bulk string without the destination being looked at, a key holding another kind is refused, and a key found expired is removed, its removal recorded before the move. Returns False, having answered nothing, when the source holds a live list and the destination, another key, holds no live list, since that move creates the destination and may make a blocked client ready: run_list_producer, which holds the keyspace and the event hub together, runs that one again. Every other move, answer or refusal is complete here and returns True.";
+  let journal = None<pkg::store::AccessJournal>();
+  let ks = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &ks);
+  set client^.now = time^.check;
+  let logged = store^.logging;
+  atomic slots = &store^.keys[ks], m = &store^.meta {
+    if lmove_creates(slots: slots, source: pair.source, destination: pair.target, now: client^.now) {
+      return False();
+    }
+    let sequence = if logged {
+      if aof_refuse(meta: m, client: client) {
+        return True();
+      }
+      let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+    if logged {
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  lmove_finish(client: client);
+  return True();
 }
 
 struct ListWork {
