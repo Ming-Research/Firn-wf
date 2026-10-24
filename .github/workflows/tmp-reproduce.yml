@@ -1,0 +1,55 @@
+# Temporary quick check of firn-perf-reproduce; deleted before the branch is
+# ready. The selftests need no server; the container job follows the guide
+# from nothing on a hosted runner, through the probe's one cell for its four
+# vCPUs, and checks the table.
+name: tmp-reproduce
+on:
+  push:
+    branches: [claude/perf-reproduce]
+
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh research/experiments/redis-bench/redis-bench.sh placement-selftest
+
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      FIRN_REVISION: ${{ github.sha }}
+      REPRODUCE_WHERE: container
+      REPRODUCE_PLACEMENT: host
+    steps:
+      - uses: actions/checkout@v4
+      - run: lscpu -e=CPU,CORE,SOCKET,ONLINE; free -m
+      - run: bash research/experiments/redis-bench/reproduce.sh "$RUNNER_TEMP/reproduce"
+      - run: cat "$RUNNER_TEMP/reproduce/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        if: always()
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tmp-reproduce-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/reproduce/guide.sh
+            ${{ runner.temp }}/reproduce/guide.log
+            ${{ runner.temp }}/reproduce/summary.md
+            ${{ runner.temp }}/reproduce/results/**/*.csv
+            ${{ runner.temp }}/reproduce/results/**/*.txt
+
+  # The 14900K's way of following the guide, on a hosted runner as far as the
+  # build step: a fresh home and checkout, in a session of its own.
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      FIRN_REVISION: ${{ github.sha }}
+      REPRODUCE_WHERE: native
+      SESSION_FILE: ~/.cache/firn-redis-bench/session
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash research/experiments/redis-bench/reproduce.sh "$RUNNER_TEMP/reproduce-native" build
+      - run: test -f ~/.cache/firn-redis-bench/session && echo "the session record is kept" || echo "no session record left"
+        if: always()

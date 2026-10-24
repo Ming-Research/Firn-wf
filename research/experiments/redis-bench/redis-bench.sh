@@ -14,7 +14,9 @@
 #                                 and the per-CPU busy reading against a fake
 #                                 /proc/stat, plus compare selection, client
 #                                 allocation/CSV, version and competitor pure
-#                                 logic, without building or starting a server
+#                                 logic, and the step markers of
+#                                 docs/benchmarking.md, without building or
+#                                 starting a server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
 #                                 Redis 7.0's redis-benchmark default suite
 #                                 (SUITE_DEFAULT) on every line
@@ -796,17 +798,23 @@ compare_rows_selftest() (
     echo 'compare-rows-selftest: passed'
 )
 
-# Keep pure competitor/client checks on the gate's existing selftest path.
+# Keep pure competitor/client checks on the gate's existing selftest path;
+# the guide's markers (guide-blocks.py) and the reproduce table check
+# (reproduce-table.py) are checked on it too.
 # These helpers are sourced before ROOT/build initialization and start nothing.
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$BENCH_DIR/competitors.sh"
 . "$BENCH_DIR/competitor-versions.sh"
+. "$BENCH_DIR/host-info.sh"
 if [ "${1:-}" = placement-selftest ]; then
     placement_selftest
     compare_rows_selftest
     competitors_selftest
     versions_selftest
     python3 "$BENCH_DIR/compare-client.py" selftest
+    python3 -I "$BENCH_DIR/guide-blocks.py" selftest
+    python3 -I "$BENCH_DIR/reproduce-table.py" selftest
+    python3 -I "$BENCH_DIR/guide-blocks.py" check "$BENCH_DIR/../../../docs/benchmarking.md"
     exit 0
 fi
 
@@ -830,12 +838,25 @@ SECONDS_PER_RUN=${SECONDS_PER_RUN:-12}
 PORT=${PORT:-$((10000 + $$ % 400 * 50))}
 MODE=${1:-bench}
 
+mkdir -p "$OUT"
+# This is the only place the host settings are recorded, standalone and in CI
+# alike. CI wrote its runner and tool inventory here first; standalone runs
+# create host.txt here.
+record_host_system >>"$OUT/host.txt"
+{
+    echo "measurement-mode: $MODE"
+    host_revision=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || host_revision=
+    echo "firn-checkout: ${host_revision:-unknown}"
+    echo 'whitefoot-pin-begin'
+    host_read_file "$ROOT/whitefoot.pin"
+    echo 'whitefoot-pin-end'
+    host_benchmark_version=$(redis-benchmark --version 2>/dev/null) || host_benchmark_version=
+    echo "redis-benchmark: ${host_benchmark_version:-unknown}"
+} >>"$OUT/host.txt"
 case $MODE in
     compare|scale|workloads|quick) ;;
     *) select_placement 2 "$DEFAULT_CLIENT_THREADS" ;;
 esac
-
-mkdir -p "$OUT"
 # firn is linked as a server would be, its module and the runtime's units
 # optimized together; FIRN_LINK names other link options, or none.
 if [ "$MODE" != compare ]; then
@@ -1574,7 +1595,7 @@ if [ "$MODE" = compare ]; then
     image_names=$(sed -n '2p' "$OUT/compare-selection.txt")
     competitor_names=$(sed -n '3p' "$OUT/compare-selection.txt")
     for pair in $IMAGES; do
-        sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/"
+        sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/" | tee -a "$OUT/host.txt"
     done
     if [ -n "${COMPARE_LINES:-}" ]; then
         echo "setting,compare_run=$([ "$COMPARE_PROBE" = true ] && echo probe || echo full)"

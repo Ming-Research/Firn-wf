@@ -167,7 +167,8 @@ and its twin, and every competitor, see the same drift.
 ### Rule 4: versions
 
 - The baseline fixes each competitor's formal release and archive SHA-256
-  in the install workflow and instrument; repeated installs use those pins,
+  in the [install script](../../experiments/redis-bench/install-competitors.sh)
+  and instrument; repeated installs use those pins,
   and adopting a newer release requires updating both. On 2026-10-13 the
   selected releases were Valkey 9.1.2
   ([releases](https://github.com/valkey-io/valkey/releases); 9.2.0-rc1 is a
@@ -191,7 +192,9 @@ and its twin, and every competitor, see the same drift.
   [Installation evidence and remaining pin checks](../deployment-performance/README.md#compare-baseline-instrument)
   state how the pins were obtained and what remains unverified.
 - Installation on the 14900K is performed only by the dispatch-only install
-  workflow; its current receipts and executable checks establish availability,
+  workflow, which calls that script; on another Linux host the
+  [reproduction guide](../../../docs/benchmarking.md) runs it directly.
+  Its current receipts and executable checks establish availability,
   not an assumed machine state. The probe may run without Dragonfly or Garnet (each
   absent line printed as `skip,<line>,no executable`). The full baseline
   may not: a competitor set short of all four leaves the comparison
