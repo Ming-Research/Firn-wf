@@ -354,7 +354,8 @@ fn accept_emfile_case(native: bool, shutdown_while_saturated: bool) {
     let executable = std::env::var_os("FIRN").expect("validated FIRN executable");
     let mut command = Command::new("prlimit");
     command.args(["--nofile=256:256", "--"]).arg(executable)
-        .args([port.to_string(), "0".to_owned(), "-".to_owned()])
+        .args(["--port".to_owned(), port.to_string(), "--firn-clients".to_owned(), "0".to_owned(),
+            "--appendonly".to_owned(), "no".to_owned()])
         .current_dir(program.working_directory())
         .env("WF_WORKERS", "1").env("WF_DRIVERS", "1")
         .env_remove("WF_REQUIRE_WINDOWS_IOCP")
