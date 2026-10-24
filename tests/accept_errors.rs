@@ -278,35 +278,48 @@ fn assert_saturated_quiet(child: &ProgramChild, native: bool, port: u16, budget:
         failure_diagnostics(child, native, port));
 }
 
-/// The limiter's second diagnostic carries the number of errors it held back.
-/// A saturated table keeps failing every 100 ms, so that line follows the first
-/// by about a second. Wait for it here, so the check of the final stderr below
-/// always has a suffixed line to read, whatever the quiet phase happened to see.
-fn await_suppressed_log(child: &ProgramChild, native: bool, port: u16, budget: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !matches!(child.stderr_occurrences(SUPPRESSED_LOG_SUFFIX), Some(count) if count > 0) {
+/// A diagnostic after the first carries the number of errors the limiter held
+/// back. A saturated table keeps failing every 100 ms and a diagnostic is due a
+/// second after the previous one, so the second and third diagnostics follow the
+/// first by about one and two seconds. Wait for both suffixed lines here, so the
+/// check of the final stderr below always has them, whatever the quiet phase saw:
+/// a count that is never cleared differs from a cleared one only from the third
+/// diagnostic on.
+fn await_suppressed_logs(child: &ProgramChild, native: bool, port: u16, budget: &str) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !matches!(child.stderr_occurrences(SUPPRESSED_LOG_SUFFIX), Some(count) if count >= 2) {
         assert!(Instant::now() < deadline,
-            "no accept diagnostic carried a suppressed-error count within five seconds of \
-            saturation: {budget}{}", failure_diagnostics(child, native, port));
+            "fewer than two accept diagnostics carried a suppressed-error count within eight \
+            seconds of saturation: {budget}{}", failure_diagnostics(child, native, port));
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
+/// Most errors one suppressed count can cover. After a diagnostic the loop waits
+/// 100 ms before each retry, and the next diagnostic is due one second after the
+/// previous one finished, so at most nine errors fall between two diagnostics.
+/// Ten leaves one for timer rounding.
+const MOST_SUPPRESSED_BETWEEN_LOGS: u64 = 10;
+
 /// Check what the limiter reported over the whole run. The first diagnostic is
 /// the bare EMFILE line; every later one is that line plus ` (suppressed N
-/// accept errors)`, N a positive decimal without leading zeros. The first N is
-/// at least 2: the limiter holds the second diagnostic back for a second, which
-/// spans many 100 ms retries, and a count stuck at 1 would show a reset on each
-/// error. Together the counts and the lines cannot exceed the errors the pause
-/// permits in the fault window, which fails a count that is never cleared.
-fn assert_limiter_counts(stderr: &[u8], fault_elapsed: Duration, budget: &str) {
+/// accept errors)`, N a positive decimal without leading zeros and at most
+/// `MOST_SUPPRESSED_BETWEEN_LOGS`. A count that is never cleared adds the earlier
+/// counts to each later one, so from the third diagnostic on it passes that
+/// limit (expected to be about 18 against 9 on an unloaded runner). The first N
+/// is also at least 2: the second diagnostic waits a second, which spans many
+/// 100 ms retries, and a count that restarts on every error would stay at 1.
+/// A correct count never passes the limit, whatever the load, because retries
+/// are never closer than 100 ms; scheduling delay only shrinks counts, so the
+/// limit can miss a fault on a starved runner but cannot raise a false alarm.
+fn assert_limiter_counts(stderr: &[u8], budget: &str) {
     let text = String::from_utf8_lossy(stderr);
     let lines = text.lines().filter(|line| line.as_bytes().starts_with(ACCEPT_LOG_PREFIX))
         .collect::<Vec<_>>();
-    assert!(lines.len() >= 2, "expected the EMFILE line and a suppressed-count line: {budget}; stderr={text}");
+    assert!(lines.len() >= 3,
+        "expected the EMFILE line and two suppressed-count lines: {budget}; stderr={text}");
     assert_eq!(lines[0], "Accepting client connection: Too many open files",
         "the first accept diagnostic carries no suppressed count: {budget}; stderr={text}");
-    let mut errors = lines.len() as u64;
     let mut counts = Vec::new();
     for line in &lines[1..] {
         let count = line
@@ -320,17 +333,13 @@ fn assert_limiter_counts(stderr: &[u8], fault_elapsed: Duration, budget: &str) {
             {budget}; stderr={text}");
         let count: u64 = count.parse().unwrap_or_else(|error| panic!(
             "suppressed count {count:?} is not a u64: {error}: {budget}; stderr={text}"));
-        errors += count;
+        assert!(count <= MOST_SUPPRESSED_BETWEEN_LOGS,
+            "suppressed count {count} exceeds the {MOST_SUPPRESSED_BETWEEN_LOGS} errors that fit \
+            between two diagnostics, so a count was not cleared after its report: {budget}; stderr={text}");
         counts.push(count);
     }
     assert!(counts[0] >= 2, "the first suppressed count covers about a second of 100 ms retries, \
         got {}: {budget}; stderr={text}", counts[0]);
-    // Every accept error but ConnectionAborted waits 100 ms before the next
-    // attempt, so the fault window holds at most one error per 100 ms plus the first.
-    let possible = (fault_elapsed.as_millis() / 100) as u64 + 2;
-    assert!(errors <= possible,
-        "logged errors plus suppressed counts ({errors}) exceed the {possible} the 100 ms pause \
-        permits in {fault_elapsed:?}: counts={counts:?}; {budget}; stderr={text}");
 }
 
 fn stop_after_emfile(
@@ -367,7 +376,7 @@ fn stop_after_emfile(
     assert!(total_logs as u64 <= allowed_logs,
         "accept diagnostics exceeded one per second plus two boundary lines before exit: \
         logs={total_logs}, allowed={allowed_logs}, elapsed={fault_elapsed:?}; {budget}; stderr={errors}");
-    assert_limiter_counts(&output.stderr, fault_elapsed, budget);
+    assert_limiter_counts(&output.stderr, budget);
 }
 
 #[test]
@@ -506,7 +515,7 @@ fn accept_emfile_case(native: bool, shutdown_while_saturated: bool) {
     assert_eq!(descriptors(&child, native, port), previous,
         "all saturated descriptors must remain open during the quiet phase: {budget}{}",
         failure_diagnostics(&child, native, port));
-    await_suppressed_log(&child, native, port, &budget);
+    await_suppressed_logs(&child, native, port, &budget);
     if shutdown_while_saturated {
         stop_after_emfile(child, &mut admitted[0], native, port, &budget, Duration::from_secs(1), fault_began);
         return;
