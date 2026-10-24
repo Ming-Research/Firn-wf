@@ -1,0 +1,901 @@
+alias Span = pkg::protocol::Span;
+alias IntegerConfig = pkg::commands::IntegerConfig;
+alias IoError = std::io::IoError;
+alias HandleFactory = std::io::HandleFactory;
+alias InputStream = std::io::InputStream;
+alias OutputStream = std::io::OutputStream;
+
+const config_no_listener: Array<u8, 44> = "Configured to not listen anywhere, exiting.\n";
+
+const config_fatal: Array<u8, 88> = "\n*** FATAL CONFIG FILE ERROR (Redis 7.2.16) ***\nReading the configuration file, at line ";
+
+const config_line_prefix: Array<u8, 6> = "\n>>> '";
+
+const config_line_suffix: Array<u8, 2> = "'\n";
+
+const config_bad_directive: Array<u8, 42> = "Bad directive or wrong number of arguments";
+
+const config_wrong_arity: Array<u8, 25> = "wrong number of arguments";
+
+const config_unbalanced: Array<u8, 39> = "Unbalanced quotes in configuration line";
+
+const config_bad_integer: Array<u8, 43> = "argument couldn't be parsed into an integer";
+
+const config_int_bounds: Array<u8, 51> = "argument must be between 0 and 2147483647 inclusive";
+
+const config_name_maxclients: Array<u8, 10> = "MAXCLIENTS";
+
+const config_size_bounds: Array<u8, 60> = "argument must be between 0 and 9223372036854775807 inclusive";
+
+const config_bad_bool: Array<u8, 30> = "argument must be 'yes' or 'no'";
+
+const config_empty_file: Array<u8, 29> = "appendfilename can't be empty";
+
+const config_file_path: Array<u8, 47> = "appendfilename can't be a path, just a filename";
+
+const config_bind_many: Array<u8, 45> = "firn supports only one IPv4 bind address or *";
+
+const config_include_gap: Array<u8, 56> = "firn cannot yet read include paths (firn-req-host-paths)";
+
+const config_dir_gap: Array<u8, 66> = "firn cannot yet change its working directory (firn-req-host-paths)";
+
+const config_path_gap: Array<u8, 79> = "firn cannot yet open paths outside its working directory (firn-req-host-paths)\n";
+
+const config_open_prefix: Array<u8, 37> = "Fatal error, can't open config file '";
+
+const config_open_suffix: Array<u8, 3> = "': ";
+
+const config_io_unknown: Array<u8, 39> = "firn: I/O error description unavailable";
+
+const config_too_large: Array<u8, 47> = "firn: configuration exceeds addressable memory\n";
+
+const config_arg_error: Array<u8, 38> = "firn: cannot read invocation argument\n";
+
+const config_read_error: Array<u8, 33> = "firn: cannot read configuration: ";
+
+const config_clients_error: Array<u8, 40> = "firn-clients must be an unsigned integer";
+
+const config_hex_digits: Array<u8, 16> = "0123456789abcdef";
+
+const config_name_clients: Array<u8, 12> = "FIRN-CLIENTS";
+
+const config_name_include: Array<u8, 7> = "INCLUDE";
+
+const config_name_dir: Array<u8, 3> = "DIR";
+
+const config_name_memory: Array<u8, 9> = "MAXMEMORY";
+
+const config_name_policy: Array<u8, 16> = "MAXMEMORY-POLICY";
+
+const config_name_samples: Array<u8, 17> = "MAXMEMORY-SAMPLES";
+
+const config_name_factor: Array<u8, 14> = "LFU-LOG-FACTOR";
+
+const config_name_decay: Array<u8, 14> = "LFU-DECAY-TIME";
+
+const config_name_tenacity: Array<u8, 27> = "MAXMEMORY-EVICTION-TENACITY";
+
+fn config_buffer() -> buffer: Text pure {
+  let bytes = box_slots_new::<u8>(capacity: 128_u64);
+  let valid = True();
+  return Text(bytes: move bytes, valid: valid);
+}
+
+fn config_append(buffer: &Text, source: &[u8]) -> result: unit reads(source), writes(buffer) {
+  doc "Appends bytes without a fixed configuration-size limit; arithmetic exhaustion marks the buffer invalid, which every consuming startup path checks. Reserve the full checked sum before the shared append helper, so its reservation never needs to grow or hit its own ceiling and every byte has room.";
+  if buffer^.valid {
+  } else {
+    return unit;
+  }
+  let before = buffer^.bytes.inner.len;
+  let count = source^.len;
+  let needed = match before +checked count {
+    Ok(value: sum) => {
+      give sum;
+    }
+    Err(error: overflow) => {
+      set buffer^.valid = False();
+      return unit;
+    }
+  }
+  if needed > buffer^.bytes.inner.cap {
+    let capacity = buffer^.bytes.inner.cap;
+    let target = needed;
+    match capacity *checked 2_u64 {
+      Ok(value: doubled) => {
+        set target = imax(needed, doubled);
+      }
+      Err(error: overflow) => {
+      }
+    }
+    invariant growth: target >= needed;
+    invariant grows_capacity: target >= buffer^.bytes.inner.cap;
+    grow(cell: &buffer^.bytes, capacity: target);
+  }
+  invariant preserved: buffer^.bytes.inner.len == before;
+  invariant room: buffer^.bytes.inner.cap >= needed;
+  pkg::store::log_append_plain(log: &buffer^.bytes, bytes: source);
+  return unit;
+}
+
+fn config_byte(buffer: &Text, byte: u8) -> result: unit writes(buffer) {
+  let one = array_filled::<u8, 1>(value: byte);
+  config_append(buffer: buffer, source: &one[0_u64..1_u64]);
+  return unit;
+}
+
+fn config_number(buffer: &Text, number: u64) -> result: unit writes(buffer) {
+  let digits = array_filled::<u8, 20>(value: 0_u8);
+  let value = number;
+  let count = 0_u64;
+  loop (
+    invariant stored_digits: count <= 20_u64
+  ) {
+    let digit = value % 10_u64;
+    invariant decimal_digit: digit <= 9_u64;
+    let narrow = cvt::<u64, u8>(digit);
+    invariant narrow_digit: narrow <= 9_u8;
+    let byte = narrow + 48_u8;
+    if count < 20_u64 {
+      set digits[count] = byte;
+      set count = count + 1_u64;
+    }
+    set value = value / 10_u64;
+    if value == 0_u64 {
+      break;
+    }
+  }
+  loop (
+    invariant remaining_digits: count <= 20_u64
+  ) {
+    if count == 0_u64 {
+      break;
+    }
+    set count = count - 1_u64;
+    if count < 20_u64 {
+      config_byte(buffer: buffer, byte: digits[count]);
+    }
+  }
+  return unit;
+}
+
+fn config_write(factory: &HandleFactory, output: &OutputStream, bytes: &[u8]) -> result: unit reads(bytes), writes(factory), writes(output) waits {
+  let sent = 0_u64;
+  let length = bytes^.len;
+  let deadline = None<std::time::Instant>();
+  let cancel = std::time::cancel_never();
+  loop (
+    invariant pending: sent <= length
+  ) {
+    if sent == length {
+      break;
+    }
+    match std::io::write_once(factory: factory, output: output, source: bytes, start: sent, end: length, deadline: deadline, cancel: &cancel) {
+      Ok(value: next) => {
+        invariant sent_bound: next <= length;
+        if next == sent {
+          break;
+        }
+        set sent = next;
+      }
+      Err(error: problem) => {
+        break;
+      }
+    }
+  }
+  return unit;
+}
+
+fn config_emit(factory: &HandleFactory, output: &OutputStream, text: &Text) -> result: unit reads(text), writes(factory), writes(output) waits {
+  if text^.valid {
+    let length = text^.bytes.inner.len;
+    config_write(factory: factory, output: output, bytes: &text^.bytes.inner[0_u64..length]);
+  } else {
+    config_write(factory: factory, output: output, bytes: &config_too_large[0_u64..47_u64]);
+  }
+  return unit;
+}
+
+fn config_description(buffer: &Text, problem: &IoError) -> result: unit reads(problem), writes(buffer) {
+  let capacity = 128_u64;
+  loop {
+    let bytes = box_array_filled::<u8>(count: capacity, value: 0_u8);
+    match std::io::error_copy_description(error: problem, destination: &bytes.inner[0_u64..capacity], start: 0_u64, end: capacity) {
+      Ok(value: end) => {
+        invariant description_bound: end <= capacity;
+        config_append(buffer: buffer, source: &bytes.inner[0_u64..end]);
+        return unit;
+      }
+      Err(error: failure) => {
+        match failure {
+          DescriptionTooSmall(required: needed) => {
+            set capacity = needed;
+          }
+          DescriptionUnavailable() => {
+            config_append(buffer: buffer, source: &config_io_unknown[0_u64..39_u64]);
+            return unit;
+          }
+        }
+      }
+    }
+  }
+}
+
+fn config_failure(factory: &HandleFactory, output: &OutputStream, line: &[u8], number: u64, reason: &[u8]) -> result: unit reads(line), reads(reason), writes(factory), writes(output) waits {
+  let message = config_buffer();
+  config_append(buffer: &message, source: &config_fatal[0_u64..88_u64]);
+  config_number(buffer: &message, number: number);
+  config_append(buffer: &message, source: &config_line_prefix[0_u64..6_u64]);
+  config_append(buffer: &message, source: line);
+  config_append(buffer: &message, source: &config_line_suffix[0_u64..2_u64]);
+  config_append(buffer: &message, source: reason);
+  config_byte(buffer: &message, byte: 10_u8);
+  config_emit(factory: factory, output: output, text: &message);
+  return unit;
+}
+
+struct ConfigIngest {
+  used: u64;
+  truncated: Bool;
+  invariant chunk(state): state.used < 1024_u64;
+}
+
+fn config_ingest(buffer: &Text, ingest: &ConfigIngest, source: &[u8]) -> result: unit reads(source), writes(buffer), writes(ingest) contract {
+  ensures ingest^.used < 1024_u64;
+} {
+  doc "Matches Redis loadServerConfig's fgets of at most 1024 bytes followed by sdscat: NUL hides the remainder of that fgets chunk, but a following line or 1024-byte chunk is read normally. State persists across arbitrary host read boundaries.";
+  let length = source^.len;
+  for (
+    index in 0_u64..length,
+    invariant chunk: ingest^.used < 1024_u64
+  ) {
+    let byte = source^[index];
+    if ingest^.truncated {
+    } else if byte == 0_u8 {
+      set ingest^.truncated = True();
+    } else {
+      config_byte(buffer: buffer, byte: byte);
+    }
+    set ingest^.used = ingest^.used + 1_u64;
+    invariant filled_chunk: ingest^.used <= 1024_u64;
+    let newline = byte == 10_u8;
+    let full = ingest^.used == 1024_u64;
+    if bor(newline, full) {
+      set ingest^.used = 0_u64;
+      set ingest^.truncated = False();
+    }
+    invariant restored_chunk: ingest^.used < 1024_u64;
+  }
+  return unit;
+}
+
+fn config_read_file(factory: &HandleFactory, file: std::fs::ReadFile, output: &OutputStream, buffer: &Text) -> success: Bool writes(factory), writes(output), writes(buffer) waits {
+  let chunk = array_filled::<u8, 4096>(value: 0_u8);
+  let offset = 0_u64;
+  let untruncated = False();
+  let ingest = ConfigIngest(used: 0_u64, truncated: untruncated);
+  let success = True();
+  loop (
+    invariant ingest_chunk: ingest.used < 1024_u64
+  ) {
+    match std::fs::read_at(factory: factory, file: &file, destination: &chunk[0_u64..4096_u64], file_offset: offset, start: 0_u64, end: 4096_u64) {
+      Ok(value: next) => {
+        invariant read_bound: next <= 4096_u64;
+        config_ingest(buffer: buffer, ingest: &ingest, source: &chunk[0_u64..next]);
+        match offset +checked next {
+          Ok(value: advanced) => {
+            set offset = advanced;
+          }
+          Err(error: overflow) => {
+            set buffer^.valid = False();
+          }
+        }
+        if buffer^.valid {
+        } else {
+          set success = False();
+          config_write(factory: factory, output: output, bytes: &config_too_large[0_u64..47_u64]);
+          break;
+        }
+      }
+      Err(error: stop) => {
+        match stop {
+          ReadEnd() => {
+          }
+          ReadFailed(error: problem) => {
+            let message = config_buffer();
+            config_append(buffer: &message, source: &config_read_error[0_u64..33_u64]);
+            config_description(buffer: &message, problem: &problem);
+            config_byte(buffer: &message, byte: 10_u8);
+            config_emit(factory: factory, output: output, text: &message);
+            set success = False();
+          }
+        }
+        break;
+      }
+    }
+  }
+  match std::fs::close_read(factory: factory, file: move file) {
+    Ok(value: closed) => {
+    }
+    Err(error: problem) => {
+      let message = config_buffer();
+      config_append(buffer: &message, source: &config_read_error[0_u64..33_u64]);
+      config_description(buffer: &message, problem: &problem);
+      config_byte(buffer: &message, byte: 10_u8);
+      config_emit(factory: factory, output: output, text: &message);
+      set success = False();
+    }
+  }
+  return success;
+}
+
+fn config_read_stdin(factory: &HandleFactory, input: &InputStream, output: &OutputStream, buffer: &Text) -> success: Bool writes(factory), writes(input), writes(output), writes(buffer) waits {
+  let chunk = array_filled::<u8, 4096>(value: 0_u8);
+  let untruncated = False();
+  let ingest = ConfigIngest(used: 0_u64, truncated: untruncated);
+  let deadline = None<std::time::Instant>();
+  let cancel = std::time::cancel_never();
+  loop (
+    invariant ingest_chunk: ingest.used < 1024_u64
+  ) {
+    match std::io::read_next(factory: factory, input: input, destination: &chunk[0_u64..4096_u64], start: 0_u64, end: 4096_u64, deadline: deadline, cancel: &cancel) {
+      Ok(value: next) => {
+        invariant read_bound: next <= 4096_u64;
+        config_ingest(buffer: buffer, ingest: &ingest, source: &chunk[0_u64..next]);
+        if buffer^.valid {
+        } else {
+          config_write(factory: factory, output: output, bytes: &config_too_large[0_u64..47_u64]);
+          return False();
+        }
+      }
+      Err(error: stop) => {
+        match stop {
+          ReadEnd() => {
+            return True();
+          }
+          ReadFailed(error: problem) => {
+            let message = config_buffer();
+            config_append(buffer: &message, source: &config_read_error[0_u64..33_u64]);
+            config_description(buffer: &message, problem: &problem);
+            config_byte(buffer: &message, byte: 10_u8);
+            config_emit(factory: factory, output: output, text: &message);
+            return False();
+          }
+        }
+      }
+    }
+  }
+}
+
+fn config_open(args: &std::text::Args, name: &[u8], factory: &HandleFactory, root: &std::fs::DirectoryRead, output: &OutputStream, buffer: &Text) -> success: Bool reads(args), reads(name), reads(root), writes(factory), writes(output), writes(buffer) waits {
+  match std::text::arg_get(args: args, position: 1_u64) {
+    Ok(value: host) => {
+      match std::fs::relative_path(value: move host) {
+        Ok(value: path) => {
+          match std::fs::open_read(factory: factory, root: root, path: &path) {
+            Ok(value: file) => {
+              return config_read_file(factory: factory, file: move file, output: output, buffer: buffer);
+            }
+            Err(error: problem) => {
+              let message = config_buffer();
+              config_append(buffer: &message, source: &config_open_prefix[0_u64..37_u64]);
+              config_append(buffer: &message, source: name);
+              config_append(buffer: &message, source: &config_open_suffix[0_u64..3_u64]);
+              config_description(buffer: &message, problem: &problem);
+              config_byte(buffer: &message, byte: 10_u8);
+              config_emit(factory: factory, output: output, text: &message);
+              return False();
+            }
+          }
+        }
+        Err(error: invalid) => {
+          config_write(factory: factory, output: output, bytes: &config_path_gap[0_u64..79_u64]);
+          return False();
+        }
+      }
+    }
+    Err(error: absent) => {
+      config_write(factory: factory, output: output, bytes: &config_arg_error[0_u64..38_u64]);
+      return False();
+    }
+  }
+}
+
+fn config_quote(buffer: &Text, value: &[u8]) -> result: unit reads(value), writes(buffer) {
+  doc "Appends Redis sdscatrepr's double-quoted representation for a command-line argument, with the C locale's printable ASCII range.";
+  config_byte(buffer: buffer, byte: 34_u8);
+  let count = value^.len;
+  for (index in 0_u64..count) {
+    let byte = value^[index];
+    let slash = byte == 92_u8;
+    let quote = byte == 34_u8;
+    let literal = bor(slash, quote);
+    if literal {
+      config_byte(buffer: buffer, byte: 92_u8);
+      config_byte(buffer: buffer, byte: byte);
+    } else {
+      let escape = 0_u8;
+      if byte == 10_u8 {
+        set escape = 110_u8;
+      } else if byte == 13_u8 {
+        set escape = 114_u8;
+      } else if byte == 9_u8 {
+        set escape = 116_u8;
+      } else if byte == 7_u8 {
+        set escape = 97_u8;
+      } else if byte == 8_u8 {
+        set escape = 98_u8;
+      }
+      if escape != 0_u8 {
+        config_byte(buffer: buffer, byte: 92_u8);
+        config_byte(buffer: buffer, byte: escape);
+      } else {
+        let above = byte >= 32_u8;
+        let below = byte <= 126_u8;
+        let printable = band(above, below);
+        if printable {
+          config_byte(buffer: buffer, byte: byte);
+        } else {
+          config_byte(buffer: buffer, byte: 92_u8);
+          config_byte(buffer: buffer, byte: 120_u8);
+          let high = byte / 16_u8;
+          let low = byte % 16_u8;
+          invariant high_nibble: high < 16_u8;
+          invariant low_nibble: low < 16_u8;
+          let high_index = cvt::<u8, u64>(high);
+          let low_index = cvt::<u8, u64>(low);
+          invariant high_digit: high_index < 16_u64;
+          invariant low_digit: low_index < 16_u64;
+          config_byte(buffer: buffer, byte: config_hex_digits[high_index]);
+          config_byte(buffer: buffer, byte: config_hex_digits[low_index]);
+        }
+      }
+    }
+  }
+  config_byte(buffer: buffer, byte: 34_u8);
+  return unit;
+}
+
+fn config_is(input: &[u8], span: Span, word: &[u8]) -> matches: Bool reads(input), reads(word) {
+  return pkg::bytes::name_is(input: input, start: span.start, length: span.length, word: word);
+}
+
+fn config_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  if config_is(input: input, span: name, word: &option_port[0_u64..4_u64]) {
+    return 1_u64;
+  }
+  if config_is(input: input, span: name, word: &option_bind[0_u64..4_u64]) {
+    return 2_u64;
+  }
+  if config_is(input: input, span: name, word: &option_timeout[0_u64..7_u64]) {
+    return 3_u64;
+  }
+  if config_is(input: input, span: name, word: &option_appendonly[0_u64..10_u64]) {
+    return 4_u64;
+  }
+  if config_is(input: input, span: name, word: &option_appendfilename[0_u64..14_u64]) {
+    return 5_u64;
+  }
+  if config_is(input: input, span: name, word: &option_requirepass[0_u64..11_u64]) {
+    return 6_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_clients[0_u64..12_u64]) {
+    return 7_u64;
+  }
+  if config_is(input: input, span: name, word: &option_rewrite_percentage[0_u64..27_u64]) {
+    return 8_u64;
+  }
+  if config_is(input: input, span: name, word: &option_rewrite_min_size[0_u64..25_u64]) {
+    return 9_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_include[0_u64..7_u64]) {
+    return 10_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_dir[0_u64..3_u64]) {
+    return 11_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_maxclients[0_u64..10_u64]) {
+    return 12_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_memory[0_u64..9_u64]) {
+    return 24_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_policy[0_u64..16_u64]) {
+    return 25_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_samples[0_u64..17_u64]) {
+    return 26_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_factor[0_u64..14_u64]) {
+    return 27_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_decay[0_u64..14_u64]) {
+    return 28_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_tenacity[0_u64..27_u64]) {
+    return 29_u64;
+  }
+  return 0_u64;
+}
+
+fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -> error: Box<Slots<u8>> reads(input), reads(arguments), writes(options) {
+  let empty = box_slots_new::<u8>(capacity: 0_u64);
+  let count = arguments^.inner.len;
+  let name = pkg::protocol::arg(args: arguments, index: 0_u64);
+  let kind = config_kind(input: input, name: name);
+  if kind == 0_u64 {
+    return text_of(word: &config_bad_directive[0_u64..42_u64]);
+  }
+  if kind == 10_u64 {
+    if count != 2_u64 {
+      return text_of(word: &config_bad_directive[0_u64..42_u64]);
+    }
+    return text_of(word: &config_include_gap[0_u64..56_u64]);
+  }
+  if kind == 2_u64 {
+    if count == 1_u64 {
+      let unbound = box_slots_new::<u8>(capacity: 0_u64);
+      set options^.bind = move unbound;
+      return move empty;
+    }
+    if count > 2_u64 {
+      return text_of(word: &config_bind_many[0_u64..45_u64]);
+    }
+  }
+  if count != 2_u64 {
+    return text_of(word: &config_wrong_arity[0_u64..25_u64]);
+  }
+  let span = pkg::protocol::arg(args: arguments, index: 1_u64);
+  let value_length = span.length;
+  let boolean = kind == 4_u64;
+  let filename = kind == 5_u64;
+  if bor(boolean, filename) {
+    for @c_string (index in 0_u64..span.length) {
+      let position = span.start +wrap index;
+      let byte = pkg::bytes::byte_at(input: input, index: position);
+      if byte == 0_u8 {
+        set value_length = index;
+        break @c_string;
+      }
+    }
+  }
+  let value = pkg::bytes::copy_bytes(input: input, start: span.start, length: value_length);
+  if kind >= 24_u64 {
+    if kind <= 29_u64 {
+      let parsed = pkg::commands::parse_memory_config(input: input, span: span, which: kind);
+      if parsed.valid {
+        let index = kind - 24_u64;
+        invariant memory_index: index < 6_u64;
+        set options^.memory[index] = parsed.value;
+        return move empty;
+      }
+      return move parsed.error;
+    }
+  }
+  if kind == 9_u64 {
+    let parsed = pkg::commands::parse_memory_config(input: input, span: span, which: 24_u64);
+    if parsed.valid {
+      if parsed.value > 9223372036854775807_u64 {
+        return text_of(word: &config_size_bounds[0_u64..60_u64]);
+      }
+      set options^.rewrite_min_size = parsed.value;
+      return move empty;
+    }
+    return move parsed.error;
+  }
+  if kind == 2_u64 {
+    if value.inner.len == 0_u64 {
+      set options^.bind = move value;
+      return move empty;
+    }
+    let address = parse_address(text: &value);
+    if address.valid {
+      set options^.bind = move value;
+      return move empty;
+    }
+    return text_of(word: &config_bind_many[0_u64..45_u64]);
+  }
+  if kind == 4_u64 {
+    let yes = spelled(text: &value, word: &word_yes[0_u64..3_u64]);
+    let no = spelled(text: &value, word: &word_no[0_u64..2_u64]);
+    if bor(yes, no) {
+      set options^.logging = yes;
+      return move empty;
+    }
+    return text_of(word: &config_bad_bool[0_u64..30_u64]);
+  }
+  if kind == 5_u64 {
+    let length = value.inner.len;
+    if length == 0_u64 {
+      return text_of(word: &config_empty_file[0_u64..29_u64]);
+    }
+    for (index in 0_u64..length) {
+      if value.inner[index] == 47_u8 {
+        return text_of(word: &config_file_path[0_u64..47_u64]);
+      }
+    }
+    set options^.aof = move value;
+    return move empty;
+  }
+  if kind == 6_u64 {
+    set options^.password = move value;
+    return move empty;
+  }
+  if kind == 7_u64 {
+    let number = decimal(text: &value, limit: 18446744073709551615_u64);
+    if number.valid {
+      set options^.count = number.value;
+      return move empty;
+    }
+    return text_of(word: &config_clients_error[0_u64..40_u64]);
+  }
+  if kind == 11_u64 {
+    let length = value.inner.len;
+    if length == 1_u64 {
+      if value.inner[0_u64] == 46_u8 {
+        return move empty;
+      }
+    }
+    if length == 2_u64 {
+      let dot = value.inner[0_u64] == 46_u8;
+      let slash = value.inner[1_u64] == 47_u8;
+      if band(dot, slash) {
+        return move empty;
+      }
+    }
+    return text_of(word: &config_dir_gap[0_u64..66_u64]);
+  }
+  let port_setting = kind == 1_u64;
+  let timeout_setting = kind == 3_u64;
+  let maxclients_setting = kind == 12_u64;
+  let port_or_timeout = bor(port_setting, timeout_setting);
+  if bor(port_or_timeout, maxclients_setting) {
+    let setting = if port_setting {
+      give IntegerConfig::Port();
+    } else if timeout_setting {
+      give IntegerConfig::Timeout();
+    } else {
+      give IntegerConfig::Maxclients();
+    }
+    let parsed = pkg::commands::parse_integer_config(input: input, span: span, setting: setting);
+    if parsed.valid {
+      if port_setting {
+        set options^.port = parsed.value;
+      } else if timeout_setting {
+        set options^.idle = parsed.value;
+      } else {
+        set options^.maxclients = parsed.value;
+      }
+      return move empty;
+    }
+    return move parsed.error;
+  }
+  let number = pkg::bytes::read_integer(input: input, start: span.start, length: span.length);
+  if number.state == 0_u64 {
+    return text_of(word: &config_bad_integer[0_u64..43_u64]);
+  }
+  let low = number.value < 0_i64;
+  let high = number.value > 2147483647_i64;
+  if bor(low, high) {
+    return text_of(word: &config_int_bounds[0_u64..51_u64]);
+  }
+  let unsigned = cvt::<i64, u64>(number.value);
+  if kind == 8_u64 {
+    set options^.rewrite_percentage = unsigned;
+  }
+  return move empty;
+}
+
+fn config_trim(byte: u8) -> trimmed: Bool pure {
+  let space = byte == 32_u8;
+  let tab = byte == 9_u8;
+  let feed = byte == 10_u8;
+  let carriage = byte == 13_u8;
+  let horizontal = bor(space, tab);
+  let vertical = bor(feed, carriage);
+  return bor(horizontal, vertical);
+}
+
+fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &HandleFactory, output: &OutputStream) -> result: unit reads(source), writes(options), writes(factory), writes(output) waits {
+  doc "Processes the file plus the appended command-line text in order. Source NUL terminates the aggregate as Redis's strlen does. Fatal errors quote the untouched line after Redis's four-byte trim, with physical line numbers starting at one.";
+  let length = source^.len;
+  let start = 0_u64;
+  let number = 1_u64;
+  loop @lines (
+    invariant cursor: start <= length
+  ) {
+    let end = start;
+    loop @line_end (
+      invariant after_start: end >= start,
+      invariant in_source: end <= length
+    ) {
+      if end == length {
+        break @line_end;
+      }
+      invariant readable: end < length;
+      let byte = source^[end];
+      let feed = byte == 10_u8;
+      let zero = byte == 0_u8;
+      if bor(feed, zero) {
+        break @line_end;
+      }
+      set end = end + 1_u64;
+    }
+    let left = start;
+    let right = end;
+    loop @trim_left (
+      invariant before_end: left <= end,
+      invariant source_end: end <= length
+    ) {
+      if left == end {
+        break @trim_left;
+      }
+      invariant untrimmed: left < end;
+      invariant before_source_end: left < length;
+      if config_trim(byte: source^[left]) {
+        set left = left + 1_u64;
+      } else {
+        break @trim_left;
+      }
+    }
+    loop @trim_right (
+      invariant not_before: right >= left,
+      invariant source_end: right <= length
+    ) {
+      if right == left {
+        break @trim_right;
+      }
+      invariant right_after_left: right > left;
+      invariant nonempty: right > 0_u64;
+      let previous = right - 1_u64;
+      invariant before_right: previous < right;
+      invariant readable: previous < length;
+      if config_trim(byte: source^[previous]) {
+        set right = previous;
+      } else {
+        break @trim_right;
+      }
+    }
+    if left < right {
+      invariant first_byte: left < length;
+      if source^[left] != 35_u8 {
+        let line = &source^[left..right];
+        if number == invalid_line {
+          config_failure(factory: factory, output: output, line: line, number: number, reason: &config_bad_directive[0_u64..42_u64]);
+          set options^.valid = False();
+          return unit;
+        }
+        let size = right - left;
+        invariant line_size: line^.len == size;
+        let decoded = box_array_filled::<u8>(count: size, value: 0_u8);
+        invariant decoded_size: decoded.inner.len == size;
+        for (index in 0_u64..size) {
+          set decoded.inner[index] = line^[index];
+        }
+        let arguments = box_slots_new::<Span>(capacity: 8_u64);
+        let parsed = pkg::protocol::split_arguments(input: &decoded.inner[0_u64..size], start: 0_u64, end: size, args: &arguments);
+        if parsed.state == 7_u64 {
+          config_failure(factory: factory, output: output, line: line, number: number, reason: &config_unbalanced[0_u64..39_u64]);
+          set options^.valid = False();
+          return unit;
+        }
+        if parsed.state == 1_u64 {
+          let reason = config_apply(options: options, input: &decoded.inner[0_u64..size], arguments: &arguments);
+          let reason_length = reason.inner.len;
+          if reason_length != 0_u64 {
+            config_failure(factory: factory, output: output, line: line, number: number, reason: &reason.inner[0_u64..reason_length]);
+            set options^.valid = False();
+            return unit;
+          }
+        }
+      }
+    }
+    if end == length {
+      break @lines;
+    }
+    invariant terminator: end < length;
+    if source^[end] == 0_u8 {
+      break @lines;
+    }
+    set start = end + 1_u64;
+    set number = number +wrap 1_u64;
+  }
+  return unit;
+}
+
+fn read_options(args: &std::text::Args, factory: &HandleFactory, root: &std::fs::DirectoryRead, input: &InputStream, output: &OutputStream) -> options: Options reads(args), reads(root), writes(factory), writes(input), writes(output) waits {
+  doc "Reads [configfile|-] [--directive values ...]. File text precedes one extra LF and the command-line lines; values are quoted with Redis's representation. Every -- starts a directive. The optional file is opened only through relative_path and open_read. Include and directory changes remain explicitly refused under firn-req-host-paths; dir . and ./ retain the supplied working directory.";
+  let aof = text_of(word: &default_file[0_u64..14_u64]);
+  let bind = text_of(word: &default_bind[0_u64..9_u64]);
+  let password = box_slots_new::<u8>(capacity: 0_u64);
+  let off = False();
+  let readable = True();
+  let memory = array_filled::<u64, 6>(value: 0_u64);
+  set memory[1_u64] = 7_u64;
+  set memory[2_u64] = 5_u64;
+  set memory[3_u64] = 10_u64;
+  set memory[4_u64] = 1_u64;
+  set memory[5_u64] = 10_u64;
+  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, maxclients: 10000_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, memory: memory, valid: readable);
+  let total = std::text::args_count(args: args);
+  if total <= 1_u64 {
+    return move options;
+  }
+  let config = config_buffer();
+  let first = option_text(args: args, position: 1_u64);
+  if first.valid {
+  } else {
+    config_write(factory: factory, output: output, bytes: &config_arg_error[0_u64..38_u64]);
+    set options.valid = False();
+    return move options;
+  }
+  let position = 1_u64;
+  if dashed(text: &first.bytes) {
+  } else {
+    set position = 2_u64;
+    let length = first.bytes.inner.len;
+    let from_stdin = False();
+    if length == 1_u64 {
+      set from_stdin = first.bytes.inner[0_u64] == 45_u8;
+    }
+    let read = if from_stdin {
+      give config_read_stdin(factory: factory, input: input, output: output, buffer: &config);
+    } else {
+      give config_open(args: args, name: &first.bytes.inner[0_u64..length], factory: factory, root: root, output: output, buffer: &config);
+    }
+    if read {
+    } else {
+      set options.valid = False();
+      return move options;
+    }
+  }
+  config_byte(buffer: &config, byte: 10_u8);
+  let named = False();
+  let invalid_line = 0_u64;
+  loop @arguments {
+    if position >= total {
+      break @arguments;
+    }
+    let text = option_text(args: args, position: position);
+    if text.valid {
+    } else {
+      config_write(factory: factory, output: output, bytes: &config_arg_error[0_u64..38_u64]);
+      set options.valid = False();
+      return move options;
+    }
+    let length = text.bytes.inner.len;
+    if dashed(text: &text.bytes) {
+      if named {
+        config_byte(buffer: &config, byte: 10_u8);
+      }
+      set named = True();
+      if length >= 2_u64 {
+        config_append(buffer: &config, source: &text.bytes.inner[2_u64..length]);
+      }
+      config_byte(buffer: &config, byte: 32_u8);
+    } else if named {
+      config_quote(buffer: &config, value: &text.bytes.inner[0_u64..length]);
+      config_byte(buffer: &config, byte: 32_u8);
+    } else {
+      set invalid_line = 1_u64;
+      let held = config.bytes.inner.len;
+      for (index in 0_u64..held) {
+        if config.bytes.inner[index] == 10_u8 {
+          set invalid_line = invalid_line +wrap 1_u64;
+        }
+      }
+      config_quote(buffer: &config, value: &text.bytes.inner[0_u64..length]);
+      config_byte(buffer: &config, byte: 32_u8);
+      set named = True();
+    }
+    set position = position + 1_u64;
+  }
+  if config.valid {
+    let length = config.bytes.inner.len;
+    config_parse(options: &options, source: &config.bytes.inner[0_u64..length], invalid_line: invalid_line, factory: factory, output: output);
+  } else {
+    config_write(factory: factory, output: output, bytes: &config_too_large[0_u64..47_u64]);
+    set options.valid = False();
+  }
+  return move options;
+}

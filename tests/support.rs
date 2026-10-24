@@ -59,6 +59,18 @@ pub fn lease_port() -> PortLease {
     })
 }
 
+/// Reserves a literal port used by a documented command, without rewriting
+/// the example. A conflicting listener or in-process lease fails the case.
+pub(super) fn lease_named_port(port: u16) -> PortLease {
+    let mut ports = locked(LEASED_PORTS.get_or_init(|| Mutex::new(HashSet::new())));
+    assert!(!ports.contains(&port), "documented port {port} is already leased");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .unwrap_or_else(|error| panic!("reserve documented port {port}: {error}"));
+    ports.insert(port);
+    drop(listener);
+    PortLease { reservation: Arc::new(LeasedPort { port }) }
+}
+
 /// Retries candidates until the registry grants an exclusive reservation.
 fn lease_from(mut candidate: impl FnMut() -> u16) -> PortLease {
     loop {
@@ -158,8 +170,11 @@ impl CompiledProgram {
         .expect("spawn compiled program")
     }
 
-    /// Starts the program on one runtime route with raw invocation arguments,
+    /// Starts the program on one runtime route with raw invocation arguments
     /// and hands back the running child.
+    /// Firn callers supply Redis-style directives explicitly, including
+    /// `--firn-clients N` when the test ends after accepting N clients; the
+    /// harness passes argv through unchanged.
     ///
     /// A loopback case has to play the peer while the program runs, so it
     /// needs the child rather than the finished output: the program is a
@@ -188,7 +203,21 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
     ) -> ProgramChild {
-        self.spawn_on_route_options(native_ring, settings, arguments, false)
+        self.spawn_on_route_options(native_ring, settings, arguments, false, PROGRAM_DEADLINE)
+    }
+
+    /// Starts the program as `spawn_on_route_with` does, stopping it after
+    /// `limit` instead of `PROGRAM_DEADLINE`: for a case whose property is an
+    /// interval the program itself keeps, such as a 60-second output limit,
+    /// which the shared deadline would end first.
+    pub fn spawn_on_route_with_limit(
+        &self,
+        native_ring: bool,
+        settings: &[(&str, &str)],
+        arguments: &[&[u8]],
+        limit: Duration,
+    ) -> ProgramChild {
+        self.spawn_on_route_options(native_ring, settings, arguments, false, limit)
     }
 
     /// Linux append-failure cases inherit ignored SIGXFSZ so RLIMIT_FSIZE
@@ -199,7 +228,7 @@ impl CompiledProgram {
         native_ring: bool,
         arguments: &[&[u8]],
     ) -> ProgramChild {
-        self.spawn_on_route_options(native_ring, &[], arguments, true)
+        self.spawn_on_route_options(native_ring, &[], arguments, true, PROGRAM_DEADLINE)
     }
 
     fn spawn_on_route_options(
@@ -208,6 +237,7 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
         ignore_xfsz: bool,
+        limit: Duration,
     ) -> ProgramChild {
         let mut command = Command::new(&self.executable);
         #[cfg(target_os = "linux")]
@@ -241,7 +271,7 @@ impl CompiledProgram {
         for (name, count) in settings {
             command.env(name, count);
         }
-        ProgramChild::spawn(&mut command).expect("spawn compiled program")
+        ProgramChild::spawn_with_limit(&mut command, limit).expect("spawn compiled program")
     }
 }
 
@@ -669,6 +699,21 @@ pub(crate) fn output_within(command: &mut Command, limit: Duration) -> std::io::
 pub(crate) fn run_command(command: &mut Command) -> Output {
     output_within(command, PROGRAM_DEADLINE)
         .unwrap_or_else(|error| panic!("run native test command: {error}"))
+}
+
+/// The redis-server `REDIS_SERVER` names, checked to be 7.2.16, the oracle
+/// every case that runs Redis itself compares firn with.
+pub(crate) fn redis_oracle() -> PathBuf {
+    let binary = std::env::var_os("REDIS_SERVER")
+        .map(PathBuf::from)
+        .expect("REDIS_SERVER must name redis-server 7.2.16, the oracle");
+    let output = run_command(Command::new(&binary).arg("--version"));
+    assert!(output.status.success(), "Redis version command: {output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(" v=7.2.16 "),
+        "{output:?}"
+    );
+    binary
 }
 
 #[cfg(test)]

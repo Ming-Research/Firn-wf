@@ -3,7 +3,12 @@
 [Streaming the rewrite journal to disk](journal-disk.md) records the owner's
 disk-journal direction, its bounded staging and S1 protocol, and validation
 criteria before implementation; [A time-sliced live scan within the
-reserve](scan-pace.md) records the scan's bound and pacing on the same ruling.
+reserve](scan-pace.md) records the scan's bound and pacing on the same ruling;
+[Intermittent failures of two rewrite cases](test-stability.md) records why two
+network cases failed in CI at random and what changed in them.
+[Publishing a rewrite while the current increment cannot be
+written](publish-during-append-error.md) keeps a rewrite whose old
+increment refuses appends and installs base(S1) directly.
 
 The record below preserves the original closed-log replay investigation and
 its implementation history. The owner's subsequent service-first memory
@@ -179,10 +184,11 @@ last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
    it leaves the manifest of step 1, removes the temporary file and any
    renamed base the manifest does not name, and records failure for `INFO`'s
    `aof_last_bgrewrite_status`. If rename succeeds but the directory sync
-   fails, the new manifest stays in force, every published file and history
-   entry is retained, and the status reports failure. The persistence result
-   carries publication and durability separately, so the writer also adopts
-   a published switch manifest and its new append handle on that failure.
+   fails, every published file and history entry is retained, the status
+   reports failure and the error is saved as the AOF sync error; at the
+   switch the old manifest and append handle stay in force, at installation
+   the new manifest does ([switch manifest whose directory sync
+   fails](rewrite-faults.md#switch-manifest-whose-directory-sync-fails)).
    Redis 7.0.15's `writeAofManifestFile` can return failure after rename,
    while `backgroundRewriteDoneHandler` then unlinks the new base; retaining
    it avoids leaving a visible manifest that names a missing file.
@@ -297,11 +303,11 @@ sharing a directory, interrupted directory states, host refusals before
 publication, concurrent writes, shutdown and successful installation. They
 passed in the ordinary network invocation of that gate. Interrupted-state
 fixtures establish restart expectations,
-not execution of a failing directory sync. That path needs a CI fault
-experiment in which manifest rename succeeds and the following directory
-sync returns an error, for both switching and installation. It must observe
-the selected files, retained history, later writes and restart, and require
-`aof_last_bgrewrite_status:err`. Startup's history-removal case covers the
+not execution of a failing directory sync. The aof-sync-fault job now
+fails the switch's directory sync after its rename ([switch manifest whose
+directory sync fails](rewrite-faults.md#switch-manifest-whose-directory-sync-fails));
+the installation's remains without a fault case (board item
+`firn-rw-install-dirsync-case`). Startup's history-removal case covers the
 successful cleanup path, but neither proves syscall ordering nor portably
 injects failure of the new pre-cleanup directory sync; that failure remains
 unverified and must retain both history files and manifest entries. The

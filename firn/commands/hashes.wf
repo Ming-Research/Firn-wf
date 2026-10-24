@@ -168,6 +168,10 @@ fn set_fields(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -216,10 +220,10 @@ fn run_hset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let removed = hset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let changed = client^.state == state_done;
       let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   hset_finish(client: client, counted: counted);
@@ -276,6 +280,10 @@ fn set_field_once(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -302,12 +310,12 @@ fn run_hsetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     let removed = hsetnx_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let stored = client^.state == state_done;
       let added = client^.number > 0_u64;
       let changed = band(stored, added);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   hsetnx_finish(client: client);
@@ -352,6 +360,10 @@ fn get_field(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env)
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -419,6 +431,10 @@ fn get_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -491,6 +507,10 @@ fn delete_fields(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(v
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -517,10 +537,10 @@ fn run_hdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let removed = hdel_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let changed = client^.number > 0_u64;
       let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   hdel_finish(client: client);
@@ -558,6 +578,10 @@ fn find_field(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -609,6 +633,10 @@ fn hash_size(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env)
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -698,6 +726,10 @@ fn all_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -785,6 +817,10 @@ fn add_to_field(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(va
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -815,10 +851,10 @@ fn run_hincrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     }
     let removed = hincrby_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let changed = client^.state == state_done;
       let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   hincrby_finish(client: client);
@@ -908,6 +944,10 @@ fn add_float(env: &Client, value: &Entry, floating: &Floating) -> kind: u64 writ
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -942,9 +982,9 @@ fn run_hincrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
     }
     let removed = hincrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, floating: &floating);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = hincrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   hincrbyfloat_finish(client: client, floating: &floating);
@@ -1090,6 +1130,10 @@ fn random_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -1820,7 +1864,10 @@ fn hrandfield_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8
   return unit;
 }
 
-fn hincrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &Client, floating: &Floating, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(log), writes(budget) {
+fn hincrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &Client, floating: &Floating, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records an expired removal before HSET key field sum, Redis's propagation of HINCRBYFLOAT.";
   let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
   let stored_sum = floating^.state == state_done;

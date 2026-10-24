@@ -20,7 +20,7 @@ fn start() -> (CompiledProgram, ProgramChild, TcpStream) {
     let program = CompiledProgram::from_environment();
     let port_lease = support::lease_port();
     let port = port_lease.port().to_string();
-    let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"sequence.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", port.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"sequence.aof"]).with_port(&port_lease);
     let client = connect_when_ready(port.parse().unwrap(), &child);
     (program, child, client)
 }
@@ -250,7 +250,7 @@ fn rewrite_sequence_held_lazy_expiry() {
             std::fs::write(program.working_directory().join("expired.aof"), resp(&["SET", "expired", "v", "PXAT", "1"])).unwrap();
             let port_lease = support::lease_port();
             let port = port_lease.port().to_string();
-            let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"expired.aof"]).with_port(&port_lease);
+            let child = program.spawn_on_route(true, &[b"--port", port.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"expired.aof"]).with_port(&port_lease);
             let mut client = connect_when_ready(port.parse().unwrap(), &child);
             let reply = if script {
                 memory_request(&mut client, &["EVAL", "local n=redis.call('DBSIZE'); redis.call('GET','expired'); return n", "0"])
@@ -301,7 +301,7 @@ fn rewrite_sequence_replay_starts_at_zero() {
     std::fs::write(program.working_directory().join("loaded.aof"), file).unwrap();
     let port_lease = support::lease_port();
     let port = port_lease.port().to_string();
-    let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"loaded.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", port.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"loaded.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port.parse().unwrap(), &child);
     assert_eq!(sequence(&mut client), 0, "replay has no surviving capture");
     expect(&mut client, &["DBSIZE"], ":6\r\n", 0);
