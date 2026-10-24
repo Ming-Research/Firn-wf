@@ -1396,9 +1396,9 @@ server_ticks() {
     sed 's/^.*) //' "/proc/$server/stat" | awk '{ print $12 + $13 }'
 }
 
-# The commands compare_client sends for the linsert and lmove tests, which the
-# timed runs and verify_list_forms both use. linsert_form and lpush_new_form take
-# the depth.
+# The commands compare_client sends for the linsert, lmove and lpush_new tests,
+# which the timed runs and verify_list_forms both use. linsert_form and
+# lpush_new_form take the depth.
 linsert_form() { echo "LINSERT ins$1:__rand_int__ AFTER pivot xxx"; }
 lmove_form() { echo "LMOVE mylist mylist RIGHT LEFT"; }
 lpush_new_form() { echo "LPUSH new$1:__rand_int__ xxx"; }
@@ -1444,8 +1444,9 @@ compare_client() {
             # that nearly every push creates its list: the list write that the
             # head runs under the whole-keyspace hold. The lists stay in the
             # server for the rest of its pass and are named by the depth, so
-            # that no run pushes onto another's; the test is the last of a
-            # pass, so that the larger keyspace changes no other cell.
+            # that no run pushes onto another's; COMPARE_TESTS names it last, as
+            # the record's runs do, so that the larger keyspace changes no other
+            # cell of a pass.
             key_range=$NEW_LIST_RANGE
             what=$(lpush_new_form "$2")
             ;;

@@ -73,13 +73,13 @@ measurement.
   drawn from 2,000,000,000 keys (`-r` is a C int in redis-benchmark), so that
   all but a fraction of a percent of the requests of a run of some ten million
   push onto a key that does not exist and create its list; the lists stay in the
-  server for the rest of its pass, and the test is the last of the pass, so that
-  the larger keyspace changes no other cell. Before the timed runs, each image's
-  server receives 100 `LINSERT`s, 101 `LMOVE`s and 100 `LPUSH`es of `lpush_new`
-  from redis-benchmark itself, and the run fails unless the keys show the
-  result (`verify_list_forms`: 101 elements, the last element moved to the
-  front, and at least 99 new keys): a form that missed its key or wrote nothing
-  would otherwise be measured as a fast miss.
+  server for the rest of its pass, and the runs below name the test last in
+  `COMPARE_TESTS`, so that the larger keyspace changes no other cell. Before the
+  timed runs, each image's server receives 100 `LINSERT`s, 101 `LMOVE`s and 100
+  `LPUSH`es of `lpush_new` from redis-benchmark itself, and the run fails unless
+  the keys show the result (`verify_list_forms`: 101 elements, the last element
+  moved to the front, and at least 99 new keys): a form that missed its key or
+  wrote nothing would otherwise be measured as a fast miss.
 - **Images.** `base`, `head` and `head-twin` (the head again, as the noise
   control: two builds of one source, measured in the same interleaving), 6
   passes of 5 s per cell, each pass in the reverse order of the one before, no
@@ -108,18 +108,19 @@ measurement.
 - **What rejects.** A cell wholly on the slower side, in either AOF setting,
   rejects the claim its command rests on. For `lpush_new` it is "creating a list
   under the whole-keyspace hold, with its effects staged and copied into the
-  file, costs nothing measurable". For `lpush`, `rpush`, `linsert` and `lmove` it
-  is "a write onto an existing list runs as it did before the PR". For every other cell
-  it is "an ordinary command's path is unchanged", which the design states for
-  `GET` and `SET` (blocking-lists.md: they gain no shared target and no registry
-  lookup) and which the other commands that are not list producers rest on
-  alike; the cause is then not the copy and the profile below does not apply
-  to it. For the list producers, the profile of
-  the first `lpush 16`, `lmove 16` and `lpush_new 16` pass of each image (`perf record`, flat,
-  no call stacks) separates the hypotheses of question 1: share of cycles in the
-  allocator and `memcpy` against share in the shared-acquire function and
-  the hub. A share that is near zero in `base` and large in `head` names the
-  part; no cause is concluded from one run.
+  file, costs nothing measurable" (with the file off, A1 measures the hold, the
+  abandoned per-key attempt and the buffer; A2 measures the copy). For `lpush`,
+  `rpush`, `linsert` and `lmove` it is "a write onto an existing list runs as it
+  did before the PR". For every other cell it is "an ordinary command's path is
+  unchanged", which the design states for `GET` and `SET` (blocking-lists.md:
+  they gain no shared target and no registry lookup) and which the other
+  commands that are not list producers rest on alike; the cause is then not the
+  copy and the profile below does not apply to it. For the list producers, the
+  profile of the first `lpush 16`, `lmove 16` and `lpush_new 16` pass of each
+  image (`perf record`, flat, no call stacks) separates the hypotheses of
+  question 1: share of cycles in the allocator and `memcpy` against share in the
+  shared-acquire function and the hub. A share that is near zero in `base` and
+  large in `head` names the part; no cause is concluded from one run.
 
 ### Hand-off to blocked clients (question 2)
 
