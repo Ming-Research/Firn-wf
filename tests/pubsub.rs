@@ -23,7 +23,7 @@ fn start_for(connections: usize, drivers: &str, limit: Duration) -> (ProgramChil
     let port_text = port.to_string();
     let count = connections.to_string();
     let child = firn().spawn_on_route_with_limit(
-        true, &[("WF_DRIVERS", drivers)], &[port_text.as_bytes(), count.as_bytes()], limit,
+        true, &[("WF_DRIVERS", drivers)], &[b"--port", port_text.as_bytes(), b"--firn-clients", count.as_bytes()], limit,
     ).with_port(&lease);
     let stream = connect_when_ready(port, &child);
     (child, stream, port)
@@ -59,7 +59,7 @@ fn binary_frame(version: u8, arguments: &[&[u8]], count: Option<usize>) -> Vec<u
 }
 
 /// Preserve the wire type: a RESP3 push must not be accepted as an array.
-fn frame(stream: &mut TcpStream) -> Vec<u8> {
+pub(super) fn frame(stream: &mut TcpStream) -> Vec<u8> {
     let line = reply_line(stream, "pub/sub frame");
     let mut bytes = line.as_bytes().to_vec();
     let count = line[1..line.len() - 2].parse::<i64>().unwrap_or(-1);
@@ -79,12 +79,12 @@ fn frame(stream: &mut TcpStream) -> Vec<u8> {
     bytes
 }
 
-fn request(stream: &mut TcpStream, arguments: &[&str]) -> Vec<u8> {
+pub(super) fn request(stream: &mut TcpStream, arguments: &[&str]) -> Vec<u8> {
     send(stream, &[arguments]);
     frame(stream)
 }
 
-fn hello(stream: &mut TcpStream, version: u8) {
+pub(super) fn hello(stream: &mut TcpStream, version: u8) {
     if version == 3 {
         let reply = request(stream, &["HELLO", "3"]);
         assert!(reply.starts_with(b"%"), "HELLO 3 must answer a map: {reply:?}");
@@ -1100,7 +1100,7 @@ fn subscribed_connection_wraps_multi_record_commands_in_the_append_only_file() {
     let text = port.to_string();
     let name = "subscribed-forms.aof";
     let child = program
-        .spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()])
+        .spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()])
         .with_port(&lease);
     let mut client = connect_when_ready(port, &child);
     hello(&mut client, 3);

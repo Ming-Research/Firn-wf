@@ -1,0 +1,138 @@
+alias Bytes = pkg::bytes::Bytes;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias OrderedMap = std::collections::ordered_map::OrderedMap;
+alias bytes_copy = pkg::bytes::bytes_copy;
+alias bytes_new = pkg::bytes::bytes_new;
+alias ordered_map_each = std::collections::ordered_map::ordered_map_each;
+alias ordered_map_new = std::collections::ordered_map::ordered_map_new;
+alias ordered_map_put = std::collections::ordered_map::ordered_map_put;
+
+struct StreamCopy {
+  nodes: OrderedMap<StreamId, StreamNode, ceiling>;
+  keys: KeyEnv;
+}
+
+fn stream_id_compare(env: &KeyEnv, left: &StreamId, right: &StreamId) -> order: i32 reads(left), reads(right) {
+  doc "Orders stream IDs by milliseconds, then by sequence, as Redis 7.2.16's streamCompareID orders them.";
+  if left^.ms < right^.ms {
+    return -1_i32;
+  }
+  if left^.ms > right^.ms {
+    return 1_i32;
+  }
+  if left^.seq < right^.seq {
+    return -1_i32;
+  }
+  if left^.seq > right^.seq {
+    return 1_i32;
+  }
+  return 0_i32;
+}
+
+fn stream_digits(window: &Slots<u8, 41>, value: u64) -> result: unit writes(window) {
+  doc "Appends a number's decimal digits to the window while it has room.";
+  let digits = array_filled::<u8, 20>(value: 0_u8);
+  let count = 0_u64;
+  let rest = value;
+  loop @digits {
+    let low = rest % 10_u64;
+    let narrow = cvt.wrap::<u64, u8>(low);
+    let glyph = narrow +wrap 48_u8;
+    if count < 20_u64 {
+      set digits[count] = glyph;
+      set count = count +wrap 1_u64;
+    }
+    set rest = rest / 10_u64;
+    if rest == 0_u64 {
+      break @digits;
+    }
+  }
+  for @emit (index in 0_u64..count) {
+    let back = count -wrap index;
+    let from = back -wrap 1_u64;
+    let glyph = 48_u8;
+    if from < 20_u64 {
+      set glyph = digits[from];
+    }
+    if window^.len < window^.cap {
+      place_back(window: window, value: glyph);
+    }
+  }
+  return unit;
+}
+
+fn stream_id_text(id: StreamId) -> text: Bytes pure {
+  doc "An ID as Redis writes one, its milliseconds, a dash and its sequence, both in decimal.";
+  let spelled = slots_new::<u8, 41>();
+  stream_digits(window: &spelled, value: id.ms);
+  if spelled.len < spelled.cap {
+    place_back(window: &spelled, value: 45_u8);
+  }
+  stream_digits(window: &spelled, value: id.seq);
+  let length = spelled.len;
+  let window = &spelled[0_u64..length];
+  let made = bytes_new(input: window, start: 0_u64, length: length);
+  return move made;
+}
+
+fn stream_strings_copy(strings: &Box<Slots<Bytes>>) -> made: Box<Slots<Bytes>> reads(strings) {
+  doc "A copy of a window of strings, every string copied, with room for exactly as many.";
+  let count = strings^.inner.len;
+  let copied = box_slots_new::<Bytes>(capacity: count);
+  for @strings (index in 0_u64..count) {
+    if index < strings^.inner.len {
+      let text = bytes_copy(bytes: &strings^.inner[index]);
+      if copied.inner.len < copied.inner.cap {
+        place_back(window: &copied.inner, value: move text);
+      } else {
+        let dropped = move text;
+      }
+    }
+  }
+  return move copied;
+}
+
+fn stream_node_copy(node: &StreamNode) -> made: StreamNode reads(node) {
+  doc "A copy of a stream node, its master fields and every entry, tombstones included, copied.";
+  let fields = stream_strings_copy(strings: &node^.fields);
+  let count = node^.items.inner.len;
+  let items = box_slots_new::<StreamItem>(capacity: count);
+  for @items (index in 0_u64..count) {
+    if index < node^.items.inner.len {
+      let original = &node^.items.inner[index];
+      let pairs = stream_strings_copy(strings: &original^.pairs);
+      let item = StreamItem(id: original^.id, deleted: original^.deleted, same: original^.same, pairs: move pairs, size: original^.size);
+      if items.inner.len < items.inner.cap {
+        place_back(window: &items.inner, value: move item);
+      } else {
+        let dropped = move item;
+      }
+    }
+  }
+  return StreamNode(fields: move fields, items: move items, live: node^.live, deleted: node^.deleted, master: node^.master, body: node^.body);
+}
+
+fn copy_stream_node(env: &StreamCopy, key: &StreamId, value: &StreamNode) -> result: unit reads(key), reads(value), writes(env) {
+  doc "Adds a copy of one stream node, under its master entry's ID, to the stream being built.";
+  let copied = stream_node_copy(node: value);
+  let keys = env^.keys;
+  let put = ordered_map_put::<StreamIdOrder, StreamNode, ceiling>(map: &env^.nodes, key: key^, value: move copied, env: &keys);
+  return unit;
+}
+
+fn stream_copy(stream: &StreamLog) -> made: StreamLog reads(stream) {
+  doc "A copy of a stream, as COPY duplicates one: the same nodes with the same entries and tombstones, so that later trimming removes what it would remove from the original, and the same IDs and counters.";
+  let nodes = ordered_map_new::<StreamId, StreamNode, ceiling>();
+  let keys = KeyEnv();
+  let env = StreamCopy(nodes: move nodes, keys: keys);
+  ordered_map_each::<StreamId, StreamNode, StreamCopy, fn copy_stream_node, ceiling>(map: &stream^.nodes, env: &env);
+  let StreamCopy(nodes: copied, keys: unused_keys) = move env;
+  return StreamLog(nodes: move copied, length: stream^.length, last_id: stream^.last_id, first_id: stream^.first_id, max_deleted_id: stream^.max_deleted_id, entries_added: stream^.entries_added);
+}
+
+fn stream_new() -> made: StreamLog pure {
+  doc "An empty stream with no node, its IDs 0-0 and nothing added, as Redis 7.2.16's streamNew makes one.";
+  let nodes = ordered_map_new::<StreamId, StreamNode, ceiling>();
+  let zero = StreamId(ms: 0_u64, seq: 0_u64);
+  return StreamLog(nodes: move nodes, length: 0_u64, last_id: zero, first_id: zero, max_deleted_id: zero, entries_added: 0_u64);
+}

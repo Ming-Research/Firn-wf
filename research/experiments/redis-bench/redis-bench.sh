@@ -9,6 +9,9 @@
 #
 #   sh redis-bench.sh             the correctness pass and Experiments 7 and 8
 #   sh redis-bench.sh verify      only the correctness pass
+#   sh redis-bench.sh invocation-selftest
+#                                 check both recorded argument forms without
+#                                 building or starting any server
 #   sh redis-bench.sh placement-selftest
 #                                 check placement against fake Linux topology
 #                                 and the per-CPU busy reading against a fake
@@ -38,7 +41,8 @@
 #                                 appear under two names as a noise control;
 #                                 each pass starts every image in turn, the
 #                                 order reversed on even passes, and runs
-#                                 COMPARE_TESTS (default mset set get) at each
+#                                 COMPARE_TESTS (default mset set get; also
+#                                 xadd_maxlen and xrange_10 for streams) at each
 #                                 depth in COMPARE_DEPTHS (default 16 1) for
 #                                 COMPARE_SECONDS (default 10) each, on
 #                                 each server CPU count in COMPARE_CPUS (default 1 2), for
@@ -62,8 +66,8 @@
 #                                 in its output and in host.txt. Unset or
 #                                 empty sets nothing
 #                                 with COMPARE_AOF=true every server starts
-#                                 with the append-only file on (firn's third
-#                                 argument, firn.aof, whose only policy is
+#                                 with the append-only file on (firn.aof,
+#                                 whose only policy is
 #                                 appendfsync everysec) in a fresh directory
 #                                 that stop removes, has its automatic
 #                                 rewrites switched off by CONFIG SET
@@ -222,7 +226,13 @@
 # DRAGONFLY and GARNET name those servers' executables; the suite skips a line
 # whose executable is absent and says so. FIRN_BASELINE, when set, names
 # another firn executable, such as one built from an earlier revision, which
-# the suite measures as the firn-base lines beside firn.
+# the suite measures as the firn-base lines beside firn. Its base row, and
+# every IMAGES stem (a -twin uses its stem), must have exactly one row in
+# REVISIONS_FILE (default OUT/revisions.csv): revision,name,commit,pin,invocation.
+# invocation is config when the built source has firn/server/config.wf, otherwise
+# positional; an optional sixth column holds kept-image provenance. This
+# checkout records its own built source as firn; standalone
+# callers supplying images or FIRN_BASELINE must provide their source records.
 #
 # Placement reads Linux topology under SYSFS_ROOT (default /sys), preferring
 # performance cores from Intel hybrid CPU lists or the highest cpu_capacity.
@@ -245,6 +255,83 @@
 # dispatcher's job through the CPU lists, because hosts without a hybrid
 # topology must still run. Nothing else should run on the host meanwhile.
 set -e
+# One argument constructor for both source generations. The remaining arguments
+# are a command prefix, including exec at production call sites: the registered
+# subshell becomes the server itself, with no intervening shell process.
+firn_command() {
+    firn_invocation=$1 firn_port=$2 firn_aof=$3 firn_filename=$4
+    firn_clients=$5 firn_idle=$6 firn_bind=$7
+    shift 7
+    case $firn_aof in yes|no) ;; *) echo "invalid firn AOF setting: $firn_aof" >&2; return 1 ;; esac
+    case $firn_invocation in
+        positional)
+            if [ "$firn_aof" = no ]; then firn_filename=-; fi
+            set -- "$@" "$firn_port" "$firn_clients" "$firn_filename" "$firn_idle"
+            ;;
+        config)
+            set -- "$@" --port "$firn_port" --firn-clients "$firn_clients" --appendonly "$firn_aof"
+            if [ "$firn_aof" = yes ]; then set -- "$@" --appendfilename "$firn_filename"; fi
+            set -- "$@" --timeout "$firn_idle"
+            ;;
+        *) echo "invalid firn invocation: $firn_invocation" >&2; return 1 ;;
+    esac
+    if [ -n "$firn_bind" ]; then set -- "$@" --bind "$firn_bind"; fi
+    "$@"
+}
+
+invocation_selftest() (
+    # Render each argument as a shell literal, preserving argument boundaries.
+    render_command() {
+        render_separator=
+        for render_arg do
+            printf "%s'" "$render_separator"
+            while :; do
+                case $render_arg in
+                    *"'"*)
+                        printf "%s'\\''" "${render_arg%%\'*}"
+                        render_arg=${render_arg#*\'}
+                        ;;
+                    *) printf "%s'" "$render_arg"; break ;;
+                esac
+            done
+            render_separator=' '
+        done
+        printf '\n'
+    }
+    check_command() {
+        expected=$1
+        shift
+        actual=$(firn_command "$@" render_command exec taskset -c 2,4 '/tmp/firn image')
+        if [ "$actual" != "$expected" ]; then
+            printf 'invocation-selftest: expected %s, got %s\n' "$expected" "$actual" >&2
+            exit 1
+        fi
+        printf '%s\n' "$actual"
+    }
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '6380' '17' '-' '23'" \
+        positional 6380 no 'file with spaces.aof' 17 23 ''
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '6380' '17' 'file with spaces.aof' '23' '--bind' '127.0.0.1'" \
+        positional 6380 yes 'file with spaces.aof' 17 23 127.0.0.1
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '--port' '6380' '--firn-clients' '17' '--appendonly' 'no' '--timeout' '23' '--bind' '127.0.0.1'" \
+        config 6380 no 'file with spaces.aof' 17 23 127.0.0.1
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '--port' '6380' '--firn-clients' '17' '--appendonly' 'yes' '--appendfilename' 'file with spaces.aof' '--timeout' '23'" \
+        config 6380 yes 'file with spaces.aof' 17 23 ''
+    if firn_command unknown 6380 no ignored 17 23 '' render_command >/dev/null 2>&1; then
+        echo 'invocation-selftest: accepted unknown invocation' >&2
+        exit 1
+    fi
+    if firn_command config 6380 unknown ignored 17 23 '' render_command >/dev/null 2>&1; then
+        echo 'invocation-selftest: accepted unknown AOF setting' >&2
+        exit 1
+    fi
+    echo 'invocation-selftest: passed'
+)
+
+if [ "${1:-}" = invocation-selftest ]; then
+    invocation_selftest
+    exit 0
+fi
+
 # The workflow passes an empty WF_SCHED_REPORT when its input is off; unset
 # it so firn runs exactly as it does without the variable.
 [ -n "${WF_SCHED_REPORT:-}" ] || unset WF_SCHED_REPORT
@@ -655,6 +742,7 @@ fi
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
 RELEASE=${RELEASE:-$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' "$ROOT/whitefoot.pin")}
 OUT=${OUT:-/tmp/redis-bench}
+REVISIONS_FILE=${REVISIONS_FILE:-$OUT/revisions.csv}
 WHITEFOOTC=${WHITEFOOTC:-$ROOT/build/whitefoot/$RELEASE/whitefootc}
 BASELINE_ROOT=${BASELINE_ROOT:-}
 DRAGONFLY=${DRAGONFLY:-dragonfly}
@@ -688,8 +776,28 @@ esac
 mkdir -p "$OUT"
 # firn is linked as a server would be, its module and the runtime's units
 # optimized together; FIRN_LINK names other link options, or none.
-if [ "$MODE" != compare ]; then
+if [ "$MODE" != compare ] && { [ "$MODE" != workloads ] || [ -z "${WORKLOAD_IMAGES:-}" ]; }; then
     "$WHITEFOOTC" ${FIRN_LINK---full-lto} --graph "$ROOT/firn/modules.wfg" --entry firn -o "$OUT/firn"
+    # Record the source actually built, never infer its invocation from ancestry.
+    invocation=positional
+    if [ -f "$ROOT/firn/server/config.wf" ]; then invocation=config; fi
+    python3 - "$REVISIONS_FILE" "$ROOT" "$invocation" <<'PYRECORD'
+import csv
+from pathlib import Path
+import subprocess
+import sys
+path, root, invocation = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+commit = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+pin = (Path(root) / "whitefoot.pin").read_text().strip()
+row = ["revision", "firn", commit, pin, invocation]
+rows = list(csv.reader(path.open())) if path.exists() else []
+matching = [r for r in rows if len(r) > 1 and r[:2] == row[:2]]
+if matching and (len(matching) != 1 or matching[0][:5] != row):
+    raise SystemExit("current firn source conflicts with its revisions.csv record")
+if not matching:
+    with path.open("a", newline="") as out:
+        csv.writer(out).writerow(row)
+PYRECORD
 fi
 baselines=
 if [ -n "$BASELINE_ROOT" ]; then
@@ -733,6 +841,27 @@ registered() {
     fi
 }
 
+# A kept image's alias may differ from its recorded stem; metadata belongs to
+# the source, while image_path still returns the alias's actual executable.
+recorded_invocation() {
+    python3 - "$REVISIONS_FILE" "$1" <<'PYINVOCATION'
+import csv
+from pathlib import Path
+import sys
+path, name = Path(sys.argv[1]), sys.argv[2]
+if not path.is_file():
+    raise SystemExit(f"missing revision metadata: {path}")
+with path.open(newline="") as source:
+    rows = [r for r in csv.reader(source) if len(r) > 1 and r[:2] == ["revision", name]]
+if len(rows) != 1:
+    raise SystemExit(f"expected exactly one revision record for {name}, found {len(rows)}")
+row = rows[0]
+if len(row) < 5 or not row[2] or not row[3] or row[4] not in ("config", "positional"):
+    raise SystemExit(f"invalid revision metadata for {name}: requires commit, pin and invocation")
+print(row[4])
+PYINVOCATION
+}
+
 start() {
     # The original correctness/measurement modes include both one- and
     # two-driver lines. Give each its own server count, as suite already does.
@@ -745,6 +874,11 @@ start() {
             esac
             select_placement "$default_server_count" "$DEFAULT_CLIENT_THREADS"
             ;;
+    esac
+    case $1 in
+        firn-base-*) invocation=$(recorded_invocation base) ;;
+        firn-*) invocation=$(recorded_invocation firn) ;;
+        image-*) image_name=${1#image-}; invocation=$(recorded_invocation "${image_name%-twin}") ;;
     esac
     PORT=$((PORT + 1))
     cpus=$(cpu_count "$SERVER_CPUS")
@@ -813,19 +947,18 @@ start() {
                 --bind 127.0.0.1 ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-base-*)
-            (registered; WF_DRIVERS=${1#firn-base-} exec taskset -c "$SERVER_CPUS" \
-                "$FIRN_BASELINE" "$PORT" 0 - "${IDLE:-0}" \
-                ) >"$OUT/server.log" 2>&1 &
+            (registered; WF_DRIVERS=${1#firn-base-} firn_command "$invocation" "$PORT" no firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" "$FIRN_BASELINE") >"$OUT/server.log" 2>&1 &
             ;;
         firn-aof-*)
-            (registered && cd "$OUT" && WF_DRIVERS=${1##*-} exec taskset -c "$SERVER_CPUS" \
-                ./firn "$PORT" 0 firn.aof "${IDLE:-0}") \
+            (registered && cd "$OUT" && WF_DRIVERS=${1##*-} \
+                firn_command "$invocation" "$PORT" yes firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" ./firn) \
                 >"$OUT/server.log" 2>&1 &
             ;;
         firn-*)
-            (registered; WF_DRIVERS=${1#firn-} exec taskset -c "$SERVER_CPUS" \
-                "$OUT/firn" "$PORT" 0 - "${IDLE:-0}" \
-                ) >"$OUT/server.log" 2>&1 &
+            (registered; WF_DRIVERS=${1#firn-} firn_command "$invocation" "$PORT" no firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" "$OUT/firn") >"$OUT/server.log" 2>&1 &
             ;;
         image-*)
             if [ "$MODE" = compare ] && [ "${COMPARE_AOF:-}" = true ]; then
@@ -838,14 +971,12 @@ start() {
                 mkdir -p "$AOF_DIR"
                 (registered && cd "$AOF_DIR" && \
                     WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
-                    exec taskset -c "$SERVER_CPUS" \
-                    "$img" "$PORT" 0 firn.aof "${IDLE:-0}" \
-                    ) >"$OUT/server.log" 2>&1 &
+                    firn_command "$invocation" "$PORT" yes firn.aof 0 "${IDLE:-0}" '' \
+                    exec taskset -c "$SERVER_CPUS" "$img") >"$OUT/server.log" 2>&1 &
             else
             (registered; WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
-                exec taskset -c "$SERVER_CPUS" \
-                "$(image_path "${1#image-}")" "$PORT" 0 - "${IDLE:-0}" \
-                ) >"$OUT/server.log" 2>&1 &
+                firn_command "$invocation" "$PORT" no firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" "$(image_path "${1#image-}")") >"$OUT/server.log" 2>&1 &
             fi
             ;;
         baseline-*)
@@ -1061,12 +1192,10 @@ EOF
 }
 
 # The firn criteria: every test of the suite completes on the line with no
-# error reply. The suite is redis-benchmark's default of Redis 7.0, named
-# explicitly: 7.2's default adds XADD, which firn lacks until its minimal
-# streams land (board item firn-scope-min-streams), so the default would fail
-# firn before anything is measured; XADD joins the list when they land. Its
-# 19 tests print 20 rows, LRANGE's LPUSH fill among them.
-SUITE_DEFAULT=ping_inline,ping_mbulk,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,spop,zadd,zpopmin,lrange_100,lrange_300,lrange_500,lrange_600,mset
+# error reply. The suite is redis-benchmark 7.2's default, named explicitly:
+# Redis 7.0's tests and XADD. Its 20 tests print 21 rows, LRANGE's LPUSH fill
+# among them.
+SUITE_DEFAULT=ping_inline,ping_mbulk,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,spop,zadd,zpopmin,lrange_100,lrange_300,lrange_500,lrange_600,mset,xadd
 verify_suite() {
     start "$1"
     taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" -c 50 -n 20000 \
@@ -1080,7 +1209,7 @@ verify_suite() {
     # which changes nothing it measures. Any other message is a failure.
     grep -v '^WARNING: Could not fetch server CONFIG$' "$OUT/suite-$1.err" \
         >"$OUT/suite-$1.problems" || true
-    if [ "$tests" != 20 ] || [ -s "$OUT/suite-$1.problems" ]; then
+    if [ "$tests" != 21 ] || [ -s "$OUT/suite-$1.problems" ]; then
         fail "$1" "the default suite"
     fi
 }
@@ -1272,10 +1401,26 @@ compare_client() {
             esac
             what="LRANGE mylist 0 $last"
             ;;
+        xadd_maxlen)
+            # Appends that trim with ~ to about 1000 entries, removing whole
+            # nodes as the stream passes each node's worth.
+            redis-cli -p "$PORT" DEL mystream >/dev/null
+            what="XADD mystream MAXLEN ~ 1000 * field __rand_int__"
+            ;;
+        xrange_10)
+            # Reads of the first ten entries of a stream of 10,000 filled
+            # outside the timed span.
+            redis-cli -p "$PORT" DEL mystream >/dev/null
+            redis-benchmark -p "$PORT" -n 10000 -P 16 -q XADD mystream '*' field value >/dev/null 2>&1
+            what="XRANGE mystream - + COUNT 10"
+            ;;
     esac
     ticks=$(server_ticks)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-before"
     begin=$(date +%s%N)
+    # $what is split into words but must not be globbed: XADD's * ID would
+    # otherwise become the names of the files in the working directory.
+    set -f
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
             -c 50 -n "$3" -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
@@ -1295,6 +1440,7 @@ compare_client() {
         cp "$OUT/compare-client-0.csv" "$OUT/compare-client.csv"
         set -- "$1" "$2" $(($3 / CLIENT_THREADS * CLIENT_THREADS))
     fi
+    set +f
     end=$(date +%s%N)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-after"
     ticks=$(($(server_ticks) - ticks))

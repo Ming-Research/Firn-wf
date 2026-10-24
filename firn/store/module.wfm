@@ -43,12 +43,48 @@ public struct Sorted {
   public scores: HashMap<Key, f64, ceiling>;
 }
 
+public struct StreamId {
+  doc "A stream entry's ID: its milliseconds, then its sequence number, compared in that order as Redis 7.2.16's streamCompareID compares them.";
+  public ms: u64;
+  public seq: u64;
+}
+
+public struct StreamItem {
+  doc "One entry of a stream node as Redis 7.2.16 keeps it in the node's listpack (t_stream.c streamAppendItem): its ID; whether XDEL or an exact trim marked it deleted, which leaves it in place as a tombstone; whether its field names are the node's master fields; its fields and values, each field before its value; and the bytes its listpack encoding takes.";
+  public id: StreamId;
+  public deleted: Bool;
+  public same: Bool;
+  public pairs: Box<Slots<Bytes>>;
+  public size: u64;
+}
+
+public struct StreamNode {
+  doc "One node of a stream, stored under its master entry's ID: the master entry's field names, those of the node's first entry; its entries in ID order, tombstones included; how many of them are live and how many deleted; the bytes the master entry's field count, names and terminator take in Redis 7.2.16's listpack encoding; and the bytes its entries take. With the listpack header, end byte and the two counters these give Redis's lpBytes of the node, the size that decides where Redis starts a new node.";
+  public fields: Box<Slots<Bytes>>;
+  public items: Box<Slots<StreamItem>>;
+  public live: u64;
+  public deleted: u64;
+  public master: u64;
+  public body: u64;
+}
+
+public struct StreamLog {
+  doc "A stream, as Redis 7.2.16's stream struct keeps one: its nodes in the order of their master entry IDs (design/firn/streams.md), its live entry count, the last ID it gave out, its first live entry's ID (0-0 when it is empty), the largest ID XDEL removed, and how many entries it ever took.";
+  public nodes: OrderedMap<StreamId, StreamNode, ceiling>;
+  public length: u64;
+  public last_id: StreamId;
+  public first_id: StreamId;
+  public max_deleted_id: StreamId;
+  public entries_added: u64;
+}
+
 public enum Value {
   Text(public bytes: Bytes);
   Items(public items: Box<Ring<Box<Slots<u8>>>>);
   Members(public members: HashMap<Key, unit, ceiling>);
   Fields(public fields: HashMap<Key, Bytes, ceiling>);
   Ranked(public ranked: Sorted);
+  Stream(public stream: Box<StreamLog>);
 }
 
 public struct Entry {
@@ -221,13 +257,15 @@ public struct MemoryConfig {
 }
 
 public struct ServerState {
-  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the current receive wake source, replaced with each idle-limit change and fired after replacement or a shutdown request, outside the atomic statement; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, set-max-listpack-entries, set-max-listpack-value, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; the calendar time in milliseconds at which it started, which INFO's uptime counts from; and the six maxmemory and LFU settings CONFIG exposes.";
+  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the maximum connected clients, initially 10000, changed without disconnecting existing clients; the current receive wake source, replaced with each idle-limit change and fired after replacement or a shutdown request, outside the atomic statement; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use but for stream-node-max-bytes and stream-node-max-entries, which access_settings copies for XADD's node limits, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, set-max-listpack-entries, set-max-listpack-value, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted and how many it refused at maxclients since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; the calendar time in milliseconds at which it started, which INFO's uptime counts from; and the six maxmemory and LFU settings CONFIG exposes.";
   public password: Bytes;
   public timeout: u64;
+  public maxclients: u64;
   public wake: CancelSource;
   public shutdown: Bool;
   public encodings: Array<i64, 11>;
   public connections: u64;
+  public rejected_connections: u64;
   public started: u64;
   public memory: MemoryConfig;
 }
@@ -254,6 +292,18 @@ public fn rank_compare(env: &KeyEnv, left: &Rank, right: &Rank) -> order: i32 re
 public binding RankOrder : OrderedKey<Rank, KeyEnv> {
   compare = rank_compare;
 }
+
+public fn stream_id_compare(env: &KeyEnv, left: &StreamId, right: &StreamId) -> order: i32 reads(left), reads(right) doc "Orders stream IDs by milliseconds, then by sequence, as Redis 7.2.16's streamCompareID orders them.";
+
+public binding StreamIdOrder : OrderedKey<StreamId, KeyEnv> {
+  compare = stream_id_compare;
+}
+
+public fn stream_new() -> made: StreamLog pure doc "An empty stream with no node, its IDs 0-0 and nothing added, as Redis 7.2.16's streamNew makes one.";
+
+public fn stream_copy(stream: &StreamLog) -> made: StreamLog reads(stream) doc "A copy of a stream, as COPY duplicates one: the same nodes with the same entries and tombstones, so that later trimming removes what it would remove from the original, and the same IDs and counters.";
+
+public fn stream_id_text(id: StreamId) -> text: Bytes pure doc "An ID as Redis writes one, its milliseconds, a dash and its sequence, both in decimal.";
 
 public fn due_order(env: &KeyEnv, left: &Due, right: &Due) -> order: i32 reads(left), reads(right) doc "Orders queued expiries by their instant, the earliest first.";
 
@@ -343,7 +393,7 @@ public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>
   ensures log^.inner.len >= entry(log)^.inner.len;
 } doc "Appends a command as the client sent it, every argument a RESP bulk string.";
 
-public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Copies memory settings once per connection read, beside its clock snapshot and before any command holds keys. Every command of that read, including queued commands run by EXEC and script calls across attempts, uses this snapshot; this connection refreshes it after executing CONFIG SET. A racing CONFIG SET may cause an old-policy stamp; this is accepted because Redis itself leaves stale stamps after policy switches. CONFIG and INFO still access ServerState directly.";
+public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Copies memory settings and the stream node limits once per connection read, beside its clock snapshot and before any command holds keys. Every command of that read, including queued commands run by EXEC and script calls across attempts, uses this snapshot; this connection refreshes it after executing CONFIG SET. A racing CONFIG SET may cause an old-policy stamp; this is accepted because Redis itself leaves stale stamps after policy switches. CONFIG and INFO still access ServerState directly.";
 
 public fn access_journal_new() -> journal: AccessJournal pure doc "An empty journal for one script attempt; allocation is total under Whitefoot STOR-8.";
 

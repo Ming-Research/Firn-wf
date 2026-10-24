@@ -89,7 +89,7 @@ fn scan_cursor(input: &[u8], span: Span) -> parsed: ScanCursor reads(input) {
 }
 
 fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
-  doc "TYPE names are compared in either case up to NUL, as Redis 7.2.16's strcasecmp. none and other unknown types match nothing: 6; Redis's scanGenericCommand excludes an absent lookup result before comparing types, even for none, so an expired key the lookup removes is never returned. 0 means no TYPE filter in ScanPlan.";
+  doc "TYPE names are compared in either case up to NUL, as Redis 7.2.16's strcasecmp. none and other unknown types match nothing: 7; Redis's scanGenericCommand excludes an absent lookup result before comparing types, even for none, so an expired key the lookup removes is never returned. 0 means no TYPE filter in ScanPlan.";
   let length = before_zero(input: input, span: span);
   let code = name_code(input: input, start: span.start, length: length);
   if code == 78401563153491_u64 {
@@ -107,7 +107,10 @@ fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
   if code == 1413829466_u64 {
     return 5_u64;
   }
-  return 6_u64;
+  if code == 84942731236435_u64 {
+    return 6_u64;
+  }
+  return 7_u64;
 }
 
 fn scan_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: ScanPlan reads(input), reads(args) {
