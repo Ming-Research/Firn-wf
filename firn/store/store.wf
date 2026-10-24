@@ -156,8 +156,8 @@ fn expire_key(store: &Keyspace, key: &[u8], at: u64) -> result: unit reads(store
     }
     let matched = False();
     match slot^ {
-      Some(value: held) => {
-        if held^.expires == at {
+      Some(value: held_value) => {
+        if held_value^.expires == at {
           set matched = True();
         }
       }
@@ -185,8 +185,8 @@ fn remove_expired(store: &Keyspace, key: &[u8], now: u64) -> result: unit reads(
     let log_budget = log_budget_begin(meta: m, loading: loading);
     let lapsed = False();
     match slot^ {
-      Some(value: held) => {
-        set lapsed = expired(expires: held^.expires, now: now);
+      Some(value: held_value) => {
+        set lapsed = expired(expires: held_value^.expires, now: now);
       }
       None() => {
       }

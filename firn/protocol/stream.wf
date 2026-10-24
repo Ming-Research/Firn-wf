@@ -4,17 +4,17 @@ fn request_stream_new() -> made: RequestStream pure {
   return RequestStream(phase: 0_u64, resp: resp, count: 0_u64, remaining: 0_u64, body: 0_u64, tail: 0_u64, length: 0_u64, copied: 0_u64, word: word);
 }
 
-fn parse_request_stream(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, stream: &RequestStream) -> parsed: Parsed writes(input), writes(args), writes(stream) {
+fn parse_request_stream(input: &[u8], start: u64, held_bytes: u64, args: &Box<Slots<Span>>, stream: &RequestStream) -> parsed: Parsed writes(input), writes(args), writes(stream) {
   doc "Syntax-only request traversal shares read_line and parse_inline with parse_request. RESP payloads and their two unchecked trailing bytes are consumed across windows without retaining them. A completed RESP request records its argument count and the first five bytes of its first argument, plus its full length, sufficient for exact short command classification. Inline requests retain the ordinary decoded spans. State 0 returns the consumed prefix in next and preserves the partial RESP state; callers retain only the incomplete header or inline line, growing under their own resource policy.";
   let position = start;
   if stream^.phase == 0_u64 {
-    if position >= held {
+    if position >= held_bytes {
       return Parsed(state: 0_u64, next: position);
     }
     let marker = pkg::bytes::byte_at(input: input, index: position);
     set stream^.resp = marker == 42_u8;
     if stream^.resp {
-      let header = read_line(input: input, marker: position, held: held);
+      let header = read_line(input: input, marker: position, held_bytes: held_bytes);
       if header.state == 0_u64 {
         return Parsed(state: 0_u64, next: position);
       }
@@ -37,12 +37,12 @@ fn parse_request_stream(input: &[u8], start: u64, held: u64, args: &Box<Slots<Sp
       set stream^.copied = 0_u64;
       set stream^.phase = 1_u64;
     } else {
-      return parse_inline(input: input, start: position, held: held, args: args);
+      return parse_inline(input: input, start: position, held_bytes: held_bytes, args: args);
     }
   }
   loop {
     if stream^.phase == 1_u64 {
-      let line = read_line(input: input, marker: position, held: held);
+      let line = read_line(input: input, marker: position, held_bytes: held_bytes);
       if line.state == 0_u64 {
         return Parsed(state: 0_u64, next: position);
       }
@@ -69,7 +69,7 @@ fn parse_request_stream(input: &[u8], start: u64, held: u64, args: &Box<Slots<Sp
       set stream^.phase = 2_u64;
       set position = line.end +wrap 2_u64;
     }
-    let available = held -sat position;
+    let available = held_bytes -sat position;
     let taken = imin(available, stream^.body);
     if stream^.remaining == stream^.count {
       let room = 5_u64 -sat stream^.copied;
@@ -89,7 +89,7 @@ fn parse_request_stream(input: &[u8], start: u64, held: u64, args: &Box<Slots<Sp
     if stream^.body > 0_u64 {
       return Parsed(state: 0_u64, next: position);
     }
-    let tail_room = held -sat position;
+    let tail_room = held_bytes -sat position;
     let skipped = imin(tail_room, stream^.tail);
     set position = position +wrap skipped;
     set stream^.tail = stream^.tail -wrap skipped;

@@ -428,8 +428,8 @@ fn zadd_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "Runs ZADD over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = add_scores(env: client, value: held, adding: &plan^.adding);
+    Some(value: held_value) => {
+      let edited = add_scores(env: client, value: held_value, adding: &plan^.adding);
     }
     None() => {
     }
@@ -556,8 +556,8 @@ fn remove_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(v
           let pair = hash_map_remove::<KeyHash, f64, ceiling>(map: &sorted^.scores, key: &member, env: &keys);
           match move pair {
             Some(value: gone) => {
-              let HashMapPair(key: held, value: score) = move gone;
-              let rank = Rank(score: score, member: move held);
+              let HashMapPair(key: held_value, value: score) = move gone;
+              let rank = Rank(score: score, member: move held_value);
               let unranked = ordered_map_remove::<RankOrder, unit, ceiling>(map: &sorted^.order, key: &rank, env: &keys);
               set removed = removed +wrap 1_u64;
             }
@@ -611,8 +611,8 @@ fn zrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "Runs ZREM over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = remove_ranked(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = remove_ranked(env: client, value: held_value);
     }
     None() => {
     }
@@ -862,8 +862,8 @@ fn zpop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "Runs ZPOP over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = pop_ranked(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = pop_ranked(env: client, value: held_value);
     }
     None() => {
     }
@@ -993,8 +993,8 @@ fn zcard_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   doc "Runs ZCARD over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = sorted_size(env: client, value: held);
+    Some(value: held_value) => {
+      let found = sorted_size(env: client, value: held_value);
     }
     None() => {
     }
@@ -1092,8 +1092,8 @@ fn zscore_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "Runs ZSCORE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = member_score(env: client, value: held);
+    Some(value: held_value) => {
+      let found = member_score(env: client, value: held_value);
     }
     None() => {
     }
@@ -1199,8 +1199,8 @@ fn zmscore_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], 
   doc "Runs ZMSCORE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = member_scores(env: client, value: held);
+    Some(value: held_value) => {
+      let found = member_scores(env: client, value: held_value);
     }
     None() => {
     }
@@ -1398,8 +1398,8 @@ fn zrank_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   doc "Runs ZRANK over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = member_rank(env: client, value: held);
+    Some(value: held_value) => {
+      let found = member_rank(env: client, value: held_value);
     }
     None() => {
     }

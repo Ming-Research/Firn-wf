@@ -1407,8 +1407,8 @@ fn stream_slot(op: &StreamOp, slot: &Option<Entry>, client: &Client) -> kind: u6
   doc "Runs op on the stream an entry holds, leaving the state absent for an empty slot.";
   set client^.state = state_absent;
   match slot^ {
-    Some(value: held) => {
-      let kind = stream_act(op: op, value: held, client: client);
+    Some(value: held_value) => {
+      let kind = stream_act(op: op, value: held_value, client: client);
       return kind;
     }
     None() => {
@@ -2316,7 +2316,7 @@ fn xread_held(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return appended;
 }
 
-fn xread_finish(client: &Client, op: &StreamOp, input: &[u8], args: &Box<Slots<Span>>, held: Bool) -> result: unit reads(op), reads(input), reads(args), writes(client) {
+fn xread_finish(client: &Client, op: &StreamOp, input: &[u8], args: &Box<Slots<Span>>, held_call: Bool) -> result: unit reads(op), reads(input), reads(args), writes(client) {
   doc "Answers an XREAD that served nothing, or raised an error, after xread_held: a null array, as Redis does without BLOCK and under EXEC or a script, where it may not wait; a connection's XREAD with BLOCK is refused, since waiting is not implemented yet (firn-streams-xread-block).";
   if op^.error != 0_u64 {
     stream_error(client: client, code: op^.error, input: input, args: args);
@@ -2326,7 +2326,7 @@ fn xread_finish(client: &Client, op: &StreamOp, input: &[u8], args: &Box<Slots<S
     return unit;
   }
   if op^.blocking {
-    if bnot(held) {
+    if bnot(held_call) {
       stream_error(client: client, code: 30_u64, input: input, args: args);
       return unit;
     }
@@ -2391,7 +2391,7 @@ fn run_xread(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
-  xread_finish(client: client, op: &op, input: input, args: args, held: no);
+  xread_finish(client: client, op: &op, input: input, args: args, held_call: no);
   return unit;
 }
 
@@ -2437,7 +2437,7 @@ fn stream_held(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
     }
     let appended = xread_held(sequence: sequence, journal: journal, slots: keys, op: &op, input: input, args: args, client: client, log: effects, logged: logged, budget: &unlimited_log_budget);
     let yes = True();
-    xread_finish(client: client, op: &op, input: input, args: args, held: yes);
+    xread_finish(client: client, op: &op, input: input, args: args, held_call: yes);
     return appended;
   }
   let reading = kind == 143_u64;

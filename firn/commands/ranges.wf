@@ -724,8 +724,8 @@ fn zrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "Runs ZRANGE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = range_ranked(env: client, value: held, walk: walk);
+    Some(value: held_value) => {
+      let found = range_ranked(env: client, value: held_value, walk: walk);
     }
     None() => {
     }
@@ -832,8 +832,8 @@ fn zcount_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "Runs ZCOUNT over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = count_ranked(env: client, value: held, walk: walk);
+    Some(value: held_value) => {
+      let found = count_ranked(env: client, value: held_value, walk: walk);
     }
     None() => {
     }
@@ -1012,8 +1012,8 @@ fn zremrange_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   doc "Runs ZREMRANGE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = remove_walked(env: client, value: held, walk: walk);
+    Some(value: held_value) => {
+      let edited = remove_walked(env: client, value: held_value, walk: walk);
     }
     None() => {
     }

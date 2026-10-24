@@ -53,7 +53,7 @@ fn copy_source(input: &[u8], span: Span) -> bytes: Box<Slots<u8>> reads(input) {
 
 fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngine reads(store), writes(mark) waits {
   doc "Takes the one engine, waiting while another script has it, or makes it if none was made since the last SCRIPT FLUSH. A script's first take counts it in running and records the kills count in mark in the same atomic statement that reads the generation and takes the cached engine, so FLUSH cannot intervene and a kill before this take is not that script's. Later takes and SCRIPT LOAD leave running and mark unchanged.";
-  let held = None<PooledEngine>();
+  let held_engine = None<PooledEngine>();
   let generation = 0_u64;
   atomic p = &store^.scripts when p^.out == 0_u64 {
     set p^.out = 1_u64;
@@ -64,10 +64,10 @@ fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngin
     }
     if p^.idle.inner.len > 0_u64 {
       let engine = take_back(window: &p^.idle.inner);
-      set held = Some<PooledEngine>(value: move engine);
+      set held_engine = Some<PooledEngine>(value: move engine);
     }
   }
-  match move held {
+  match move held_engine {
     Some(value: engine) => {
       if engine.generation != generation {
         let stale = move engine;
@@ -299,7 +299,7 @@ fn answer_call<interface ScriptCommands>(hub: &pkg::connection_events::Hub, stag
   let appended = ScriptCommands::call(hub: hub, stage: stage, sequence: sequence, memory: &env^.memory, journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
   if pkg::connection_events::stage_has(stage: stage) {
-    set env^.held.wrote = True();
+    set env^.held_state.wrote = True();
   }
   return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
 }
@@ -356,10 +356,10 @@ fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSeq
 
 fn complete_command_call(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, client: &Client, id: u32, appended: u64, reply_start: u64, budget: u64) -> outcome: Outcome reads(sequence), writes(engine), writes(env), writes(client) {
   if sequence^.taken {
-    set env^.held.wrote = True();
+    set env^.held_state.wrote = True();
   }
   if appended > 0_u64 {
-    set env^.held.wrote = True();
+    set env^.held_state.wrote = True();
     set env^.appended = env^.appended +sat appended;
   }
   let reply_end = client^.at;
@@ -496,11 +496,11 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
           prepare(engine: &pooled.engine, input: input, args: args, keys: keys);
           let reply = box_slots_new::<u8>(capacity: 0_u64);
           let no = False();
-          let held = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
+          let held_state = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
           let access = pkg::store::access_journal_new();
           let journal = Some<pkg::store::AccessJournal>(value: move access);
           let memory = ScriptMemory(pre_command_oom: script_oom, write_dirty: no, read_only: read_only);
-          let env = Env(memory: memory, held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random, need_whole: no);
+          let env = Env(memory: memory, held_state: held_state, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random, need_whole: no);
           let effects = box_slots_new::<u8>(capacity: 64_u64);
           let logged = store^.logging;
           let random = pooled.engine.vm.random_state;
@@ -516,7 +516,7 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
               loop {
                 match outcome {
                   Budget() => {
-                    if env.held.wrote {
+                    if env.held_state.wrote {
                       set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
                     } else {
                       pkg::store::restore_access(journal: &env.access, keys: t);
@@ -532,7 +532,7 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
                   }
                   HostCall() => {
                     let more = pooled.engine.vm.budget;
-                    if env.held.wrote {
+                    if env.held_state.wrote {
                       set more = 18446744073709551615_u64;
                     }
                     set outcome = answer_call::<ScriptCommands>(hub: hub, stage: &stage, sequence: &sequence, engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
@@ -587,7 +587,7 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
               ) {
                 match outcome {
                   Budget() => {
-                    if env.held.wrote {
+                    if env.held_state.wrote {
                       set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
                     } else {
                       match &undo {
@@ -610,7 +610,7 @@ fn eval<interface ScriptCommands, const start_whole: u64>(store: &Keyspace, inpu
                   }
                   HostCall() => {
                     let more = pooled.engine.vm.budget;
-                    if env.held.wrote {
+                    if env.held_state.wrote {
                       set more = 18446744073709551615_u64;
                     }
                     set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);

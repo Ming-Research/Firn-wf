@@ -397,8 +397,8 @@ fn hub_stop(hub: &Shared<Hub>) -> result: unit reads(hub) waits {
     let count = state^.records.cells.inner.len;
     for (index in 0_u64..count) {
       if index < state^.records.cells.inner.len {
-        let held = &state^.records.cells.inner[index];
-        match held^ {
+        let held_value = &state^.records.cells.inner[index];
+        match held_value^ {
           HashMapFilled(key: identity, value: record) => {
             slots_push::<u64>(values: &ids, value: identity^);
           }
@@ -586,8 +586,8 @@ fn timer(hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure w
       let watch = std::time::cancel_watch(source: &state.source);
       let slept = std::time::sleep_until(deadline: deadline, cancel: &watch);
     } else {
-      atomic held = &hub {
-        expire_soft(hub: held, time: time);
+      atomic held_value = &hub {
+        expire_soft(hub: held_value, time: time);
       }
     }
   }

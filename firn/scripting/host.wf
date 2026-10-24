@@ -15,7 +15,7 @@ struct HeldState {
 
 struct Env {
   memory: ScriptMemory;
-  held: HeldState;
+  held_state: HeldState;
   resp: u8;
   error: Bool;
   reply: Box<Slots<u8>>;

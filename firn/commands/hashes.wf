@@ -1471,8 +1471,8 @@ fn hset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "HSET and HMSET's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = set_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = set_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1508,8 +1508,8 @@ fn hsetnx_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   doc "HSETNX's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = set_field_once(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = set_field_once(env: client, value: held_value);
     }
     None() => {
     }
@@ -1547,8 +1547,8 @@ fn hget_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   doc "HGET's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = get_field(env: client, value: held);
+    Some(value: held_value) => {
+      let found = get_field(env: client, value: held_value);
     }
     None() => {
     }
@@ -1577,8 +1577,8 @@ fn hmget_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   doc "HMGET's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = get_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let found = get_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1602,8 +1602,8 @@ fn hdel_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "HDEL's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = delete_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = delete_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1642,8 +1642,8 @@ fn hfield_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "HEXISTS and HSTRLEN's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = find_field(env: client, value: held);
+    Some(value: held_value) => {
+      let found = find_field(env: client, value: held_value);
     }
     None() => {
     }
@@ -1666,8 +1666,8 @@ fn hlen_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   doc "HLEN's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = hash_size(env: client, value: held);
+    Some(value: held_value) => {
+      let found = hash_size(env: client, value: held_value);
     }
     None() => {
     }
@@ -1696,8 +1696,8 @@ fn hall_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   doc "HGETALL, HKEYS and HVALS's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = all_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let found = all_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1725,8 +1725,8 @@ fn hincrby_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   doc "HINCRBY's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = add_to_field(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = add_to_field(env: client, value: held_value);
     }
     None() => {
     }
@@ -1782,8 +1782,8 @@ fn hincrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   doc "HINCRBYFLOAT's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = add_float(env: client, value: held, floating: floating);
+    Some(value: held_value) => {
+      let edited = add_float(env: client, value: held_value, floating: floating);
     }
     None() => {
     }
@@ -1846,16 +1846,16 @@ fn hrandfield_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   if reading {
     match slot^ {
-      Some(value: held) => {
-        let found = random_fields(env: client, value: held);
+      Some(value: held_value) => {
+        let found = random_fields(env: client, value: held_value);
       }
       None() => {
       }
     }
   } else {
     match slot^ {
-      Some(value: held) => {
-        let found = hash_size(env: client, value: held);
+      Some(value: held_value) => {
+        let found = hash_size(env: client, value: held_value);
       }
       None() => {
       }

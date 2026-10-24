@@ -157,7 +157,7 @@ fn aof_parse_line(manifest: &AofManifest, input: &Box<Slots<u8>>, ended: Bool) -
   let window = &input^.inner[0_u64..length];
   let args = box_slots_new::<Span>(capacity: 16_u64);
   let unlocked = False();
-  let parsed = parse_request(input: window, start: 0_u64, held: length, args: &args, locked: unlocked);
+  let parsed = parse_request(input: window, start: 0_u64, held_bytes: length, args: &args, locked: unlocked);
   if parsed.state != 1_u64 {
     return False();
   }
@@ -250,11 +250,11 @@ fn aof_read_manifest(factory: &HandleFactory, directory: &DirectoryRead, prefix:
       loop @chunks {
         let end = buffer.inner.len;
         let destination = &buffer.inner[0_u64..end];
-        let held = 0_u64;
+        let held_bytes = 0_u64;
         let finished = False();
         match read_at(factory: factory, file: &opened, destination: destination, file_offset: offset, start: 0_u64, end: end) {
           Ok(value: got) => {
-            set held = got;
+            set held_bytes = got;
             set offset = offset +wrap got;
             set finished = got == 0_u64;
           }
@@ -269,7 +269,7 @@ fn aof_read_manifest(factory: &HandleFactory, directory: &DirectoryRead, prefix:
             }
           }
         }
-        for (index in 0_u64..held) {
+        for (index in 0_u64..held_bytes) {
           let byte = aof_byte_at(input: destination, index: index);
           aof_emit(log: &line, value: byte);
           let newline = byte == 10_u8;

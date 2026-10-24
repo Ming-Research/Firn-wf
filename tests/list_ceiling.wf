@@ -62,23 +62,23 @@ fn case_entry(length: u64, capacity: u64) -> made: Option<Entry> pure contract {
     let placed = deque_push_back::<Box<Slots<u8>>>(values: &list, value: move element);
   }
   let value = Value::Items(items: move list);
-  let held = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
-  return Some<Entry>(value: move held);
+  let held_value = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
+  return Some<Entry>(value: move held_value);
 }
 
 fn case_original(slot: &Option<Entry>, length: u64) -> same: Bool reads(slot) {
   match slot^ {
-    Some(value: held) => {
-      if held^.expires != 123_u64 {
+    Some(value: held_value) => {
+      if held_value^.expires != 123_u64 {
         return False();
       }
-      if held^.access != 456_u32 {
+      if held_value^.access != 456_u32 {
         return False();
       }
-      if held^.last_write != 789_u64 {
+      if held_value^.last_write != 789_u64 {
         return False();
       }
-      match held^.value {
+      match held_value^.value {
         Items(items: list) => {
           if list^.inner.len != length {
             return False();
@@ -121,8 +121,8 @@ fn case_original(slot: &Option<Entry>, length: u64) -> same: Bool reads(slot) {
 fn case_contents(slot: &Option<Entry>, initial: u64, added: u64, front: Bool, rotating: Bool, from_head: Bool) -> same: Bool reads(slot) {
   doc "Checks every logical element of a successful push or rotation, independently of the command's reported length.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Items(items: list) => {
           if list^.inner.len != 8_u64 {
             return False();
@@ -448,14 +448,14 @@ fn case_move(from_head: Bool, to_head: Bool, same: Bool) -> passed: Bool pure wa
 fn case_move_list(slot: &Option<Entry>, length: u64, first: u8, expires_at: u64, write_stamp: u64) -> same: Bool reads(slot) {
   doc "Checks dataset contents, expiry and write stamp; normal lookup access refresh is allowed.";
   match slot^ {
-    Some(value: held) => {
-      if held^.expires != expires_at {
+    Some(value: held_value) => {
+      if held_value^.expires != expires_at {
         return False();
       }
-      if held^.last_write != write_stamp {
+      if held_value^.last_write != write_stamp {
         return False();
       }
-      match held^.value {
+      match held_value^.value {
         Items(items: list) => {
           if list^.inner.len != length {
             return False();
@@ -499,20 +499,20 @@ fn case_text_entry() -> made: Option<Entry> pure {
   let payload = case_element(value: 'z'_u8);
   let bytes = Bytes::Long(bytes: move payload);
   let value = Value::Text(bytes: move bytes);
-  let held = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
-  return Some<Entry>(value: move held);
+  let held_value = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
+  return Some<Entry>(value: move held_value);
 }
 
 fn case_text_original(slot: &Option<Entry>) -> same: Bool reads(slot) {
   match slot^ {
-    Some(value: held) => {
-      if held^.expires != 123_u64 {
+    Some(value: held_value) => {
+      if held_value^.expires != 123_u64 {
         return False();
       }
-      if held^.last_write != 789_u64 {
+      if held_value^.last_write != 789_u64 {
         return False();
       }
-      match held^.value {
+      match held_value^.value {
         Text(bytes: stored) => {
           match stored^ {
             Long(bytes: payload) => {

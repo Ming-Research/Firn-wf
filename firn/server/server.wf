@@ -537,20 +537,20 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let started = std::time::now(clock: &clock);
   let last = nanoseconds_from(earlier: origin, later: started);
   let polled = last;
-  let held = 0_u64;
+  let held_bytes = 0_u64;
   let promoted = False();
   loop @requests {
     if client.closing {
       break @requests;
     }
-    if held >= input.inner.len {
+    if held_bytes >= input.inner.len {
       input_grow(input: &input);
-      if held >= input.inner.len {
+      if held_bytes >= input.inner.len {
         break @requests;
       }
     }
     let ended = False();
-    let received = held;
+    let received = held_bytes;
     let fresh = True();
     loop @receiving {
       let before = std::time::now(clock: &clock);
@@ -570,7 +570,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       let length = input.inner.len;
       let window = &input.inner[0_u64..length];
       let waited = False();
-      match receive_next(receive: &connection.receive, destination: window, start: held, end: length, deadline: limit, cancel: &limits.cancel) {
+      match receive_next(receive: &connection.receive, destination: window, start: held_bytes, end: length, deadline: limit, cancel: &limits.cancel) {
         Ok(value: next) => {
           set received = next;
         }
@@ -605,7 +605,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     if ended {
       break @requests;
     }
-    set held = received;
+    set held_bytes = received;
     let reading = read_time(wall: &wall);
     let time = reading.time;
     set client.unix_us = reading.unix_us;
@@ -637,7 +637,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         set client.locked = demanded;
       }
       let locked = client.locked;
-      let parsed = parse_request(input: bytes, start: consumed, held: held, args: &args, locked: locked);
+      let parsed = parse_request(input: bytes, start: consumed, held_bytes: held_bytes, args: &args, locked: locked);
       if parsed.state == 0_u64 {
         break @commands;
       }
@@ -672,7 +672,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       }
     }
     if promoted {
-      set held = keep_rest(input: &input, from: consumed, held: held);
+      set held_bytes = keep_rest(input: &input, from: consumed, held_bytes: held_bytes);
       break @requests;
     }
     if client.at > 0_u64 {
@@ -686,7 +686,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     if stopping {
       break @requests;
     }
-    set held = keep_rest(input: &input, from: consumed, held: held);
+    set held_bytes = keep_rest(input: &input, from: consumed, held_bytes: held_bytes);
   }
   if promoted {
     std::time::close_cancel_watch(watch: move limits.cancel);
@@ -694,7 +694,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     let promoted_clock = clock_share(clock: &clock);
     let promoted_wall = wall_clock_share(clock: &wall);
     let promoted_shutdown = std::time::cancel_share(source: &shutdown);
-    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held: held, transaction: move transaction);
+    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held_bytes: held_bytes, transaction: move transaction);
     std::time::close_cancel_source(source: move shutdown);
     atomic m = &store.meta {
       set m^.clients = m^.clients -wrap 1_u64;

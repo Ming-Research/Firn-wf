@@ -133,8 +133,8 @@ fn rewrite_stream(stream: &StreamLog, emitter: &RewriteEmitter) -> result: unit 
 fn rewrite_entry(slot: &Option<Entry>, emitter: &RewriteEmitter) -> result: unit reads(slot), writes(emitter) {
   doc "Redis rewriteAppendOnlyFileRio: retain even elapsed expiries, emit at most 64 collection elements per command, and follow each expiring value with its absolute PEXPIREAT. Script caches have no AOF records and firn implements no persisted functions.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Text(bytes: stored) => {
           log_count(log: &emitter^.output, count: 3_u64, room: 256_u64, budget: &emitter^.budget);
           log_word(log: &emitter^.output, word: &rewrite_set[0_u64..3_u64], budget: &emitter^.budget);
@@ -166,11 +166,11 @@ fn rewrite_entry(slot: &Option<Entry>, emitter: &RewriteEmitter) -> result: unit
           rewrite_stream(stream: &stored_stream^.inner, emitter: emitter);
         }
       }
-      if held^.expires != 0_u64 {
+      if held_value^.expires != 0_u64 {
         log_count(log: &emitter^.output, count: 3_u64, room: 128_u64, budget: &emitter^.budget);
         log_word(log: &emitter^.output, word: &rewrite_expire[0_u64..9_u64], budget: &emitter^.budget);
         log_text(log: &emitter^.output, text: &emitter^.key, budget: &emitter^.budget);
-        log_decimal(log: &emitter^.output, value: held^.expires, budget: &emitter^.budget);
+        log_decimal(log: &emitter^.output, value: held_value^.expires, budget: &emitter^.budget);
       }
     }
     None() => {
@@ -227,8 +227,8 @@ fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMe
   let measured = RewriteMeasure(bytes: 512_u64, elements: 1_u64);
   let commands = 3_u64;
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Text(bytes: stored) => {
           let length = pkg::bytes::bytes_length(bytes: stored);
           set measured.bytes = measured.bytes +sat length;

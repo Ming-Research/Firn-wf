@@ -71,8 +71,8 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
           match step {
             Needs(bytes: needed) => {
               if charged {
-                let held = m^.rewrite.fixed +sat created;
-                let floor = held +sat aof_rw_step_buffer;
+                let held_value = m^.rewrite.fixed +sat created;
+                let floor = held_value +sat aof_rw_step_buffer;
                 let most = m^.rewrite.limit -sat floor;
                 if needed <= most {
                   set waiting = True();
@@ -115,8 +115,8 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
                           let slot = &table^[key];
                           let stamp = 0_u64;
                           match slot^ {
-                            Some(value: held) => {
-                              set stamp = held^.last_write;
+                            Some(value: held_value) => {
+                              set stamp = held_value^.last_write;
                             }
                             None() => {
                             }
