@@ -654,3 +654,31 @@ not measured: the hot functions are laid out again by the new commands, and
 this record's finding is that a cell's cost of a few percent follows such a
 layout, so `set` and `incr` at depth 16 are to be measured again on the merged
 program before the comparison is taken to describe it.
+
+### Run G: the formal comparison on the merged program
+
+Written before G runs. The question: run F and F2 measured the branch over
+`7f8b4f84658b`; the program that merges also holds the stream commands and the
+startup configuration of the main line. Is any cell of the 19 default tests at
+depths 16 and 1 wholly on the slower side of `before` on the merged program,
+and which of `set` and `incr` at depth 16 is still behind? This is the same
+comparison as F on the head commit that merges, not a new question.
+
+- **Images.** `before` (`00e2bd1fa230`), `main` (`05f7e89c62a7`, the main line
+  the branch merged), `head` (the branch head at the time of the run, which holds
+  the merge) and `head-twin` (`head` again). The pinned compiler release is the
+  same for all of them (`whitefoot.pin` is unchanged between `7f8b4f84658b` and
+  `05f7e89c62a7`).
+- **Settings.** As F, with 8 passes of 5 s instead of 6, because F's intervals
+  were too wide to see 2% in some cells: servers on CPUs 2 and 4, clients on
+  16-31, 2 server CPUs, the 19 tests at depths 16 and 1, no profile, no
+  `reference` line.
+- **Measure and reading.** As F: `head`/`before`, `head`/`main`, `main`/`before`
+  and `head-twin`/`head` by `summary.py ratios` on the rate and on the server
+  CPU time per request. The run counts only if the twin interval holds 1 in
+  every cell that is not client-limited; a cell that is wholly on the slower
+  side of `before`, or whose twin interval does not hold 1, is measured again
+  alone with 16 passes and stands only if it is wholly slower again. The
+  criterion of the item is met if no judged cell stands. `main`/`before` says
+  how much of the loss of Firn-wf#100 the main line carries now, and
+  `head`/`main` what this change recovers of it on the merged program.
