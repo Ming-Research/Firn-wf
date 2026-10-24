@@ -380,7 +380,8 @@ def selftest():
         assert "image-after / reference: 1.125, p99 2.000 ms against 3.000 ms" in text, text
         # the per-pass interval against the fastest competitor lies wholly
         # under 1 here: 90 against 95 in every pass, give or take one
-        assert "image-after / garnet per pass: 95% interval " in text and "over 4 passes (slower)" in text, text
+        assert any(line.startswith("image-after / garnet per pass: 95% interval ")
+                   and line.endswith(" over 4 passes (slower)") for line in text.splitlines()), text
         assert text.rstrip().endswith("2 criteria not met"), text
         # A client-limited cell does not judge the p99: 3 criteria become 1.
         limited = ["line,pass,cpus,workload,connections,client_busy_mean,client_work_fraction,client_limited"]
