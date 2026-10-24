@@ -9,6 +9,9 @@
 #
 #   sh redis-bench.sh             the correctness pass and Experiments 7 and 8
 #   sh redis-bench.sh verify      only the correctness pass
+#   sh redis-bench.sh invocation-selftest
+#                                 check both recorded argument forms without
+#                                 building or starting any server
 #   sh redis-bench.sh placement-selftest
 #                                 check placement against fake Linux topology
 #                                 and the per-CPU busy reading against a fake
@@ -38,7 +41,8 @@
 #                                 appear under two names as a noise control;
 #                                 each pass starts every image in turn, the
 #                                 order reversed on even passes, and runs
-#                                 COMPARE_TESTS (default mset set get) at each
+#                                 COMPARE_TESTS (default mset set get; also
+#                                 xadd_maxlen and xrange_10 for streams) at each
 #                                 depth in COMPARE_DEPTHS (default 16 1) for
 #                                 COMPARE_SECONDS (default 10) each, on
 #                                 each server CPU count in COMPARE_CPUS (default 1 2), for
@@ -62,8 +66,8 @@
 #                                 in its output and in host.txt. Unset or
 #                                 empty sets nothing
 #                                 with COMPARE_AOF=true every server starts
-#                                 with the append-only file on (firn's third
-#                                 argument, firn.aof, whose only policy is
+#                                 with the append-only file on (firn.aof,
+#                                 whose only policy is
 #                                 appendfsync everysec) in a fresh directory
 #                                 that stop removes, has its automatic
 #                                 rewrites switched off by CONFIG SET
@@ -81,6 +85,11 @@
 #                                 directory stop removes) when COMPARE_AOF=true;
 #                                 the run records setting,reference=true (false
 #                                 otherwise) in its output and in host.txt
+#                                 the lrange_* tests fill their list outside the
+#                                 timed span and send LRANGE themselves, since
+#                                 redis-benchmark's own fill would be timed;
+#                                 summary.py ratios compares two images' passes
+#                                 in compare.csv, with a twin as the noise
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -141,6 +150,43 @@
 #                                 --sample-ms is accepted as a shared option;
 #                                 no auxiliary sampler runs for these workloads,
 #                                 and every completed operation is recorded.
+#                                 Opt-in pubsub-channel and pubsub-pattern
+#                                 measure publish/subscribe delivery: one
+#                                 publisher and WORKLOAD_CONNECTIONS
+#                                 subscribers (default 50), all on one channel,
+#                                 each subscribed to it (channel) or to a pattern
+#                                 that matches it (pattern). The publisher
+#                                 keeps each depth of WORKLOAD_DEPTHS (default
+#                                 16 1) PUBLISH commands unanswered and never
+#                                 runs more than --window messages (default
+#                                 1024) ahead of the slowest subscriber. Each
+#                                 sample runs --warmup-seconds (default 5) and
+#                                 then WORKLOAD_SECONDS; pubsub.csv has
+#                                 line,pass,cpus,workload,connections,pipeline,
+#                                 published,delivered,seconds,rate,p50_ms,p99_ms
+#                                 where rate is the messages delivered to
+#                                 subscribers a second and the latencies run from
+#                                 the publisher's write to the last subscriber's
+#                                 read, and pubsub-limited.csv has the
+#                                 client_work_fraction and client_limited of each
+#                                 sample as above, except that a subscriber
+#                                 thread's work is its reads that returned data
+#                                 and their parsing, since one scan polls many
+#                                 sockets. A line whose server answers
+#                                 SUBSCRIBE with an unknown-command error is
+#                                 skipped for the workload, except firn, which
+#                                 must support it. With PERF naming a perf
+#                                 executable, each firn line's server, after
+#                                 all its measured runs of a workload in pass 1,
+#                                 runs the workload once more at each depth
+#                                 under perf record, unmeasured, and keeps each
+#                                 flat profile as profile-<line>-<cpus>-
+#                                 <workload>-<connections>-<depth>.txt.
+#                                 Redis 7.2.16 is required,
+#                                 WORKLOAD_OPTIONS accepts --warmup-seconds,
+#                                 --value-size (default 64) and --window, and the
+#                                 default lines are Redis and firn.
+#                                 summary.py reads these files.
 #                                 Where /proc/stat exists, workload-limited.csv has
 #                                 line,pass,cpus,workload,connections,
 #                                 client_busy_mean,client_work_fraction,
@@ -153,9 +199,15 @@
 #                                 over the client CPUs, recorded only: the
 #                                 spinning client keeps its CPUs busy anyway.
 #                                 Nonempty WORKLOAD_SERVERS selects, in order,
-#                                 reference firn valkey valkey-io dragonfly
-#                                 garnet (no duplicates); every selected line
-#                                 omits AOF and absent competitors are skipped.
+#                                 reference redis-latest firn valkey valkey-io
+#                                 dragonfly garnet valkey-latest valkey-io-latest
+#                                 dragonfly-latest garnet-latest (no duplicates);
+#                                 every selected line omits AOF and absent
+#                                 competitors are skipped. A name ending in
+#                                 -latest is the newest stable release of its
+#                                 project, REDIS_LATEST, VALKEY_LATEST,
+#                                 DRAGONFLY_LATEST and GARNET_LATEST naming the
+#                                 servers (latest.sh builds or extracts them).
 #                                 firn/dragonfly/garnet use the current CPU
 #                                 count. With WORKLOAD_IMAGES, selecting firn
 #                                 expands every IMAGES entry, including twins,
@@ -174,7 +226,13 @@
 # DRAGONFLY and GARNET name those servers' executables; the suite skips a line
 # whose executable is absent and says so. FIRN_BASELINE, when set, names
 # another firn executable, such as one built from an earlier revision, which
-# the suite measures as the firn-base lines beside firn.
+# the suite measures as the firn-base lines beside firn. Its base row, and
+# every IMAGES stem (a -twin uses its stem), must have exactly one row in
+# REVISIONS_FILE (default OUT/revisions.csv): revision,name,commit,pin,invocation.
+# invocation is config when the built source has firn/server/config.wf, otherwise
+# positional; an optional sixth column holds kept-image provenance. This
+# checkout records its own built source as firn; standalone
+# callers supplying images or FIRN_BASELINE must provide their source records.
 #
 # Placement reads Linux topology under SYSFS_ROOT (default /sys), preferring
 # performance cores from Intel hybrid CPU lists or the highest cpu_capacity.
@@ -197,6 +255,83 @@
 # dispatcher's job through the CPU lists, because hosts without a hybrid
 # topology must still run. Nothing else should run on the host meanwhile.
 set -e
+# One argument constructor for both source generations. The remaining arguments
+# are a command prefix, including exec at production call sites: the registered
+# subshell becomes the server itself, with no intervening shell process.
+firn_command() {
+    firn_invocation=$1 firn_port=$2 firn_aof=$3 firn_filename=$4
+    firn_clients=$5 firn_idle=$6 firn_bind=$7
+    shift 7
+    case $firn_aof in yes|no) ;; *) echo "invalid firn AOF setting: $firn_aof" >&2; return 1 ;; esac
+    case $firn_invocation in
+        positional)
+            if [ "$firn_aof" = no ]; then firn_filename=-; fi
+            set -- "$@" "$firn_port" "$firn_clients" "$firn_filename" "$firn_idle"
+            ;;
+        config)
+            set -- "$@" --port "$firn_port" --firn-clients "$firn_clients" --appendonly "$firn_aof"
+            if [ "$firn_aof" = yes ]; then set -- "$@" --appendfilename "$firn_filename"; fi
+            set -- "$@" --timeout "$firn_idle"
+            ;;
+        *) echo "invalid firn invocation: $firn_invocation" >&2; return 1 ;;
+    esac
+    if [ -n "$firn_bind" ]; then set -- "$@" --bind "$firn_bind"; fi
+    "$@"
+}
+
+invocation_selftest() (
+    # Render each argument as a shell literal, preserving argument boundaries.
+    render_command() {
+        render_separator=
+        for render_arg do
+            printf "%s'" "$render_separator"
+            while :; do
+                case $render_arg in
+                    *"'"*)
+                        printf "%s'\\''" "${render_arg%%\'*}"
+                        render_arg=${render_arg#*\'}
+                        ;;
+                    *) printf "%s'" "$render_arg"; break ;;
+                esac
+            done
+            render_separator=' '
+        done
+        printf '\n'
+    }
+    check_command() {
+        expected=$1
+        shift
+        actual=$(firn_command "$@" render_command exec taskset -c 2,4 '/tmp/firn image')
+        if [ "$actual" != "$expected" ]; then
+            printf 'invocation-selftest: expected %s, got %s\n' "$expected" "$actual" >&2
+            exit 1
+        fi
+        printf '%s\n' "$actual"
+    }
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '6380' '17' '-' '23'" \
+        positional 6380 no 'file with spaces.aof' 17 23 ''
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '6380' '17' 'file with spaces.aof' '23' '--bind' '127.0.0.1'" \
+        positional 6380 yes 'file with spaces.aof' 17 23 127.0.0.1
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '--port' '6380' '--firn-clients' '17' '--appendonly' 'no' '--timeout' '23' '--bind' '127.0.0.1'" \
+        config 6380 no 'file with spaces.aof' 17 23 127.0.0.1
+    check_command "'exec' 'taskset' '-c' '2,4' '/tmp/firn image' '--port' '6380' '--firn-clients' '17' '--appendonly' 'yes' '--appendfilename' 'file with spaces.aof' '--timeout' '23'" \
+        config 6380 yes 'file with spaces.aof' 17 23 ''
+    if firn_command unknown 6380 no ignored 17 23 '' render_command >/dev/null 2>&1; then
+        echo 'invocation-selftest: accepted unknown invocation' >&2
+        exit 1
+    fi
+    if firn_command config 6380 unknown ignored 17 23 '' render_command >/dev/null 2>&1; then
+        echo 'invocation-selftest: accepted unknown AOF setting' >&2
+        exit 1
+    fi
+    echo 'invocation-selftest: passed'
+)
+
+if [ "${1:-}" = invocation-selftest ]; then
+    invocation_selftest
+    exit 0
+fi
+
 # The workflow passes an empty WF_SCHED_REPORT when its input is off; unset
 # it so firn runs exactly as it does without the variable.
 [ -n "${WF_SCHED_REPORT:-}" ] || unset WF_SCHED_REPORT
@@ -607,10 +742,19 @@ fi
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
 RELEASE=${RELEASE:-$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' "$ROOT/whitefoot.pin")}
 OUT=${OUT:-/tmp/redis-bench}
+REVISIONS_FILE=${REVISIONS_FILE:-$OUT/revisions.csv}
 WHITEFOOTC=${WHITEFOOTC:-$ROOT/build/whitefoot/$RELEASE/whitefootc}
 BASELINE_ROOT=${BASELINE_ROOT:-}
 DRAGONFLY=${DRAGONFLY:-dragonfly}
 GARNET=${GARNET:-garnet-server}
+# The newest stable releases of the four competitors (latest.sh), for the lines
+# redis-latest, valkey-latest, valkey-io-latest, dragonfly-latest-N and
+# garnet-latest-N; the lines reference and reference-aof stay Redis 7.2.16, and
+# valkey, valkey-io, dragonfly-N and garnet-N the host's own.
+REDIS_LATEST=${REDIS_LATEST:-}
+VALKEY_LATEST=${VALKEY_LATEST:-}
+DRAGONFLY_LATEST=${DRAGONFLY_LATEST:-}
+GARNET_LATEST=${GARNET_LATEST:-}
 FIRN_BASELINE=${FIRN_BASELINE:-}
 DEFAULT_CLIENT_THREADS=${CLIENT_THREADS:-2}
 REQUESTS=${REQUESTS:-1000000}
@@ -632,8 +776,28 @@ esac
 mkdir -p "$OUT"
 # firn is linked as a server would be, its module and the runtime's units
 # optimized together; FIRN_LINK names other link options, or none.
-if [ "$MODE" != compare ]; then
+if [ "$MODE" != compare ] && { [ "$MODE" != workloads ] || [ -z "${WORKLOAD_IMAGES:-}" ]; }; then
     "$WHITEFOOTC" ${FIRN_LINK---full-lto} --graph "$ROOT/firn/modules.wfg" --entry firn -o "$OUT/firn"
+    # Record the source actually built, never infer its invocation from ancestry.
+    invocation=positional
+    if [ -f "$ROOT/firn/server/config.wf" ]; then invocation=config; fi
+    python3 - "$REVISIONS_FILE" "$ROOT" "$invocation" <<'PYRECORD'
+import csv
+from pathlib import Path
+import subprocess
+import sys
+path, root, invocation = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+commit = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+pin = (Path(root) / "whitefoot.pin").read_text().strip()
+row = ["revision", "firn", commit, pin, invocation]
+rows = list(csv.reader(path.open())) if path.exists() else []
+matching = [r for r in rows if len(r) > 1 and r[:2] == row[:2]]
+if matching and (len(matching) != 1 or matching[0][:5] != row):
+    raise SystemExit("current firn source conflicts with its revisions.csv record")
+if not matching:
+    with path.open("a", newline="") as out:
+        csv.writer(out).writerow(row)
+PYRECORD
 fi
 baselines=
 if [ -n "$BASELINE_ROOT" ]; then
@@ -650,8 +814,12 @@ KEEP=
 # Whether a line's server can run on this host.
 available() {
     case $1 in
+        dragonfly-latest-*) test -n "$DRAGONFLY_LATEST" && test -x "$DRAGONFLY_LATEST" ;;
         dragonfly-*) command -v "$DRAGONFLY" >/dev/null 2>&1 ;;
+        garnet-latest-*) test -n "$GARNET_LATEST" && test -x "$GARNET_LATEST" ;;
         garnet-*) command -v "$GARNET" >/dev/null 2>&1 ;;
+        redis-latest) test -n "$REDIS_LATEST" && test -x "$REDIS_LATEST" ;;
+        valkey-latest|valkey-io-latest) test -n "$VALKEY_LATEST" && test -x "$VALKEY_LATEST" ;;
         firn-base-*) test -n "$FIRN_BASELINE" && test -x "$FIRN_BASELINE" ;;
         valkey*) command -v valkey-server >/dev/null 2>&1 ;;
         *) true ;;
@@ -673,6 +841,27 @@ registered() {
     fi
 }
 
+# A kept image's alias may differ from its recorded stem; metadata belongs to
+# the source, while image_path still returns the alias's actual executable.
+recorded_invocation() {
+    python3 - "$REVISIONS_FILE" "$1" <<'PYINVOCATION'
+import csv
+from pathlib import Path
+import sys
+path, name = Path(sys.argv[1]), sys.argv[2]
+if not path.is_file():
+    raise SystemExit(f"missing revision metadata: {path}")
+with path.open(newline="") as source:
+    rows = [r for r in csv.reader(source) if len(r) > 1 and r[:2] == ["revision", name]]
+if len(rows) != 1:
+    raise SystemExit(f"expected exactly one revision record for {name}, found {len(rows)}")
+row = rows[0]
+if len(row) < 5 or not row[2] or not row[3] or row[4] not in ("config", "positional"):
+    raise SystemExit(f"invalid revision metadata for {name}: requires commit, pin and invocation")
+print(row[4])
+PYINVOCATION
+}
+
 start() {
     # The original correctness/measurement modes include both one- and
     # two-driver lines. Give each its own server count, as suite already does.
@@ -685,6 +874,11 @@ start() {
             esac
             select_placement "$default_server_count" "$DEFAULT_CLIENT_THREADS"
             ;;
+    esac
+    case $1 in
+        firn-base-*) invocation=$(recorded_invocation base) ;;
+        firn-*) invocation=$(recorded_invocation firn) ;;
+        image-*) image_name=${1#image-}; invocation=$(recorded_invocation "${image_name%-twin}") ;;
     esac
     PORT=$((PORT + 1))
     cpus=$(cpu_count "$SERVER_CPUS")
@@ -711,6 +905,20 @@ start() {
                 --timeout "${IDLE:-0}" --daemonize no \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
+        redis-latest)
+            (registered; exec taskset -c "$SERVER_CPUS" "$REDIS_LATEST" --port "$PORT" --save "" \
+                --appendonly no --timeout "${IDLE:-0}" --daemonize no \
+                ) >"$OUT/server.log" 2>&1 &
+            ;;
+        valkey-latest)
+            (registered; exec taskset -c "$SERVER_CPUS" "$VALKEY_LATEST" --port "$PORT" --save "" \
+                --appendonly no --daemonize no ) >"$OUT/server.log" 2>&1 &
+            ;;
+        valkey-io-latest)
+            (registered; exec taskset -c "$SERVER_CPUS" "$VALKEY_LATEST" --port "$PORT" --save "" \
+                --appendonly no --io-threads "$cpus" --io-threads-do-reads yes \
+                --daemonize no ) >"$OUT/server.log" 2>&1 &
+            ;;
         valkey)
             (registered; exec taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
                 --appendonly no --daemonize no ) >"$OUT/server.log" 2>&1 &
@@ -720,29 +928,37 @@ start() {
                 --appendonly no --io-threads "$cpus" --io-threads-do-reads yes \
                 --daemonize no ) >"$OUT/server.log" 2>&1 &
             ;;
+        dragonfly-latest-*)
+            (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY_LATEST" --port="$PORT" \
+                --proactor_threads="${1#dragonfly-latest-}" --dbfilename= \
+                --logtostderr ) >"$OUT/server.log" 2>&1 &
+            ;;
         dragonfly-*)
             (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY" --port="$PORT" \
                 --proactor_threads="${1#dragonfly-}" --dbfilename= \
                 --logtostderr ) >"$OUT/server.log" 2>&1 &
+            ;;
+        garnet-latest-*)
+            (registered; exec taskset -c "$SERVER_CPUS" "$GARNET_LATEST" --port "$PORT" \
+                --bind 127.0.0.1 ) >"$OUT/server.log" 2>&1 &
             ;;
         garnet-*)
             (registered; exec taskset -c "$SERVER_CPUS" "$GARNET" --port "$PORT" \
                 --bind 127.0.0.1 ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-base-*)
-            (registered; WF_DRIVERS=${1#firn-base-} exec taskset -c "$SERVER_CPUS" \
-                "$FIRN_BASELINE" "$PORT" 0 - "${IDLE:-0}" \
-                ) >"$OUT/server.log" 2>&1 &
+            (registered; WF_DRIVERS=${1#firn-base-} firn_command "$invocation" "$PORT" no firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" "$FIRN_BASELINE") >"$OUT/server.log" 2>&1 &
             ;;
         firn-aof-*)
-            (registered && cd "$OUT" && WF_DRIVERS=${1##*-} exec taskset -c "$SERVER_CPUS" \
-                ./firn "$PORT" 0 firn.aof "${IDLE:-0}") \
+            (registered && cd "$OUT" && WF_DRIVERS=${1##*-} \
+                firn_command "$invocation" "$PORT" yes firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" ./firn) \
                 >"$OUT/server.log" 2>&1 &
             ;;
         firn-*)
-            (registered; WF_DRIVERS=${1#firn-} exec taskset -c "$SERVER_CPUS" \
-                "$OUT/firn" "$PORT" 0 - "${IDLE:-0}" \
-                ) >"$OUT/server.log" 2>&1 &
+            (registered; WF_DRIVERS=${1#firn-} firn_command "$invocation" "$PORT" no firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" "$OUT/firn") >"$OUT/server.log" 2>&1 &
             ;;
         image-*)
             if [ "$MODE" = compare ] && [ "${COMPARE_AOF:-}" = true ]; then
@@ -755,14 +971,12 @@ start() {
                 mkdir -p "$AOF_DIR"
                 (registered && cd "$AOF_DIR" && \
                     WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
-                    exec taskset -c "$SERVER_CPUS" \
-                    "$img" "$PORT" 0 firn.aof "${IDLE:-0}" \
-                    ) >"$OUT/server.log" 2>&1 &
+                    firn_command "$invocation" "$PORT" yes firn.aof 0 "${IDLE:-0}" '' \
+                    exec taskset -c "$SERVER_CPUS" "$img") >"$OUT/server.log" 2>&1 &
             else
             (registered; WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
-                exec taskset -c "$SERVER_CPUS" \
-                "$(image_path "${1#image-}")" "$PORT" 0 - "${IDLE:-0}" \
-                ) >"$OUT/server.log" 2>&1 &
+                firn_command "$invocation" "$PORT" no firn.aof 0 "${IDLE:-0}" '' \
+                exec taskset -c "$SERVER_CPUS" "$(image_path "${1#image-}")") >"$OUT/server.log" 2>&1 &
             fi
             ;;
         baseline-*)
@@ -978,12 +1192,10 @@ EOF
 }
 
 # The firn criteria: every test of the suite completes on the line with no
-# error reply. The suite is redis-benchmark's default of Redis 7.0, named
-# explicitly: 7.2's default adds XADD, which firn lacks until its minimal
-# streams land (board item firn-scope-min-streams), so the default would fail
-# firn before anything is measured; XADD joins the list when they land. Its
-# 19 tests print 20 rows, LRANGE's LPUSH fill among them.
-SUITE_DEFAULT=ping_inline,ping_mbulk,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,spop,zadd,zpopmin,lrange_100,lrange_300,lrange_500,lrange_600,mset
+# error reply. The suite is redis-benchmark 7.2's default, named explicitly:
+# Redis 7.0's tests and XADD. Its 20 tests print 21 rows, LRANGE's LPUSH fill
+# among them.
+SUITE_DEFAULT=ping_inline,ping_mbulk,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,spop,zadd,zpopmin,lrange_100,lrange_300,lrange_500,lrange_600,mset,xadd
 verify_suite() {
     start "$1"
     taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" -c 50 -n 20000 \
@@ -997,7 +1209,7 @@ verify_suite() {
     # which changes nothing it measures. Any other message is a failure.
     grep -v '^WARNING: Could not fetch server CONFIG$' "$OUT/suite-$1.err" \
         >"$OUT/suite-$1.problems" || true
-    if [ "$tests" != 20 ] || [ -s "$OUT/suite-$1.problems" ]; then
+    if [ "$tests" != 21 ] || [ -s "$OUT/suite-$1.problems" ]; then
         fail "$1" "the default suite"
     fi
 }
@@ -1172,12 +1384,46 @@ server_ticks() {
 # /proc/stat to compare-stat-before and compare-stat-after just outside the
 # timed interval, for cpu_busy.
 compare_client() {
+    what="-t $1"
+    case $1 in
+        lrange_*)
+            # redis-benchmark fills the list an LRANGE test reads inside its own
+            # run, which the timed span would include, and prints that fill as
+            # a row of its own. Fill it here, outside the span, and send the
+            # test's command.
+            redis-cli -p "$PORT" DEL mylist >/dev/null
+            redis-benchmark -p "$PORT" -t lpush -n 100000 -P 16 -q >/dev/null 2>&1
+            case $1 in
+                lrange_100) last=99 ;;
+                lrange_300) last=299 ;;
+                lrange_500) last=449 ;;
+                *) last=599 ;;
+            esac
+            what="LRANGE mylist 0 $last"
+            ;;
+        xadd_maxlen)
+            # Appends that trim with ~ to about 1000 entries, removing whole
+            # nodes as the stream passes each node's worth.
+            redis-cli -p "$PORT" DEL mystream >/dev/null
+            what="XADD mystream MAXLEN ~ 1000 * field __rand_int__"
+            ;;
+        xrange_10)
+            # Reads of the first ten entries of a stream of 10,000 filled
+            # outside the timed span.
+            redis-cli -p "$PORT" DEL mystream >/dev/null
+            redis-benchmark -p "$PORT" -n 10000 -P 16 -q XADD mystream '*' field value >/dev/null 2>&1
+            what="XRANGE mystream - + COUNT 10"
+            ;;
+    esac
     ticks=$(server_ticks)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-before"
     begin=$(date +%s%N)
+    # $what is split into words but must not be globbed: XADD's * ID would
+    # otherwise become the names of the files in the working directory.
+    set -f
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
-            -c 50 -n "$3" -r 100000 -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
+            -c 50 -n "$3" -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
     else
         # One process per client CPU, three connections each: one process's
         # threads stop near 6.6M requests a second on the 14900K, below what
@@ -1186,7 +1432,7 @@ compare_client() {
         index=0
         for cpu in $(echo "$CLIENT_CPUS" | tr ',' ' '); do
             taskset -c "$cpu" redis-benchmark -p "$PORT" -c 3 -n $(($3 / CLIENT_THREADS)) \
-                -r 100000 -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
+                -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
             pids="$pids $!"
             index=$((index + 1))
         done
@@ -1194,6 +1440,7 @@ compare_client() {
         cp "$OUT/compare-client-0.csv" "$OUT/compare-client.csv"
         set -- "$1" "$2" $(($3 / CLIENT_THREADS * CLIENT_THREADS))
     fi
+    set +f
     end=$(date +%s%N)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-after"
     ticks=$(($(server_ticks) - ticks))
@@ -1398,21 +1645,25 @@ if [ "$MODE" = workloads ]; then
     fi
     memory_workloads=
     connection_workloads=
+    pubsub_workloads=
     for workload in $workloads; do
         case $workload in
             limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
             evict-zipf|session-set-limits|session-get-limits) memory_workloads=1 ;;
             handshake|client-list) connection_workloads=1 ;;
+            pubsub-channel|pubsub-pattern) pubsub_workloads=1 ;;
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
-    if [ -n "$memory_workloads$connection_workloads" ]; then
+    if [ -n "$memory_workloads$connection_workloads$pubsub_workloads" ]; then
         reference_version=$(redis-server --version)
         case " $reference_version " in
             *" v=7.2.16 "*) ;;
             *)
                 if [ -n "$connection_workloads" ]; then
                     echo "handshake/client-list workloads require Redis 7.2.16: $reference_version" >&2
+                elif [ -n "$pubsub_workloads" ]; then
+                    echo "pub/sub workloads require Redis 7.2.16: $reference_version" >&2
                 else
                     echo "memory workloads require Redis 7.2.16: $reference_version" >&2
                 fi
@@ -1427,7 +1678,8 @@ if [ "$MODE" = workloads ]; then
         set -f
         for selected in $WORKLOAD_SERVERS; do
             case $selected in
-                reference|firn|valkey|valkey-io|dragonfly|garnet) ;;
+                reference|redis-latest|firn|valkey|valkey-io|dragonfly|garnet) ;;
+                valkey-latest|valkey-io-latest|dragonfly-latest|garnet-latest) ;;
                 *) echo "unknown WORKLOAD_SERVERS name: $selected" >&2; exit 1 ;;
             esac
             case " $seen_servers " in
@@ -1439,18 +1691,22 @@ if [ "$MODE" = workloads ]; then
     fi
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
+    echo 'line,pass,cpus,workload,connections,pipeline,published,delivered,seconds,rate,p50_ms,p99_ms' >"$OUT/pubsub.csv"
     workload_cpu=
     if [ -r /proc/stat ]; then
         workload_cpu="$OUT/workload-cpu.csv"
         echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$workload_cpu"
         echo 'line,pass,cpus,workload,connections,client_busy_mean,client_work_fraction,client_limited' >"$OUT/workload-limited.csv"
+        echo 'line,pass,cpus,workload,connections,pipeline,client_busy_mean,client_work_fraction,client_limited' >"$OUT/pubsub-limited.csv"
     else
         echo "skip,workload-cpu.csv,no /proc/stat"
     fi
     # Copies of /proc/stat just outside one client run, for cpu_busy: the run
     # includes the client's own connection setup and warm-up, which the
     # busy fraction therefore covers. workload_end takes <line> <connections>
-    # and appends the sample's rows to workload-cpu.csv and workload-limited.csv.
+    # and appends the sample's rows to workload-cpu.csv and workload-limited.csv;
+    # with a third argument, the pub/sub pipeline depth, to pubsub-limited.csv
+    # and workload-cpu.csv under that depth.
     workload_begin() {
         rm -f "$OUT/workload-work"
         [ -z "$workload_cpu" ] || cat /proc/stat >"$OUT/workload-stat-before"
@@ -1465,8 +1721,13 @@ if [ "$MODE" = workloads ]; then
             limited=$(client_limited "$OUT/workload-busy") || exit 1
             busy=${limited%%,*}
             work=$(work_limited "$OUT/workload-work") || exit 1
-            echo "$1,$pass,$n,$workload,$2,$busy,$work" >>"$OUT/workload-limited.csv"
-            awk -v key="$1,$pass,$n,$workload,$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
+            if [ -n "${3:-}" ]; then
+                echo "$1,$pass,$n,$workload,$2,$3,$busy,$work" >>"$OUT/pubsub-limited.csv"
+                awk -v key="$1,$pass,$n,$workload,$3" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
+            else
+                echo "$1,$pass,$n,$workload,$2,$busy,$work" >>"$OUT/workload-limited.csv"
+                awk -v key="$1,$pass,$n,$workload,$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
+            fi
         fi
     }
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end' >"$OUT/evict-zipf.csv"
@@ -1479,7 +1740,7 @@ if [ "$MODE" = workloads ]; then
         set -- ${WORKLOAD_OPTIONS:-}
         while [ "$#" -gt 0 ]; do
             case $1 in
-                --keys|--value-size|--zipf-s|--warmup-seconds|--sample-ms) ;;
+                --keys|--value-size|--zipf-s|--warmup-seconds|--sample-ms|--window) ;;
                 *) echo "unsupported WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
             esac
             [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
@@ -1494,6 +1755,18 @@ if [ "$MODE" = workloads ]; then
             case $1 in
                 --warmup-seconds|--sample-ms) ;;
                 *) echo "handshake/client-list do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
+            esac
+            [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
+            shift 2
+        done
+    fi
+    if [ -n "$pubsub_workloads" ]; then
+        set -f
+        set -- ${WORKLOAD_OPTIONS:-}
+        while [ "$#" -gt 0 ]; do
+            case $1 in
+                --warmup-seconds|--value-size|--window) ;;
+                *) echo "pub/sub workloads do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
             esac
             [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
             shift 2
@@ -1538,7 +1811,7 @@ if [ "$MODE" = workloads ]; then
                                 order="$order firn-$n"
                             fi
                             ;;
-                        dragonfly|garnet) order="$order $selected-$n" ;;
+                        dragonfly|garnet|dragonfly-latest|garnet-latest) order="$order $selected-$n" ;;
                         *) order="$order $selected" ;;
                     esac
                 done
@@ -1566,6 +1839,91 @@ if [ "$MODE" = workloads ]; then
             for workload in $workloads; do
                 workload_order=$order
                 case $workload in
+                    pubsub-channel|pubsub-pattern)
+                        # The AOF lines add nothing to a command that is never
+                        # written to the file.
+                        if [ -z "${WORKLOAD_SERVERS:-}${WORKLOAD_IMAGES:-}" ]; then
+                            workload_order="reference firn-$n"
+                            if [ $((pass % 2)) -eq 0 ]; then
+                                workload_order="firn-$n reference"
+                            fi
+                        fi
+                        for line in $workload_order; do
+                            if ! available "$line"; then
+                                echo "skip,$line,no executable"
+                                continue
+                            fi
+                            start "$line"
+                            unsupported=
+                            for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                                for depth in ${WORKLOAD_DEPTHS:-16 1}; do
+                                    [ -z "$unsupported" ] || continue
+                                    workload_begin
+                                    status=0
+                                    result=$(taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
+                                        --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
+                                        --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" \
+                                        --pipeline "$depth" --client-work-file "$OUT/workload-work") || status=$?
+                                    if [ "$status" -eq 3 ]; then
+                                        case $line in
+                                            firn-*|image-*)
+                                                echo "$line does not support $workload" >&2
+                                                exit 1
+                                                ;;
+                                        esac
+                                        echo "skip,$line,$workload unsupported"
+                                        unsupported=1
+                                        continue
+                                    fi
+                                    if [ "$status" -ne 0 ]; then
+                                        echo "pub/sub workload failed: line=$line pass=$pass cpus=$n workload=$workload connections=$conns pipeline=$depth (exit $status)" >&2
+                                        exit "$status"
+                                    fi
+                                    workload_end "$line" "$conns" "$depth"
+                                    echo "$line,$pass,$n,$result" | tee -a "$OUT/pubsub.csv"
+                                done
+                            done
+                            # Profile only after every measured run on this
+                            # server, so that no measured run follows an
+                            # unmeasured one; a supported firn line, pass 1.
+                            case $line in firn-*|image-*) profiled=1 ;; *) profiled= ;; esac
+                            if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
+                                for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                                    for depth in ${WORKLOAD_DEPTHS:-16 1}; do
+                                        name="$line-$n-$workload-$conns-$depth"
+                                        "$PERF" record -F "${PERF_FREQUENCY:-4999}" -p "$server" \
+                                            -o "$OUT/perf-$name.data" >/dev/null 2>&1 &
+                                        recorder=$!
+                                        sleep 1
+                                        # The profile is evidence about a measured cell,
+                                        # never part of it: a profile that cannot be
+                                        # taken (no usable perf, a recorder that fails
+                                        # to start) is reported and does not stop the
+                                        # run, whose measurements are already written.
+                                        taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
+                                            --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
+                                            --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" \
+                                            --pipeline "$depth" >/dev/null ||
+                                            echo "skip,profile,$name: the profiling client failed"
+                                        kill -INT "$recorder" 2>/dev/null || true
+                                        wait "$recorder" || true
+                                        if "$PERF" report -i "$OUT/perf-$name.data" --stdio --no-children \
+                                            --sort dso,symbol --percent-limit 0.5 -g none >"$OUT/profile-$name.txt" 2>/dev/null; then
+                                            echo "== profile $name"
+                                            grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25
+                                        else
+                                            rm -f "$OUT/profile-$name.txt"
+                                            echo "skip,profile,$name: perf report failed"
+                                        fi
+                                        rm -f "$OUT/perf-$name.data"
+                                    done
+                                done
+                            fi
+                            stop
+                            server=
+                        done
+                        continue
+                        ;;
                     handshake|client-list)
                         if [ -z "${WORKLOAD_SERVERS:-}${WORKLOAD_IMAGES:-}" ]; then
                             workload_order="reference firn-$n"

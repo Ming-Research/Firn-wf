@@ -98,7 +98,7 @@ fn copy_score(env: &ScoreCopy, key: &Key, value: &f64) -> result: unit reads(key
 }
 
 fn copy_value(value: &Value) -> made: Value reads(value) {
-  doc "A copy of a value, every element, member, field and score copied, as COPY duplicates one; a container is made with room for what the original holds, within the ceiling every container of firn keeps.";
+  doc "A copy of a value, every element, member, field, score and stream entry copied, as COPY duplicates one; a container is made with room for what the original holds, within the ceiling every container of firn keeps.";
   match value^ {
     Text(bytes: stored) => {
       let copied = bytes_copy(bytes: stored);
@@ -156,6 +156,11 @@ fn copy_value(value: &Value) -> made: Value reads(value) {
       let ScoreCopy(scores: copied_scores, keys: unused_scores) = move scores;
       let copied = Sorted(order: move copied_order, scores: move copied_scores);
       return Value::Ranked(ranked: move copied);
+    }
+    Stream(stream: stream_of) => {
+      let copied = stream_copy(stream: &stream_of^.inner);
+      let boxed = box_new::<StreamLog>(value: move copied);
+      return Value::Stream(stream: move boxed);
     }
   }
 }

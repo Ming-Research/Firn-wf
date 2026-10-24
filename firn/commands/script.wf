@@ -236,6 +236,8 @@ const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
 
+const text_script_read_only: Array<u8, 58> = "ERR Write commands are not allowed from read-only scripts.";
+
 const text_script_unknown: Array<u8, 44> = "ERR Unknown Redis command called from script";
 
 const text_script_unknown_or_unsplit: Array<u8, 87> = "ERR Unknown Redis command called from script, or one firn does not yet run from scripts";
@@ -269,6 +271,9 @@ fn script_whole_kind(kind: u64) -> whole: Bool pure {
 
 fn script_key_plan(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> plan: ScriptKeyPlan reads(input), reads(args) {
   doc "The complete binary key footprint after command admission: insertion order retains the command's first occurrence of each name; command execution still retains every original argument and duplicate. Invalid SINTERCARD counts produce an empty footprint so its normal parser can issue its error before entries are touched.";
+  if pubsub_command(kind: kind) {
+    return ScriptKeyPlan::NoKeys();
+  }
   if script_whole_kind(kind: kind) {
     return ScriptKeyPlan::WholeMap();
   }
@@ -283,6 +288,10 @@ fn script_key_plan(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> plan: Sc
   let no_keys = bor(local_replies, local_commands);
   if no_keys {
     return ScriptKeyPlan::NoKeys();
+  }
+  if kind == 149_u64 {
+    let streams = xread_footprint(input: input, args: args);
+    return ScriptKeyPlan::Finite(keys: move streams);
   }
   let first = 1_u64;
   let end = 2_u64;
@@ -685,8 +694,12 @@ fn script_mset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
 }
 
 fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Shared command identity for admission and dispatch; kinds through 171 run by held parts: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 171 OBJECT, 167 is reserved. Network-only kinds are 172 EVAL, 173 EVALSHA, 174 SCRIPT, 175 INFO, 176 CONFIG, 177 AUTH, 178 HELLO, 179 QUIT, 180 CLIENT, 181 DEBUG, 182 FUNCTION, 183 SHUTDOWN, 184 BGREWRITEAOF, 185 MULTI, 186 EXEC, 187 DISCARD, 188 WATCH (only its inside-MULTI refusal), 189 RESET. Names are case insensitive; zero is unknown.";
+  doc "Shared command identity for admission and dispatch; kinds through 171 run by held parts: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD, 55 HSCAN; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE, 106 SSCAN; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX, 141 ZSCAN; 142 XADD, 143 XRANGE, 144 XREVRANGE, 145 XLEN, 146 XTRIM, 147 XDEL, 148 XSETID, 149 XREAD; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 171 OBJECT, 167 is reserved. Network-only kinds are 172 EVAL, 173 EVALSHA, 174 SCRIPT, 175 INFO, 176 CONFIG, 177 AUTH, 178 HELLO, 179 QUIT, 180 CLIENT, 181 DEBUG, 182 FUNCTION, 183 SHUTDOWN, 184 BGREWRITEAOF, 185 MULTI, 186 EXEC, 187 DISCARD, 188 WATCH (only its inside-MULTI refusal), 189 RESET, 199 EVAL_RO, 200 EVALSHA_RO. Hub-aware kinds are 190 SUBSCRIBE, 191 UNSUBSCRIBE, 192 PUBLISH, 193 PUBSUB, 194 PSUBSCRIBE, 195 PUNSUBSCRIBE, 196 SSUBSCRIBE, 197 SUNSUBSCRIBE and 198 SPUBLISH. Names are case insensitive; zero is unknown.";
   let code = name_code(input: input, start: name.start, length: name.length);
+  let events = pubsub_kind(input: input, name: name);
+  if events != 0_u64 {
+    return events;
+  }
   if code == code_object {
     return 171_u64;
   }
@@ -1080,6 +1093,19 @@ fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
       return 140_u64;
     }
   }
+  if code == code_hscan {
+    return 55_u64;
+  }
+  if code == code_sscan {
+    return 106_u64;
+  }
+  if code == code_zscan {
+    return 141_u64;
+  }
+  let streamed = stream_kind(code: code, input: input, name: name);
+  if streamed != 0_u64 {
+    return streamed;
+  }
   if code == code_touch {
     return 160_u64;
   }
@@ -1118,6 +1144,14 @@ fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   }
   if code == code_evalsha {
     return 173_u64;
+  }
+  let eval_ro = name_is(input: input, start: name.start, length: name.length, word: &word_eval_ro[0_u64..7_u64]);
+  if eval_ro {
+    return 199_u64;
+  }
+  let evalsha_ro = name_is(input: input, start: name.start, length: name.length, word: &word_evalsha_ro[0_u64..10_u64]);
+  if evalsha_ro {
+    return 200_u64;
   }
   if code == code_script {
     return 174_u64;
@@ -1172,8 +1206,11 @@ fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "The command identity when it has parts usable under EXEC or a script's atomic statement; zero otherwise.";
+  doc "The command identity with dataset parts or hub-aware dispatch usable under EXEC or a script's atomic statement; zero otherwise.";
   let kind = command_kind(input: input, name: name);
+  if pubsub_command(kind: kind) {
+    return kind;
+  }
   if kind <= 171_u64 {
     return kind;
   }
@@ -1182,8 +1219,35 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
 
 fn held_arity(kind: u64) -> arity: i64 pure {
   doc "The arity Redis 7.0.15's command table gives a command held_kind names, positive for exactly that many arguments with its name and negative for at least its magnitude.";
+  if pubsub_command(kind: kind) {
+    let publish = kind == 192_u64;
+    let spublish = kind == 198_u64;
+    if bor(publish, spublish) {
+      return 3_i64;
+    }
+    let unsubscribe = kind == 191_u64;
+    let punsubscribe = kind == 195_u64;
+    let sunsubscribe = kind == 197_u64;
+    let global = bor(unsubscribe, punsubscribe);
+    if bor(global, sunsubscribe) {
+      return -1_i64;
+    }
+    return -2_i64;
+  }
+  let hash_scan = kind == 55_u64;
+  let set_scan = kind == 106_u64;
+  let sorted_scan = kind == 141_u64;
+  let scan_sets = bor(set_scan, sorted_scan);
+  if bor(hash_scan, scan_sets) {
+    return arity_collection_scan;
+  }
   if kind == 171_u64 {
     return arity_object;
+  }
+  let stream_first = kind >= 142_u64;
+  let stream_last = kind <= 149_u64;
+  if band(stream_first, stream_last) {
+    return stream_arity(kind: kind);
   }
   if kind == 1_u64 {
     return arity_get;
@@ -1519,7 +1583,9 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   return 0_i64;
 }
 
-fn held_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
+fn held_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) contract {
+  ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
+} {
   doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. journal is the attempt environment's first-refresh undo log, or None for EXEC; the client carries the read's memory settings, refreshed after its own CONFIG SET. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
   let unlimited_log_budget = pkg::store::log_budget_new();
   if kind == 164_u64 {
@@ -1565,9 +1631,23 @@ fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
-  doc "Runs finite commands through the same entry bodies for scripts and EXEC; wrappers check options before the complete footprint, and never touch an undeclared entry.";
+  doc "Runs finite commands through the same entry bodies for scripts and EXEC; wrappers preserve each command's parsing and lookup order, establish its complete footprint before entry access, and never touch an undeclared entry.";
   if kind == 171_u64 {
     return script_object(sequence: sequence, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+  }
+  if kind == 55_u64 {
+    return script_collection_scan(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, effects: effects, logged: logged, input: input, args: args, client: client, time: time, expected: 4_u64);
+  }
+  if kind == 106_u64 {
+    return script_collection_scan(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, effects: effects, logged: logged, input: input, args: args, client: client, time: time, expected: 3_u64);
+  }
+  let stream_first = kind >= 142_u64;
+  let stream_last = kind <= 149_u64;
+  if band(stream_first, stream_last) {
+    return stream_held(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+  }
+  if kind == 141_u64 {
+    return script_collection_scan(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, effects: effects, logged: logged, input: input, args: args, client: client, time: time, expected: 5_u64);
   }
   let relative = False();
   let calendar = True();
@@ -2031,8 +2111,8 @@ fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
 }
 
 fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), writes(memory), writes(client) {
-  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.0.15 scriptCall's order (script.c:530-557): subcommand and arity errors (script_admit_head), then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:349-386), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing (script_admit_after). Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table.";
-  let kind = script_admit_head(input: input, args: args, client: client);
+  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.2.16 scriptCall's order: subcommand and arity errors, NOSCRIPT and read-only refusals (script_admit_head), then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:344-393), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing (script_admit_after). Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table.";
+  let kind = script_admit_head(memory: memory, input: input, args: args, client: client);
   if kind == 0_u64 {
     return 0_u64;
   }
@@ -2048,7 +2128,7 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
 
 fn script_admit_quiet(memory: &pkg::scripting::ScriptMemory, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), writes(memory), writes(client) {
   doc "script_admit with the AOF off, so that the script holds no Meta: with no AOF its health cannot change and is never a refusal, and the check is left out, reading nothing global.";
-  let kind = script_admit_head(input: input, args: args, client: client);
+  let kind = script_admit_head(memory: memory, input: input, args: args, client: client);
   if kind == 0_u64 {
     return 0_u64;
   }
@@ -2070,11 +2150,23 @@ fn script_admit_after(memory: &pkg::scripting::ScriptMemory, kind: u64, client: 
   return kind;
 }
 
-fn script_admit_head(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), writes(client) {
-  doc "Script admission up to the AOF check: the subcommand and arity errors, and the command's kind, zero when refused or not a script command.";
+fn script_admit_head(memory: &pkg::scripting::ScriptMemory, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), reads(memory), writes(client) {
+  doc "Script admission up to the AOF check: the subcommand, arity, NOSCRIPT and read-only refusals, and the command's kind, zero when refused or not a script command.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
+  if kind == 193_u64 {
+    let pubsub_count = pubsub_arity(input: input, args: args);
+    if pubsub_count == 0_i64 {
+      reply_error(client: client, word: &text_script_unknown[0_u64..44_u64]);
+      return 0_u64;
+    }
+    let arity_fits = arity_holds(arity: pubsub_count, count: count);
+    if bnot(arity_fits) {
+      reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+      return 0_u64;
+    }
+  }
   if kind == 171_u64 {
     let object_count = object_arity(input: input, args: args);
     if object_count == 0_i64 {
@@ -2105,9 +2197,38 @@ fn script_admit_head(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> 
   if kind != 0_u64 {
     let arity = held_arity(kind: kind);
     if arity_holds(arity: arity, count: count) {
+      if pubsub_subscription(kind: kind) {
+        reply_error(client: client, word: &text_script_refused[0_u64..49_u64]);
+        return 0_u64;
+      }
+      let writing = command_writes(kind: kind);
+      let publish = kind == 192_u64;
+      let spublish = kind == 198_u64;
+      let replicating = bor(publish, spublish);
+      let refused_read_only = bor(writing, replicating);
+      if band(memory^.read_only, refused_read_only) {
+        reply_error(client: client, word: &text_script_read_only[0_u64..58_u64]);
+        return 0_u64;
+      }
       return kind;
     }
     reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+    return 0_u64;
+  }
+  let recognized = command_kind(input: input, name: name);
+  let eval = recognized == 172_u64;
+  let evalsha = recognized == 173_u64;
+  let eval_ro = recognized == 199_u64;
+  let evalsha_ro = recognized == 200_u64;
+  let ordinary_eval = bor(eval, evalsha);
+  let read_only_eval = bor(eval_ro, evalsha_ro);
+  if bor(ordinary_eval, read_only_eval) {
+    let fits_eval = arity_holds(arity: -3_i64, count: count);
+    if bnot(fits_eval) {
+      reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+      return 0_u64;
+    }
+    reply_error(client: client, word: &text_script_refused[0_u64..49_u64]);
     return 0_u64;
   }
   let code = name_code(input: input, start: name.start, length: name.length);
@@ -2151,46 +2272,47 @@ fn script_admit_head(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> 
   return 0_u64;
 }
 
-fn script_command(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs an admitted script command under the existing whole keyspace hold; EXEC shares held_run directly.";
+fn script_command(hub: &pkg::connection_events::Hub, stage: &pkg::connection_events::Stage, sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(hub), writes(stage), writes(sequence), writes(memory), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) contract {
+  ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
+} {
+  doc "Runs an admitted script command under the whole keyspace, metadata and event hub hold. Publication only selects recipients into the private attempt stage; the caller commits it after writing the final Lua reply. Ordinary commands share held_run with EXEC, with subscription counts temporarily cleared to model Redis's unsubscribed script client while retaining the caller's registration for external publication.";
   let kind = script_admit(memory: memory, meta: meta, input: input, args: args, client: client);
   if kind == 0_u64 {
     return 0_u64;
   }
-  return held_run(sequence: sequence, journal: journal, kind: kind, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+  let publishing = kind == 192_u64;
+  let shard_publishing = kind == 198_u64;
+  let querying = kind == 193_u64;
+  let publication = bor(publishing, shard_publishing);
+  if bor(publication, querying) {
+    let outside_exec = False();
+    let seconds = client^.unix_us / 1000000_u64;
+    pkg::connection_events::run(hub: hub, kind: kind, input: input, args: args, client: client, stage: stage, in_exec: outside_exec, time: seconds);
+    return 0_u64;
+  }
+  let subscriptions = client^.sub;
+  let patterns = client^.psub;
+  let shards = client^.ssub;
+  set client^.sub = 0_u64;
+  set client^.psub = 0_u64;
+  set client^.ssub = 0_u64;
+  let appended = held_run(sequence: sequence, journal: journal, kind: kind, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+  set client^.sub = subscriptions;
+  set client^.psub = patterns;
+  set client^.ssub = shards;
+  return appended;
 }
 
 fn script_command_entries(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: pkg::scripting::ScriptCommandResult reads(declared), reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
   requires slots^.len == declared^.len;
   ensures slots^.len == entry(slots)^.len;
 } {
-  doc "Run Redis admission and then finite entry adapters; a whole footprint or undeclared operand abandons the attempt without becoming a Lua error.";
+  doc "Run Redis admission and then finite entry adapters with the script client's unsubscribed command view; a whole footprint, event-hub command or undeclared operand abandons the attempt without becoming a Lua error.";
   let kind = script_admit(memory: memory, meta: meta, input: input, args: args, client: client);
   if kind == 0_u64 {
     return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
   }
-  if script_whole_kind(kind: kind) {
-    if kind == 168_u64 {
-      let plan = scan_plan(input: input, args: args);
-      if scan_refused(client: client, plan: &plan) {
-        return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
-      }
-    }
-    let flushall = kind == 164_u64;
-    let flushdb = kind == 165_u64;
-    if bor(flushall, flushdb) {
-      if flush_refused(input: input, args: args, client: client) {
-        return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
-      }
-    }
-    return pkg::scripting::ScriptCommandResult::NeedWholeMap();
-  }
-  let fallback = False();
-  let appended = held_entries_run(sequence: sequence, journal: journal, kind: kind, keys: slots, declared: declared, undo: undo, fallback: &fallback, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
-  if fallback {
-    return pkg::scripting::ScriptCommandResult::NeedWholeMap();
-  }
-  return pkg::scripting::ScriptCommandResult::Completed(appended: appended);
+  return script_entries_run(sequence: sequence, journal: journal, slots: slots, declared: declared, undo: undo, due: due, effects: effects, logged: logged, kind: kind, input: input, args: args, client: client, env: env, time: time);
 }
 
 fn script_command_entries_quiet(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: pkg::scripting::ScriptCommandResult reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
@@ -2202,6 +2324,21 @@ fn script_command_entries_quiet(sequence: &pkg::store::WriteSequence, memory: &p
   if kind == 0_u64 {
     return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
   }
+  return script_entries_run(sequence: sequence, journal: journal, slots: slots, declared: declared, undo: undo, due: due, effects: effects, logged: logged, kind: kind, input: input, args: args, client: client, env: env, time: time);
+}
+
+fn script_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: pkg::scripting::ScriptCommandResult reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
+  requires slots^.len == declared^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "An admitted script command over the declared entries, shared by the attempts that hold Meta and those that do not: a whole footprint, event-hub command or undeclared operand abandons the attempt, and the rest runs with the script client's unsubscribed command view.";
+  let publishing = kind == 192_u64;
+  let shard_publishing = kind == 198_u64;
+  let querying = kind == 193_u64;
+  let publication = bor(publishing, shard_publishing);
+  if bor(publication, querying) {
+    return pkg::scripting::ScriptCommandResult::NeedWholeMap();
+  }
   if script_whole_kind(kind: kind) {
     if kind == 168_u64 {
       let plan = scan_plan(input: input, args: args);
@@ -2219,7 +2356,16 @@ fn script_command_entries_quiet(sequence: &pkg::store::WriteSequence, memory: &p
     return pkg::scripting::ScriptCommandResult::NeedWholeMap();
   }
   let fallback = False();
+  let subscriptions = client^.sub;
+  let patterns = client^.psub;
+  let shards = client^.ssub;
+  set client^.sub = 0_u64;
+  set client^.psub = 0_u64;
+  set client^.ssub = 0_u64;
   let appended = held_entries_run(sequence: sequence, journal: journal, kind: kind, keys: slots, declared: declared, undo: undo, fallback: &fallback, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+  set client^.sub = subscriptions;
+  set client^.psub = patterns;
+  set client^.ssub = shards;
   if fallback {
     return pkg::scripting::ScriptCommandResult::NeedWholeMap();
   }
@@ -2655,7 +2801,7 @@ fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
-  doc "MSETNX probes entries in argument order, stopping at the first live entry, then stores each pair through mset_body only if all were absent.";
+  doc "MSETNX probes entries in argument order with ordinary lookup refreshes, stopping at the first live entry, then stores each pair through msetnx_body without another lookup only if all were absent, as Redis 7.2.16 msetGenericCommand does.";
   let unlimited_log_budget = pkg::store::log_budget_new();
   let count = args^.inner.len;
   let rejected = mset_pairs_refused(input: input, args: args, client: client);
@@ -2704,7 +2850,7 @@ fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
       return 0_u64;
     }
     let slot = &keys^[rank];
-    let replaced = mset_body(sequence: sequence, journal: journal, client: client, slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
+    msetnx_body(sequence: sequence, client: client, slot: slot, input: input, args: args, value_index: value_index);
   }
   let recorded = mset_meta(log: effects, logged: logged, input: input, args: args, budget: &unlimited_log_budget);
   set appended = appended +wrap recorded;
