@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-24 Keep serving after an accept error
+
+Nodes: firn/orderly-stop, firn/startup
+
+Summary: Before, one accept error (such as running out of file descriptors) closed the listener and firn exited with status 0 once clients left, silently ending service. Now only shutdown, SHUTDOWN or the client limit ends accepting. The 100 ms wait stops a persistent error from spinning the CPU, which differs from Redis only because Redis calls accept after readiness; the cost is that a new connection may wait up to 100 ms after the error clears. Rejected: stopping and returning 0, retrying at once on descriptor exhaustion, and waiting only for resource exhaustion. The startup node's closing clause that firn keeps its existing handling of host accept errors no longer holds and now points here.
+
 ## 2026-10-22 Answer CLIENT handshake subcommands as Redis 7.2.16 does
 
 Nodes: firn/reported-facts, firn/transactions

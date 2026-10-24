@@ -460,6 +460,35 @@ pub struct ProgramMonitor {
 }
 
 impl ProgramMonitor {
+    /// Observes output already drained from stderr without waiting for EOF,
+    /// stopping the child or waiting behind its output reader's buffer lock.
+    pub(crate) fn stderr_contains(&self, needle: &[u8]) -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        match self.program.errors.bytes.try_lock() {
+            Ok(bytes) => bytes.windows(needle.len()).any(|window| window == needle),
+            Err(TryLockError::Poisoned(error)) => error.into_inner()
+                .windows(needle.len()).any(|window| window == needle),
+            Err(TryLockError::WouldBlock) => false,
+        }
+    }
+
+    /// Counts matching markers already drained from stderr. A busy reader
+    /// buffer is an unavailable observation, so a caller must retry it rather
+    /// than interpreting contention as an empty log. Never waits for EOF.
+    pub(crate) fn stderr_occurrences(&self, needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(0);
+        }
+        match self.program.errors.bytes.try_lock() {
+            Ok(bytes) => Some(bytes.windows(needle.len()).filter(|window| *window == needle).count()),
+            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()
+                .windows(needle.len()).filter(|window| *window == needle).count()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// Stops the child and collects both output tails within one shared
     /// diagnostic budget, including when a peer only owns a monitor.
     pub(crate) fn diagnostic_block(&self, port: Option<u16>) -> String {

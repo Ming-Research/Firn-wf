@@ -57,11 +57,13 @@ These are specific source-admission examples, not a complete proof of Firn or
 of the current compiler/runtime. The rules above are cited at Firn's current
 pin.
 
-The audit also found an accept error that can stop service with status zero
-([pending correction in PR #104][accept-pr]), and, read from source but not yet confirmed by a run, unknown AOF commands whose error replies are
-discarded ([board item `firn-bl-01-10`][board]). These are operational and
-persisted-state correctness gaps; memory safety does not establish their
-recovery policy or Redis semantics. Their source evidence is in the
+The audit also found an accept error that stopped service with status zero;
+firn now logs it and keeps listening ([correction in PR #104][accept-pr]).
+It found as well, read from source but not yet confirmed by a run, unknown AOF
+commands whose error replies are discarded ([board item
+`firn-bl-01-10`][board]). Both are operational and persisted-state
+correctness gaps; memory safety does not establish their recovery policy or
+Redis semantics. Their source evidence is in the
 [audit's findings](../research/investigations/firn/abnormal-stops.md#5-gaps-uncertainty-and-disposition).
 
 ## Trusted base and source sizes
