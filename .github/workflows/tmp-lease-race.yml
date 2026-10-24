@@ -1,7 +1,8 @@
 # Temporary (firn-accept-emfile-ready-reset), on the work branch and its
 # old-lease variant only, deleted before the branch is ready: runs the
-# harness's own cases, the lease stress case among them, and then the four
-# accept_errors cases again and again, without the rest of the gate.
+# harness's own cases, the lease stress case among them, then the stress case
+# 200 more times on its own and the whole network suite five times, and the
+# four accept_errors cases again and again, without the rest of the gate.
 name: tmp-lease-race
 
 on:
@@ -24,6 +25,63 @@ jobs:
         run: |
           cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
             support::tests:: --show-output
+
+      # The stress case alone, so that a false failure of the case itself on
+      # the new lease would show in many runs.
+      - name: The lease stress case 200 times
+        run: |
+          cargo test --manifest-path tests/Cargo.toml --locked --test network --no-run
+          for run in $(seq 1 200); do
+            log="$RUNNER_TEMP/stress-$run.log"
+            cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
+              --exact support::tests::leased_port_refuses_connections_while_a_concurrent_spawn_runs \
+              > "$log" 2>&1 || { cat "$log"; echo "run $run failed"; exit 1; }
+          done
+          echo "200 runs passed"
+
+  suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Install syscall fault instrumentation
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+
+      - name: Cache the pinned Redis oracle
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build firn for the network cases
+        run: make firn-test
+
+      # The gate's own selection (make test), run five times so that the
+      # stress case runs beside the other cases five more times.
+      - name: The network suite five times
+        run: |
+          redis_bin=$(tests/redis-suite/reference.sh)
+          for run in $(seq 1 5); do
+            log="$RUNNER_TEMP/suite-$run.log"
+            FIRN="$GITHUB_WORKSPACE/build/firn-test" REDIS_SERVER="$redis_bin/redis-server" \
+              cargo test --manifest-path tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output \
+              > "$log" 2>&1 || { tail -80 "$log"; echo "run $run failed"; exit 1; }
+            grep -E '^test result|leased_port_refuses.*ok' "$log"
+          done
 
   accept-errors:
     runs-on: ubuntu-24.04
