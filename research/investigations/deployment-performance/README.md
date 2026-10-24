@@ -903,21 +903,39 @@ median 1.05%, from 0.38% (lrange_500) to 3.35% (lrange_300); `limiter-tx`
 ### Second measurement, on the merged head
 
 Written before the measurement. Everything above measured Firn-wf#74 at
-9b514d5 against `main` at 7f8b4f8. The commit that merges is 5a0a1b9
-(5a0a1b942aeb2ba2343282a77495b4cb44fc4e89), which has since merged `main`
-three more times: the `maxclients` check and count in one atomic statement of
-`accept` with the new startup options, and the stream commands, which add a
-stream check to command dispatch and copy two more connection fields once per
-request read. The handshake workload crosses the changed accept path and every
-cell crosses dispatch, so the first measurement does not stand for the merged
-head. The three groups are measured again on it; the first results stay above,
-marked as made on 9b514d5. `main` is not merged into the branch again unless
-the host reports a conflict, so these revisions stay the merged head. The host
+9b514d5 against `main` at 7f8b4f8. The merged head at the time of this
+measurement is 5a0a1b9 (5a0a1b942aeb2ba2343282a77495b4cb44fc4e89), which had
+merged `main` three more times: the `maxclients` check and count in one
+atomic statement of `accept` with the new startup options, and the stream
+commands, which add a stream check to command dispatch and copy two more
+connection fields once per request read. The handshake workload crosses the
+changed accept path and every cell crosses dispatch, so the first measurement
+does not stand for the merged head. The three groups are measured again on it;
+the first results stay above, marked as made on 9b514d5. `main` is not merged
+into the branch again unless the host reports a conflict, so these revisions
+stay the merged head. The host
 reported one after Run B1, in `design/log.md` only, and `main` was merged at
 30de5d8; that change was the release packaging (nine files outside `firn/`,
 `tests/` and the Makefile), so `firn/`, `tests/`, the Makefile and the pins at
 30de5d8 equal those of 5a0a1b9, and the runs after it (B2, C1, C2) name the
 same image commits.
+
+The host reported a conflict again after Run C2, in `design/log.md` only, and
+`main` was merged at 9bfc065. That change (Firn-wf#104, firn keeps accepting
+after an accept error) is in `firn/`, so 9bfc065 is not 5a0a1b9 there. The
+pull request's own `firn/` change is the same before and after: the added and
+removed lines of `git diff` against `main`, compared without their context
+lines, are identical (14 files, 920 insertions, 82 deletions). `main`'s new
+code is the `Err` branch of the accept loop in `firn/server/server.wf`, a
+function that writes the diagnostic, a function that classifies the error and
+two variables of the accept loop, plus `firn/README.md`; the `Ok` branch of
+the accept loop and the command code are unchanged. The new code runs only
+when an accept call fails, which none of the three groups' workloads does
+(deduced from the code, not observed in the runs' output: they hold 50
+connections, the handshake workload closes each connection it opens). The
+architect ruled that the second measurement stands for 9bfc065 and is not made
+again. A later merge of `main` is measured again only if its new code runs in
+a workload of one of the groups.
 
 Revisions: `head` and `head-twin` are 5a0a1b9; `base` is
 05f7e89c62a7b9d10733a43b9a08aaea53fa2090, the `main` that 5a0a1b9 merged, so
