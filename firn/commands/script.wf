@@ -3277,7 +3277,8 @@ fn script_push(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
     return 0_u64;
   }
   let slot = &keys^[rank];
-  let work = push_body(sequence: sequence, journal: journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
+  let staged = True();
+  let work = push_body(sequence: sequence, journal: journal, access_key: key, slot: slot, client: client, front: front, existing: existing, stage_ready: staged);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &unlimited_log_budget);
   push_finish(client: client);
   return appended;
@@ -3581,7 +3582,8 @@ fn script_lmove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   let ranks = script_key_ranks(keys: &ks, declared: declared);
   let source = key_position(positions: &ranks, index: pair.source);
   let target = key_position(positions: &ranks, index: pair.target);
-  let work = lmove_body(sequence: sequence, journal: journal, access_keys: declared, slots: keys, source: source, destination: target, client: client, from_head: from_head, to_head: to_head);
+  let staged = True();
+  let work = lmove_body(sequence: sequence, journal: journal, access_keys: declared, slots: keys, source: source, destination: target, client: client, from_head: from_head, to_head: to_head, stage_ready: staged);
   let appended = lmove_meta(log: effects, logged: logged, work: &work, input: input, args: args, budget: &unlimited_log_budget);
   lmove_finish(client: client);
   return appended;

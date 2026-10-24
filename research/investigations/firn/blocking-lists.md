@@ -23,8 +23,10 @@ whole original command. An unsuccessful retry retains its original deadline
 and generation. Successful moves append newly ready destinations after the
 already queued keys. No connection wakes to compete for the value itself.
 
-Producers that create a list run existing held command parts (see [producer
-holds](#producer-holds)). Only actual Redis
+Producers that create a list where a client waits, and RENAME, RENAMENX and
+COPY, run the existing held command parts, which stage the ready key and serve
+the waiters before releasing their hold; every other list write holds only its
+keys and stages nothing (see [producer holds](#producer-holds)). Only actual Redis
 `dbAdd`-equivalent list creation stages a ready key: new LPUSH/RPUSH lists,
 new move destinations and list-valued RENAME/COPY targets. LPUSHX/RPUSHX and
 LINSERT do not create a missing list. SET,
@@ -85,21 +87,21 @@ A list write that cannot make a client ready does not need that hold:
 - A creation where no client waits readies nobody either, and a registration
   cannot appear while the creating write holds the entry of its key, so the
   write only has to ask the registry whether a client waits on that key. It
-  takes the event hub as well, in one statement with its entries and Meta, which
-  lists them in the order of the whole-hold path (keyspace, Meta, hub), and asks `key_awaited` (`firn/commands/blocking-runtime.wf`:
-  the registry's count of waiting keys first, then a lookup of the key). Without
-  a waiter it creates the list and appends in place, as main does, so its
-  effects and bytes are main's. With one it returns, having answered and changed
-  nothing, and the dispatcher runs `run_list_producer`, which holds the whole
-  keyspace and serves the client. Taking the hub only in the second step, and
-  not in every push and move, leaves a push onto a live list with the hold of
-  the first version of this section: entry and Meta.
-- The test is a live list, not an existing entry. A request stays registered
-  on a key that a string with an expiry has taken. Once the expiry has passed,
-  and before anything removed the entry, a push to that key deletes the string
-  and creates a list, which readies the request; an existence test would run
-  it holding the entry only and serve nobody. The same holds for an entry
-  whose list has expired.
+  takes the event hub as well, in one statement with its entries and Meta,
+  which lists them in the order of the whole-hold path (keyspace, Meta, hub),
+  and asks `key_awaited` (`firn/commands/blocking-runtime.wf`: the registry's
+  count of waiting keys first, then a lookup of the key). Without a waiter it
+  creates the list and appends in place, as main does, so its effects and
+  bytes are main's, and it stages no ready key: only a command that holds the
+  whole keyspace drains a connection's staged keys, so a key staged here would
+  stay in the connection's queue, one copy per list created, and every staging
+  scans the whole queue for a duplicate (`stage_ready` of `push_body` and
+  `lmove_body`, set by the held callers only). With a waiter it returns,
+  having answered and changed nothing, and the dispatcher runs
+  `run_list_producer`, which holds the whole keyspace and serves the client.
+  Taking the hub only in the second step, and not in every push and move,
+  leaves a push onto a live list with the hold of the first version of this
+  section: entry and Meta.
 - RENAME, RENAMENX and COPY always create their target and run
   `run_list_producer`; a promoted connection runs every list write there too
   ([ownership](connection-waits.md#ownership-and-delivery)).
