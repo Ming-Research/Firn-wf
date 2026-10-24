@@ -912,7 +912,12 @@ request read. The handshake workload crosses the changed accept path and every
 cell crosses dispatch, so the first measurement does not stand for the merged
 head. The three groups are measured again on it; the first results stay above,
 marked as made on 9b514d5. `main` is not merged into the branch again unless
-the host reports a conflict, so these revisions stay the merged head.
+the host reports a conflict, so these revisions stay the merged head. The host
+reported one after Run B1, in `design/log.md` only, and `main` was merged at
+30de5d8; that change was the release packaging (nine files outside `firn/`,
+`tests/` and the Makefile), so `firn/`, `tests/`, the Makefile and the pins at
+30de5d8 equal those of 5a0a1b9, and the runs after it (B2, C1, C2) name the
+same image commits.
 
 Revisions: `head` and `head-twin` are 5a0a1b9; `base` is
 05f7e89c62a7b9d10733a43b9a08aaea53fa2090, the `main` that 5a0a1b9 merged, so
@@ -1261,7 +1266,7 @@ Images, built in one dispatch each: `base` 05f7e89, `head` and `head-twin`
 lines of `update_access` in `firn/commands/access.wf` that return early under
 CLIENT NO-TOUCH removed. The variant is for measuring only; it answers wrongly
 for a connection in NO-TOUCH mode, which no measured workload uses, and its
-branch is deleted after the runs.
+branch was deleted after the runs.
 
 - Run C1, `redis-bench.yml` mode `compare` on the 14900K: test `mset`, depth 1,
   server CPUs 2 and 4, client CPUs 16-31, 36 passes of 5 seconds, profile off;
