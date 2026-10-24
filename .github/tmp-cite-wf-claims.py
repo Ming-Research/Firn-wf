@@ -7,6 +7,7 @@ and the comparison of the page's rules between the pin and the page's commit
 says what the document says. Then runs the same check on broken copies of the
 document, each of which must fail.
 """
+import difflib
 import re
 import subprocess
 import sys
@@ -52,6 +53,13 @@ differ = [r for r in cited if r in at_pin and at_pin[r] != at_page.get(r)]
 quotes = re.findall(r'^\| [^|]+ \| “([^”]+)” \| `([A-Z]+-\d+)` \|$', page, re.M)
 print(f'page cites {len(cited)} rules, {len(missing)} missing at the pin, '
       f'{len(differ)} differ: {differ}; {len(quotes)} quotes')
+for rule in differ:
+    print(f'--- {rule}: pin -> page commit')
+    old, new = at_pin[rule].splitlines(), at_page[rule].splitlines()
+    for line in difflib.unified_diff(old, new, lineterm='', n=0):
+        if not line.startswith(('---', '+++', '@@')):
+            print(line[:600])
+print('--- end of the differing rules')
 
 
 def check(doc):
