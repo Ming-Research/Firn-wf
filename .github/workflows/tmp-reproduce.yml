@@ -15,6 +15,38 @@ jobs:
       - uses: actions/checkout@v4
       - run: sh research/experiments/redis-bench/redis-bench.sh placement-selftest
 
+  # Each fault in host-info.sh that the host-info selftest protects against
+  # must make the selftest fail; the unbroken selftest passes in the job above.
+  selftest-fails:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          bench=research/experiments/redis-bench
+          check() {
+            work=$RUNNER_TEMP/mutant
+            rm -rf "$work"
+            mkdir -p "$work/research/experiments"
+            cp -r "$bench" "$work/research/experiments/"
+            sed -i -E "$2" "$work/$bench/host-info.sh"
+            if cmp -s "$bench/host-info.sh" "$work/$bench/host-info.sh"; then
+              echo "fault $1 changed nothing"; exit 1
+            fi
+            status=0
+            sh "$work/$bench/redis-bench.sh" placement-selftest >"$work/out" 2>&1 || status=$?
+            if [ "$status" = 0 ] || ! grep -q '^host-info-selftest: ' "$work/out"; then
+              echo "fault $1 was not caught by the host-info selftest (exit $status)"
+              cat "$work/out"; exit 1
+            fi
+            echo "fault $1 caught: $(grep '^host-info-selftest: ' "$work/out")"
+          }
+          check raw-command-line 's/"\$\{host_params:-none\}"/"$host_cmdline"/'
+          check allow-list-lacks-isolcpus 's/isolcpus\|//'
+          check unreadable-command-line-is-none 's/host_params=unknown/host_params=/'
+          check frequency-limit-not-read 's#cpufreq/scaling_max_freq#cpufreq/scaling_max_freq_gone#'
+          check record-fails-on-a-bare-host 's/^    return 0$/    return 1/'
+
   container:
     runs-on: ubuntu-24.04
     timeout-minutes: 120

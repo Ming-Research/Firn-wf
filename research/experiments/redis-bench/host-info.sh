@@ -1,6 +1,7 @@
 # Read-only host inventory shared by the workflow and standalone instrument.
 # Sourcing starts nothing. Keep raw class membership/capacity next to each
-# CPU's policies: governors and preferences can differ even within one class.
+# CPU's policies: governors, preferences and frequency limits can differ even
+# within one class.
 # Placement records supply the selected CPUs' normalized P/E/- class labels.
 host_read_file() {
     host_value=$(cat "$1" 2>/dev/null) || host_value=
@@ -37,15 +38,18 @@ record_host_system() (
     for host_cpu_path in "$host_sysfs"/devices/system/cpu/cpu[0-9]*; do
         [ -d "$host_cpu_path" ] || continue
         host_found_cpu=true
-        printf 'cpu-policy,cpu=%s,core_type=%s,cpu_capacity=%s,scaling_governor=%s,energy_performance_preference=%s\n' \
+        printf 'cpu-policy,cpu=%s,core_type=%s,cpu_capacity=%s,scaling_governor=%s,energy_performance_preference=%s,scaling_min_freq_khz=%s,scaling_max_freq_khz=%s,cpuinfo_max_freq_khz=%s\n' \
             "${host_cpu_path##*/cpu}" \
             "$(host_read_file "$host_cpu_path/topology/core_type")" \
             "$(host_read_file "$host_cpu_path/cpu_capacity")" \
             "$(host_read_file "$host_cpu_path/cpufreq/scaling_governor")" \
-            "$(host_read_file "$host_cpu_path/cpufreq/energy_performance_preference")"
+            "$(host_read_file "$host_cpu_path/cpufreq/energy_performance_preference")" \
+            "$(host_read_file "$host_cpu_path/cpufreq/scaling_min_freq")" \
+            "$(host_read_file "$host_cpu_path/cpufreq/scaling_max_freq")" \
+            "$(host_read_file "$host_cpu_path/cpufreq/cpuinfo_max_freq")"
     done
     if [ "$host_found_cpu" = false ]; then
-        printf '%s\n' 'cpu-policy,cpu=unknown,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown'
+        printf '%s\n' 'cpu-policy,cpu=unknown,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown,scaling_min_freq_khz=unknown,scaling_max_freq_khz=unknown,cpuinfo_max_freq_khz=unknown'
     fi
     printf 'intel_pstate-no_turbo: %s\n' "$(host_read_file "$host_sysfs/devices/system/cpu/intel_pstate/no_turbo")"
     printf 'intel_pstate-status: %s\n' "$(host_read_file "$host_sysfs/devices/system/cpu/intel_pstate/status")"
@@ -58,14 +62,18 @@ record_host_system() (
     printf 'vm.swappiness: %s\n' "$(host_read_file /proc/sys/vm/swappiness)"
     # host.txt is a public CI artifact: record only performance-relevant
     # kernel parameters, never the raw command line (root=PARTUUID, secrets).
-    host_cmdline=$(cat /proc/cmdline 2>/dev/null) || host_cmdline=
-    host_params=
-    for host_word in $host_cmdline; do
-        case ${host_word%%=*} in
-            isolcpus|nohz_full|rcu_nocbs|irqaffinity|mitigations|nosmt|intel_pstate|amd_pstate|idle|processor.max_cstate|intel_idle.max_cstate|transparent_hugepage|hugepages|default_hugepagesz|threadirqs|preempt|nmi_watchdog|skew_tick)
-                host_params="${host_params:+$host_params }$host_word" ;;
-        esac
-    done
+    # An unreadable command line is unknown, not none.
+    if host_cmdline=$(cat "${PROC_CMDLINE:-/proc/cmdline}" 2>/dev/null); then
+        host_params=
+        for host_word in $host_cmdline; do
+            case ${host_word%%=*} in
+                isolcpus|nohz_full|rcu_nocbs|irqaffinity|mitigations|nosmt|intel_pstate|amd_pstate|idle|processor.max_cstate|intel_idle.max_cstate|transparent_hugepage|hugepages|default_hugepagesz|threadirqs|preempt|nmi_watchdog|skew_tick)
+                    host_params="${host_params:+$host_params }$host_word" ;;
+            esac
+        done
+    else
+        host_params=unknown
+    fi
     printf 'kernel-command-line-allowlisted: %s\n' "${host_params:-none}"
     # is-active prints inactive/failed even with a nonzero status; retain those
     # observations. No systemd or unreadable service state means unknown.

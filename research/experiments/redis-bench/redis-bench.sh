@@ -798,9 +798,57 @@ compare_rows_selftest() (
     echo 'compare-rows-selftest: passed'
 )
 
+# host.txt is public: it must carry only the allow-listed part of the kernel
+# command line, record the frequency limits it finds, and never stop a run.
+host_info_selftest() (
+    fixture=$(mktemp -d)
+    trap 'rm -rf "$fixture"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    fail() { echo "host-info-selftest: $1" >&2; exit 1; }
+    export SYSFS_ROOT="$fixture/sys"
+    cpu_dir=$SYSFS_ROOT/devices/system/cpu
+    mkdir -p "$cpu_dir/cpu0/cpufreq" "$cpu_dir/cpu1"
+    echo 5000000 >"$cpu_dir/cpu0/cpufreq/scaling_min_freq"
+    echo 5000000 >"$cpu_dir/cpu0/cpufreq/scaling_max_freq"
+    echo 6000000 >"$cpu_dir/cpu0/cpufreq/cpuinfo_max_freq"
+
+    # A command line with a root device among allow-listed parameters keeps
+    # only the parameters.
+    echo 'BOOT_IMAGE=/vmlinuz root=PARTUUID=0a1b-2c3d ro isolcpus=2-15 quiet mitigations=off' >"$fixture/cmdline"
+    PROC_CMDLINE=$fixture/cmdline record_host_system >"$fixture/host.txt" || fail 'a readable host failed the record'
+    grep -qxF 'kernel-command-line-allowlisted: isolcpus=2-15 mitigations=off' "$fixture/host.txt" ||
+        fail 'the allow-listed parameters were not kept'
+    ! grep -qF -e PARTUUID -e BOOT_IMAGE "$fixture/host.txt" || fail 'a parameter outside the allow-list was recorded'
+    # A command line without any allow-listed parameter is none; an unreadable
+    # one is unknown.
+    echo 'BOOT_IMAGE=/vmlinuz root=PARTUUID=0a1b-2c3d ro quiet' >"$fixture/cmdline"
+    PROC_CMDLINE=$fixture/cmdline record_host_system >"$fixture/host.txt"
+    grep -qxF 'kernel-command-line-allowlisted: none' "$fixture/host.txt" || fail 'no parameters did not give none'
+    PROC_CMDLINE=$fixture/absent record_host_system >"$fixture/host.txt"
+    grep -qxF 'kernel-command-line-allowlisted: unknown' "$fixture/host.txt" || fail 'an unreadable command line did not give unknown'
+
+    # The frequency limits of a CPU that has them, and unknown for one that has
+    # not.
+    grep -qxF 'cpu-policy,cpu=0,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000' \
+        "$fixture/host.txt" || fail 'the frequency limits of cpu0 were not recorded'
+    grep -qxF 'cpu-policy,cpu=1,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown,scaling_min_freq_khz=unknown,scaling_max_freq_khz=unknown,cpuinfo_max_freq_khz=unknown' \
+        "$fixture/host.txt" || fail 'a CPU without cpufreq was not recorded as unknown'
+
+    # A host that exposes nothing still gets a complete record and a zero exit.
+    rm -rf "$SYSFS_ROOT"
+    status=0
+    PROC_CMDLINE=$fixture/absent record_host_system >"$fixture/host.txt" || status=$?
+    [ "$status" = 0 ] || fail "a host without sysfs failed the record with $status"
+    grep -qxF 'host-system-end' "$fixture/host.txt" || fail 'the record of a bare host is incomplete'
+    grep -qxF 'cpu-policy,cpu=unknown,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown,scaling_min_freq_khz=unknown,scaling_max_freq_khz=unknown,cpuinfo_max_freq_khz=unknown' \
+        "$fixture/host.txt" || fail 'a host without CPUs did not give the unknown policy line'
+    echo 'host-info-selftest: passed'
+)
+
 # Keep pure competitor/client checks on the gate's existing selftest path;
-# the guide's markers (guide-blocks.py) and the reproduce table check
-# (reproduce-table.py) are checked on it too.
+# the host record (host-info.sh), the guide's markers (guide-blocks.py) and the
+# reproduce table check (reproduce-table.py) are checked on it too.
 # These helpers are sourced before ROOT/build initialization and start nothing.
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$BENCH_DIR/competitors.sh"
@@ -809,6 +857,7 @@ BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 if [ "${1:-}" = placement-selftest ]; then
     placement_selftest
     compare_rows_selftest
+    host_info_selftest
     competitors_selftest
     versions_selftest
     python3 "$BENCH_DIR/compare-client.py" selftest
