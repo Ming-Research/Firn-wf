@@ -1,8 +1,7 @@
 # Temporary (firn-accept-emfile-ready-reset), on the work branch and its
 # old-lease variant only, deleted before the branch is ready: runs the
-# harness's port-lease cases and the experiment that counts how often the
-# first connection to a freshly leased port is not refused, without the
-# firn build and the rest of the gate.
+# harness's own cases, the lease stress case among them, and then the four
+# accept_errors cases again and again, without the rest of the gate.
 name: tmp-lease-race
 
 on:
@@ -21,16 +20,45 @@ jobs:
       - name: Select the Rust toolchain
         run: rustup default stable && cargo --version && nproc
 
-      - name: Build the network cases
-        run: cargo test --manifest-path tests/Cargo.toml --locked --test network --no-run
-
       - name: The harness's own cases, the lease stress case among them
         run: |
           cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
             support::tests:: --show-output
 
-      - name: How often the first connection to a leased port is not refused
-        if: always()
+  accept-errors:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Build firn for the network cases
+        run: make firn-test
+
+      - name: Build the network cases
         run: |
-          cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
-            --ignored tmp_natural_start_race_rate --nocapture
+          FIRN="$GITHUB_WORKSPACE/build/firn-test" \
+            cargo test --manifest-path tests/Cargo.toml --locked --test network --no-run
+
+      # Each run starts the four cases together, as the gate does, so each
+      # case runs once per iteration.
+      - name: The four accept_errors cases, 40 runs
+        run: |
+          for run in $(seq 1 40); do
+            log="$RUNNER_TEMP/accept-errors-$run.log"
+            FIRN="$GITHUB_WORKSPACE/build/firn-test" \
+              cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
+              accept_errors:: > "$log" 2>&1 || { cat "$log"; echo "run $run failed"; exit 1; }
+            grep -q '^test result: ok\. 4 passed; 0 failed' "$log" || { cat "$log"; echo "run $run did not run four cases"; exit 1; }
+            echo "run $run: four cases passed"
+          done
