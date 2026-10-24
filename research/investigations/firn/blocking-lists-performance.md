@@ -3,15 +3,20 @@
 ## The questions
 
 1. Did Firn-wf#113 (the blocking list commands) slow the commands that existed
-   before it? It sends the top-level list producers (`LPUSH` and `RPUSH` with
-   their `X` forms, `LINSERT`, `LMOVE`, `RPOPLPUSH`, `RENAME`, `COPY`) through
-   the held-command parts that `EXEC` and scripts use, because a push can wake a
-   blocked client. Read from `run_list_producer` in
-   `firn/commands/blocking-dispatch.wf`: each such command holds the keyspace,
-   metadata, event hub and server state together, allocates a 64-byte effects
-   buffer and stages the hub's wake-ups, and, with the append-only file on,
-   copies the staged effects into it, where before it appended in place. Which of
-   these costs time is not measured. The design decision for the staged copy is
+   before it? Its first version (`da1e2c3`, measured in A1 below) sent all the
+   top-level list producers (`LPUSH` and `RPUSH` with their `X` forms,
+   `LINSERT`, `LMOVE`, `RPOPLPUSH`, `RENAME`, `COPY`) through the held-command
+   parts that `EXEC` and scripts use, because a push can wake a blocked client.
+   Read from `run_list_producer` in `firn/commands/blocking-dispatch.wf`: each
+   such command holds the keyspace, metadata, event hub and server state
+   together, allocates a 64-byte effects buffer and stages the hub's wake-ups,
+   and, with the append-only file on, copies the staged effects into it, where
+   before it appended in place. The head sends there only the writes that can
+   create a list (`run_list_write` in the same file); `LINSERT`, `LPUSHX`,
+   `RPUSHX` and the pushes and moves onto a live list hold only their keys'
+   entries, as on main. Which of these costs time is measured for the first
+   version in the results below; the head's own runs are made before the merge.
+   The design decision for the staged copy is
    [firn-q-list-producer-staging](../../../design/firn/append-only-file.md),
    ruled A: keep the staged copy, provided this record's measurement shows no
    regression; a regression caused by the copy itself falls back to restoring
@@ -218,8 +223,9 @@ the run with `firn-1 stopped handing out elements in blocking-handoff`.
 
 ## Results
 
-Every run is on the 14900K at `da1e2c3`, the PR's head, with the servers on
-CPUs 2 and 4 and the clients on CPUs 16-31.
+Every run below is on the 14900K at `da1e2c3`, the PR's first version, with the
+servers on CPUs 2 and 4 and the clients on CPUs 16-31; the runs of the head that
+merges are added after them.
 
 ### B: the floor of the hand-off class
 
