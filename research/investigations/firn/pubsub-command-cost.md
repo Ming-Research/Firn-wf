@@ -649,11 +649,10 @@ The runs above measured the branch over `7f8b4f84658b`. The branch has since
 merged the main line, which brought in the stream commands and the startup
 configuration; the tables of the admission flags carry the stream kinds now
 (142, 146 to 148 as writes, 142 and 148 as denyoom), regenerated from the lists
-of the main line and checked equal for kinds 0 to 999. The merged program was
-not measured: the hot functions are laid out again by the new commands, and
-this record's finding is that a cell's cost of a few percent follows such a
-layout, so `set` and `incr` at depth 16 are to be measured again on the merged
-program before the comparison is taken to describe it.
+of the main line and checked equal for kinds 0 to 999. The hot functions are
+laid out again by the new commands, and this record's finding is that a cell's
+cost of a few percent follows such a layout, so the comparison was made again on
+the merged program (G and G2 below), and its conclusion is the one to read.
 
 ### Run G: the formal comparison on the merged program
 
@@ -781,3 +780,90 @@ are measured too; the same rule applies to all 14: a cell stands if
 cell where the twin does not hold 1 has no usable result and is reported as
 unresolved. The criterion of the item is met if no cell stands. Expected
 duration: 4 images x 14 cells x 16 passes x 5 s = 75 minutes, plus the build.
+
+### G2 results
+
+Run 40075073770 (`compare`, `hset`, `incr`, `set`, `lrange_100`, `ping_inline`,
+`sadd` and `zadd` at depths 16 and 1, 16 interleaved passes of 5 s, servers on
+CPUs 2 and 4, clients on 16-31, no profile, no `reference` line). The images:
+`before` (`00e2bd1fa230`), `main` (`05f7e89c62a7`), `head` and `head-twin` (both
+`b2d687f4235a`, the firn that G measured; the branch head of the run only adds
+this record); all built with the same pinned compiler release
+(`wf-af7665be672d`). No sample was client-limited (client busy fraction at most
+0.65), so all 14 cells are judged. `head-twin`/`head` holds 1 in all 14, so the
+run counts. The columns are those of G, with the interval of `cpu head/before`
+added.
+
+| test | depth | head/before | 95% interval | verdict | twin/head interval | cpu head/before | 95% interval | verdict | main/before | verdict | head/main | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| hset | 16 | 1.0240 | 1.0173-1.0411 | faster | 0.9976-1.0083 | 1.0200 | 1.0125-1.0272 | faster | 0.9945 | no change | 1.0408 | faster |
+| hset | 1 | 0.9899 | 0.9744-0.9990 | slower | 0.9966-1.0228 | 0.9928 | 0.9777-1.0005 | no change | 0.9915 | slower | 1.0047 | no change |
+| incr | 16 | 0.9845 | 0.9747-0.9903 | slower | 0.9953-1.0077 | 0.9857 | 0.9776-0.9904 | slower | 0.9725 | slower | 1.0115 | faster |
+| incr | 1 | 0.9845 | 0.9708-0.9988 | slower | 0.9970-1.0240 | 0.9924 | 0.9741-1.0002 | no change | 0.9959 | no change | 0.9888 | no change |
+| lrange_100 | 16 | 1.0193 | 1.0112-1.0345 | faster | 0.9917-1.0193 | 1.0255 | 1.0216-1.0269 | faster | 0.9532 | slower | 1.0641 | faster |
+| lrange_100 | 1 | 1.0108 | 1.0034-1.0173 | faster | 0.9884-1.0058 | 1.0072 | 1.0047-1.0095 | faster | 0.9993 | no change | 1.0102 | faster |
+| ping_inline | 16 | 1.1136 | 1.1050-1.1169 | faster | 0.9888-1.0086 | 1.1114 | 1.1063-1.1154 | faster | 0.9370 | slower | 1.1870 | faster |
+| ping_inline | 1 | 1.0041 | 1.0005-1.0113 | faster | 0.9942-1.0072 | 1.0073 | 1.0038-1.0098 | faster | 0.9875 | slower | 1.0165 | faster |
+| sadd | 16 | 1.0080 | 1.0001-1.0343 | faster | 0.9869-1.0157 | 1.0086 | 0.9998-1.0332 | no change | 0.9684 | slower | 1.0339 | faster |
+| sadd | 1 | 0.9948 | 0.9834-1.0011 | no change | 0.9903-1.0075 | 0.9945 | 0.9877-1.0019 | no change | 0.9870 | slower | 1.0001 | no change |
+| set | 16 | 0.9897 | 0.9761-0.9957 | slower | 0.9903-1.0129 | 0.9919 | 0.9759-0.9938 | slower | 0.9597 | slower | 1.0290 | faster |
+| set | 1 | 0.9943 | 0.9901-1.0077 | no change | 0.9935-1.0120 | 0.9921 | 0.9889-1.0018 | no change | 0.9979 | no change | 0.9975 | no change |
+| zadd | 16 | 1.0234 | 1.0182-1.0287 | faster | 0.9918-1.0006 | 1.0230 | 1.0192-1.0252 | faster | 0.9925 | slower | 1.0326 | faster |
+| zadd | 1 | 0.9903 | 0.9818-1.0075 | no change | 0.9915-1.0130 | 0.9911 | 0.9858-1.0072 | no change | 0.9864 | slower | 1.0108 | no change |
+
+Reading:
+
+- The four cells that G flagged only by the twin (`lrange_100` 1, `ping_inline`
+  1, `sadd` 16, `zadd` 1) are not slower now: `head`/`before` is 1.0108
+  (wholly faster), 1.0041 (wholly faster), 1.0080 (wholly faster) and 0.9903
+  (holds 1), and the twin holds 1 in each. Their twin interval in G was the
+  noise of that run.
+- Four cells are wholly on the slower side of `before` with the twin holding 1,
+  so by the rule above they stand:
+
+  | cell | head/before | cpu head/before | head-twin/before | cpu head-twin/before | main/before |
+  |---|---|---|---|---|---|
+  | `set` 16 | 0.9897 (0.9761-0.9957) | 0.9919 (0.9759-0.9938) | 0.9890 (0.9802-0.9947) | 0.9872 (0.9813-0.9929) | 0.9597 |
+  | `incr` 16 | 0.9845 (0.9747-0.9903) | 0.9857 (0.9776-0.9904) | 0.9877 (0.9783-0.9896) | 0.9857 (0.9767-0.9885) | 0.9725 |
+  | `incr` 1 | 0.9845 (0.9708-0.9988) | 0.9924 (0.9741-1.0002) | 0.9956 (0.9885-1.0015) | 0.9935 (0.9904-1.0003) | 0.9959 |
+  | `hset` 1 | 0.9899 (0.9744-0.9990) | 0.9928 (0.9777-1.0005) | 0.9976 (0.9896-1.0027) | 0.9974 (0.9923-1.0024) | 0.9915 |
+
+  `set` 16 and `incr` 16 are consistent in four ways: the rate of `head` and of
+  its twin against `before`, and the server CPU time per request of both, are
+  all wholly on the slower side, by 1.0% and 1.6% in rate. `incr` 1 and `hset` 1
+  are weaker: the upper ends of their rate intervals are 0.9988 and 0.9990, the
+  CPU time per request holds 1 in both, and the twin against `before` holds 1.
+  They flipped between the runs (`incr` 1 was wholly slower in F, not in F2,
+  wholly slower in G; `hset` 1 was wholly slower in G and not in F), so they are
+  reported as standing by the rule and as the weakest of the four.
+- Mean of the 16 passes, server CPU time per request in microseconds (`before`,
+  `main`, `head`, `head-twin`): `set` 16 0.3065, 0.3198, 0.3113, 0.3105;
+  `incr` 16 0.3104, 0.3199, 0.3155, 0.3159. In millions of requests a second:
+  `set` 16 6.496, 6.237, 6.404, 6.414; `incr` 16 6.418, 6.221, 6.306, 6.315.
+- Against the program before the merge (F2, 12 passes): `set` 16 was 0.9779 and
+  `incr` 16 0.9765, and are 0.9897 and 0.9845 now; the layout of the merged
+  program is less unfavourable to both, as the finding on layout would have it:
+  the merge changed none of this change's code. `head`/`main` is 1.0290 and
+  1.0115 in these cells: the fix recovers 3.0 and 1.2 percentage points of the
+  4.0 and 2.8 that `main` is behind `before`.
+- In the other cells of these tests, 7 of 10 are wholly faster than `before`
+  (`hset` 16 1.0240, `lrange_100` 16 1.0193, `ping_inline` 16 1.1136, `zadd` 16
+  1.0234, `sadd` 16 1.0080, `lrange_100` 1, `ping_inline` 1) and 3 hold 1.
+
+### Conclusion on the merged program
+
+The criterion of the item, no judged cell wholly on the slower side of `before`,
+is still not met on the merged program: of the 36 cells judged in G, three were
+wholly slower, and with 16 passes four stand among the cells measured again
+(`set` 16, `incr` 16, `incr` 1, `hset` 1), by 1.0% to 1.6% in rate. Against
+them, 13 of the 17 judged cells at depth 16 are wholly faster than `before` in
+G, from 1.2% (`sadd`) to 13.3% (`spop`), among them `get` at 1.091 and
+`ping_mbulk` at 1.116, and `main` without this change is wholly slower in 15
+cells. The loss that remains is smaller than before the merge (about 1% in
+`set` 16 against 2.2%), it is in cells of the string and hash types, and the
+part of it that was traced is the check after every command in `serve` (about
+1%, P5), which has to stay; the rest is in no segment of Firn-wf#100 and
+follows the layout of the hot functions (deduced, not tested; the layout moved
+the same cells by a percent when the main line was merged). What is left for
+the owner is whether to accept 1% to 1.6% on these four cells or to ask for
+further work, as the card says.
