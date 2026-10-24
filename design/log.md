@@ -11,6 +11,12 @@ Nodes: firn/reported-facts, firn/transactions
 
 Summary: CLIENT LIST gives other connections only the fields they set themselves, with the subscription counts the event hub already keeps for pub/sub (the decision pubsub-registries records), because the four per-command fields could be shared only by a contended write to the client table on every command; replication and MONITOR, whose suite checks read another connection's flags, are outside firn's supported features. An unreported address is empty as in Redis 7.2.16's genClientAddrString, not the placeholder the parent decision rejects. Redis 7.2.16 queues the CLIENT subcommands, which lack NO_MULTI, and runs them in execCommand, so firn runs them inside EXEC's atomic statement, which also holds the event hub when the queue holds a pub/sub command or CLIENT LIST, instead of refusing their transaction with EXECABORT; changed connection records are published inside that statement so no connection sees new keys with old connection facts. The pinned compiler takes the client table with Meta on every EXEC, so acquiring it only when CLIENT is queued is recorded as not implemented; its cost was measured on the two transaction workloads, base and candidate paired against `main`: neither is wholly on the slower side, but only one is settled (`setmany-tx`, head over base 0.9927 with 95% interval 0.9761-1.0038, no change detected), while `limiter-tx` (0.9972, 0.9824-1.0041, an interval wider than the twin's) is undecided under the rule written before the runs, so a slowdown of about 2% is not excluded for either; [final-head check](../research/investigations/deployment-performance/README.md#final-head-check-of-the-client-handshake-change-firn-wf74).
 
+## 2026-10-14 Add the distribution node
+
+Nodes: firn/distribution
+
+Summary: A new node records how firn is shipped: the full-LTO build as a dynamic glibc binary at the Ubuntu 24.04 baseline, a container on Debian trixie-slim running as UID 10001 with its AOF in a named volume at /data and binding every IPv4 address internally, and the quickstart checker executing the document's marked shell blocks literally. GitHub Releases and GHCR are the only channels; only tags matching ^v[0-9]+\.[0-9]+\.[0-9]+$ are stable and move latest; only pushed v* tags publish; publication refuses an existing release or image version tag and pushes the image tags before creating the release.
+
 ## 2026-10-23 Store streams in Redis's nodes
 
 Nodes: firn/streams
@@ -142,6 +148,7 @@ Nodes: firn/memory-limit
 Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-admit-tree, which asked to approve PR #67's design change at head bc2425d: while firn keeps no append-only file, a command's maxmemory admission check reads the heap and compares it with the limit without a Meta statement and takes Meta only once the reading is over the limit; with a file it keeps the Meta statement; the decision cites the 14900K measurement instead of being provisional.
 
 Summary: Every command's admission check took the exclusive Meta statement whenever a limit was set, so with an 8 GiB limit far above use main ran depth-16 GET at 0.117 and SET at 0.145 of its unlimited throughput on 8 P-cores of the i9-14900K. Without an append-only file nothing is excluded and no rewrite can start, so the Meta-held check reduces to a heap comparison; with it the change ran at 0.941 and 0.948, and without a limit within the twin's range of main ([admission without Meta](../research/investigations/memory-limit/README.md#admission-without-meta-while-no-aof-is-kept)). Admission still raises the peak when its reading exceeds the peak the connection last saw recorded.
+
 ## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture

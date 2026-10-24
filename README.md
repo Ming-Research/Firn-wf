@@ -37,6 +37,10 @@ clients ([design](design/firn.md)).
 
 ## Build and run
 
+For a prebuilt Linux x86-64 program or Docker image, follow the
+[quickstart](docs/quickstart.md). It covers download, startup, client commands
+and an AOF restart; the release workflow checks those commands before publishing.
+
 On Linux x86-64 or macOS arm64, with `git`, `curl`, Python 3,
 `/usr/bin/clang` and, on Linux, LLD, both of the LLVM major the pinned
 compiler release was built with, which `make toolchain` installs on Linux:
