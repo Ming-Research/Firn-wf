@@ -1,0 +1,114 @@
+# Temporary (firn-pin-wf-main): checks every module of the firn graph with the
+# pinned release (whitefoot.pin as pushed), listing every refusal of each
+# module in a job of its own, and finds every OP-5 site by repairing a
+# disposable workspace round by round (.github/tmp-op5-discover.py). Both are
+# removed before the pull request is ready.
+name: tmp-pin-wf-main
+
+on:
+  push:
+
+concurrency:
+  group: tmp-pin-wf-main-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check pkg::${{ matrix.module }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - script_pool
+          - bytes
+          - protocol
+          - connection_events
+          - scores
+          - extended
+          - store
+          - scripting
+          - commands
+          - persistence
+          - server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: |
+          make compiler
+          make toolchain
+          cat whitefoot.pin
+
+      - name: Check the module
+        run: |
+          release=$(sed -n 's/^release = //p' whitefoot.pin)
+          wfc="$PWD/build/whitefoot/$release/whitefootc"
+          cd firn
+          start=$(date +%s)
+          status=0
+          "$wfc" --graph modules.wfg --check-module "pkg::${{ matrix.module }}" || status=$?
+          end=$(date +%s)
+          echo "TIME pkg::${{ matrix.module }}: $((end - start)) s, exit $status"
+          exit $status
+
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: |
+          make compiler
+          make toolchain
+
+      - name: Repair every OP-5 site in the workspace
+        run: |
+          release=$(sed -n 's/^release = //p' whitefoot.pin)
+          wfc="$PWD/build/whitefoot/$release/whitefootc"
+          python3 -B .github/tmp-op5-discover.py 40 "$wfc" firn module script_pool bytes protocol connection_events scores extended store scripting commands persistence server
+          mkdir -p build
+          git diff -- firn > build/op5.patch
+          git diff --stat -- firn
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: op5-patch
+          path: build/op5.patch
+          retention-days: 7
+
+  # tests/list_ceiling.wf is compiled inside a copy of the firn graph that
+  # tests/list_ceiling.py assembles, so the jobs above never check it.
+  discover-ceiling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: |
+          make compiler
+          make toolchain
+
+      - name: Repair every OP-5 site of the fixture in the assembled copy
+        run: |
+          release=$(sed -n 's/^release = //p' whitefoot.pin)
+          wfc="$PWD/build/whitefoot/$release/whitefootc"
+          python3 -B tests/list_ceiling.py --out build/list-ceiling
+          python3 -B .github/tmp-op5-discover.py 40 "$wfc" build/list-ceiling/firn module commands
+          diff -u tests/list_ceiling.wf build/list-ceiling/firn/commands/list_ceiling.wf > build/ceiling.patch || true
+          cat build/ceiling.patch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ceiling-patch
+          path: build/ceiling.patch
+          retention-days: 7

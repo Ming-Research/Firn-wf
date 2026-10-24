@@ -42,7 +42,11 @@
 #                                 each pass starts every image in turn, the
 #                                 order reversed on even passes, and runs
 #                                 COMPARE_TESTS (default mset set get; also
-#                                 xadd_maxlen and xrange_10 for streams) at each
+#                                 xadd_maxlen and xrange_10 for streams, and
+#                                 sismember, srem, hget and hdel on a set or
+#                                 hash of 100000 members filled outside the
+#                                 timed span; any other name is a
+#                                 redis-benchmark -t test) at each
 #                                 depth in COMPARE_DEPTHS (default 16 1) for
 #                                 COMPARE_SECONDS (default 10) each, on
 #                                 each server CPU count in COMPARE_CPUS (default 1 2), for
@@ -1413,6 +1417,21 @@ compare_client() {
             redis-cli -p "$PORT" DEL mystream >/dev/null
             redis-benchmark -p "$PORT" -n 10000 -P 16 -q XADD mystream '*' field value >/dev/null 2>&1
             what="XRANGE mystream - + COUNT 10"
+            ;;
+        sismember|srem)
+            # Members of a set of 100000 filled outside the timed span. SREM
+            # empties it within the first fraction of a run, so most of its
+            # requests find nothing to remove; the same holds for every image.
+            redis-cli -p "$PORT" DEL myset >/dev/null
+            redis-benchmark -p "$PORT" -n 1000000 -r 100000 -P 16 -q SADD myset element:__rand_int__ >/dev/null 2>&1
+            what="$(echo "$1" | tr a-z A-Z) myset element:__rand_int__"
+            ;;
+        hget|hdel)
+            # Fields of a hash of 100000 filled outside the timed span; HDEL
+            # drains it as SREM does.
+            redis-cli -p "$PORT" DEL myhash >/dev/null
+            redis-benchmark -p "$PORT" -n 1000000 -r 100000 -P 16 -q HSET myhash element:__rand_int__ xxx >/dev/null 2>&1
+            what="$(echo "$1" | tr a-z A-Z) myhash element:__rand_int__"
             ;;
     esac
     ticks=$(server_ticks)

@@ -134,11 +134,9 @@ fn section_matches(input: &[u8], start: u64, length: u64, which: u64) -> matched
   if which < 14_u64 {
     set last = section_ends[which];
   }
-  if last <= 110_u64 {
-    if first <= last {
-      let matched = name_is(input: input, start: start, length: length, word: &section_names[first..last]);
-      return matched;
-    }
+  if first <= last {
+    let matched = name_is(input: input, start: start, length: length, word: &section_names[first..last]);
+    return matched;
   }
   return False();
 }
@@ -153,9 +151,7 @@ fn text_reserve(text: &Box<Slots<u8>>, needed: u64) -> result: unit writes(text)
     let target = imax(doubled, wanted);
     let fits = target <= 4611686018427387904_u64;
     if fits {
-      if target >= text^.inner.cap {
-        grow(cell: text, capacity: target);
-      }
+      grow(cell: text, capacity: target);
     }
   }
   return unit;
@@ -702,10 +698,8 @@ fn memory_human(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) 
   text_word(text: text, word: &human_dot[0_u64..1_u64]);
   text_number(text: text, value: tens);
   text_number(text: text, value: ones);
-  if suffix < 5_u64 {
-    let end = suffix +wrap 1_u64;
-    text_word(text: text, word: &human_units[suffix..end]);
-  }
+  let end = suffix +wrap 1_u64;
+  text_word(text: text, word: &human_units[suffix..end]);
   return unit;
 }
 

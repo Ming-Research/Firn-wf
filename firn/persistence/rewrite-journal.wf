@@ -167,7 +167,7 @@ fn aof_rw_journal_count(bytes: &[u8], decoder: &AofJournalCount) -> result: unit
         }
         set decoder^.kind = 0_u64;
       }
-    } else if offset < length {
+    } else {
       let byte = bytes^[offset];
       let wide = cvt.wrap::<u8, u64>(byte);
       let part = wide *wrap decoder^.factor;

@@ -256,8 +256,8 @@ fn entry_kind(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &O
   set client^.state = state_absent;
   let kind = 0_u64;
   match slot^ {
-    Some(value: held) => {
-      set kind = kind_of(env: client, value: held);
+    Some(value: held_value) => {
+      set kind = kind_of(env: client, value: held_value);
     }
     None() => {
     }
@@ -640,7 +640,7 @@ fn expire_options(input: &[u8], args: &Box<Slots<Span>>) -> options: ExpireOptio
 fn expire_allowed(flags: u64, current: u64, deadline: i64) -> allowed: Bool pure {
   doc "Whether EXPIRE's options let it give a key whose expiry is current, zero for none, the expiry deadline, as Redis 7.0.15 judges them: NX only a key without one, XX only a key with one, GT only a later expiry than the key's, a key without one counting as never expiring, and LT only an earlier one, a key without one taking any.";
   let none = current == 0_u64;
-  let held = cvt.wrap::<u64, i64>(current);
+  let held_value = cvt.wrap::<u64, i64>(current);
   let fresh = iand(flags, expire_nx);
   if fresh != 0_u64 {
     if none {
@@ -659,14 +659,14 @@ fn expire_allowed(flags: u64, current: u64, deadline: i64) -> allowed: Bool pure
     if none {
       return False();
     }
-    if deadline <= held {
+    if deadline <= held_value {
       return False();
     }
   }
   let less = iand(flags, expire_lt);
   if less != 0_u64 {
     if none {
-    } else if deadline >= held {
+    } else if deadline >= held_value {
       return False();
     }
   }
@@ -871,8 +871,8 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
 fn ttl_body(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Option<Entry>, remaining: &Remaining) -> removed: Bool reads(capture_key), writes(sequence), writes(slot), writes(remaining) {
   doc "TTL's work on its key's entry, held by the caller: records in remaining whether the entry has an expiry, none, or is absent or expired, and removes an expired entry, answering whether it did, whose removal the file records.";
   match slot^ {
-    Some(value: held) => {
-      let found = read_expiry(env: remaining, value: held);
+    Some(value: held_value) => {
+      let found = read_expiry(env: remaining, value: held_value);
     }
     None() => {
     }
@@ -988,10 +988,10 @@ fn run_dbsize(store: &Keyspace, client: &Client) -> result: unit reads(store), w
 fn held_copy(client: &Client, slot: &Option<Entry>) -> made: Option<Entry> reads(client), reads(slot) {
   doc "A copy of the value an entry holds, its expiry kept, as COPY makes one; None for an absent entry.";
   match slot^ {
-    Some(value: held) => {
-      let copied = pkg::store::copy_value(value: &held^.value);
+    Some(value: held_value) => {
+      let copied = pkg::store::copy_value(value: &held_value^.value);
       let stamp = new_access(client: client);
-      let duplicate = Entry(value: move copied, expires: held^.expires, access: stamp, last_write: 0_u64);
+      let duplicate = Entry(value: move copied, expires: held_value^.expires, access: stamp, last_write: 0_u64);
       return Some<Entry>(value: move duplicate);
     }
     None() => {
@@ -1044,9 +1044,9 @@ fn rename_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
       set work.outcome = rename_same;
     } else if target < slots^.len {
       refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: target, client: client);
-      let held = entry_kind_at(sequence: sequence, capture_keys: access_keys, capture_index: target, slot: &slots^[target], client: client);
+      let held_value = entry_kind_at(sequence: sequence, capture_keys: access_keys, capture_index: target, slot: &slots^[target], client: client);
       set work.target_expired = client^.state == state_expired;
-      let occupied = held != 0_u64;
+      let occupied = held_value != 0_u64;
       let refused = band(fresh, occupied);
       if refused {
         set work.outcome = rename_occupied;
@@ -1175,9 +1175,9 @@ fn copy_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
     if kind != 0_u64 {
       if target < slots^.len {
         refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: target, client: client);
-        let held = entry_kind_at(sequence: sequence, capture_keys: access_keys, capture_index: target, slot: &slots^[target], client: client);
+        let held_value = entry_kind_at(sequence: sequence, capture_keys: access_keys, capture_index: target, slot: &slots^[target], client: client);
         set work.target_expired = client^.state == state_expired;
-        let vacant = held == 0_u64;
+        let vacant = held_value == 0_u64;
         let allowed = bor(vacant, replace);
         if allowed {
           let copied = held_copy(client: client, slot: &slots^[source]);
@@ -1310,8 +1310,8 @@ fn persist_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   set client^.now = expiry^.now;
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let outcome = clear_expiry(env: expiry, value: held);
+    Some(value: held_value) => {
+      let outcome = clear_expiry(env: expiry, value: held_value);
     }
     None() => {
     }
@@ -1369,8 +1369,8 @@ fn entry_kind_at(sequence: &pkg::store::WriteSequence, capture_keys: &KeySet, ca
   set client^.state = state_absent;
   let kind = 0_u64;
   match slot^ {
-    Some(value: held) => {
-      set kind = kind_of(env: client, value: held);
+    Some(value: held_value) => {
+      set kind = kind_of(env: client, value: held_value);
     }
     None() => {
     }

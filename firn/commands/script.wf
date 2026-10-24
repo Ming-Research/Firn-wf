@@ -375,13 +375,11 @@ fn script_key_ranks(keys: &KeySet, declared: &KeySet) -> ranks: Box<Slots<u64>> 
   doc "Translate command-local insertion ranks to immutable declaration ranks, without changing either key set or operand order.";
   let ranks = box_slots_new::<u64>(capacity: keys^.len);
   for @keys (index in 0_u64..keys^.len) {
-    if index < keys^.len {
-      let key = scanned_key(keys: keys, index: index);
-      let length = key.inner.len;
-      let rank = script_key_rank(keys: declared, key: &key.inner[0_u64..length]);
-      if ranks.inner.len < ranks.inner.cap {
-        place_back(window: &ranks.inner, value: rank);
-      }
+    let key = scanned_key(keys: keys, index: index);
+    let length = key.inner.len;
+    let rank = script_key_rank(keys: declared, key: &key.inner[0_u64..length]);
+    if ranks.inner.len < ranks.inner.cap {
+      place_back(window: &ranks.inner, value: rank);
     }
   }
   return move ranks;
@@ -400,11 +398,9 @@ fn script_entries_ready(kind: u64, keys: &Entries<Entry>, declared: &KeySet, und
     Finite(keys: planned) => {
       let ranks = script_key_ranks(keys: &planned, declared: declared);
       for @check (index in 0_u64..ranks.inner.len) {
-        if index < ranks.inner.len {
-          let rank = ranks.inner[index];
-          if rank >= keys^.len {
-            return False();
-          }
+        let rank = ranks.inner[index];
+        if rank >= keys^.len {
+          return False();
         }
       }
       match undo^ {
@@ -413,23 +409,21 @@ fn script_entries_ready(kind: u64, keys: &Entries<Entry>, declared: &KeySet, und
         Some(value: journal) => {
           let writing = command_writes(kind: kind);
           for @save (index in 0_u64..ranks.inner.len) {
-            if index < ranks.inner.len {
-              let rank = ranks.inner[index];
-              if rank < keys^.len {
-                let slot = &keys^[rank];
-                let save = writing;
-                match slot^ {
-                  None() => {
-                  }
-                  Some(value: held_entry) => {
-                    if pkg::store::expired(expires: held_entry^.expires, now: time^.check) {
-                      set save = True();
-                    }
+            let rank = ranks.inner[index];
+            if rank < keys^.len {
+              let slot = &keys^[rank];
+              let save = writing;
+              match slot^ {
+                None() => {
+                }
+                Some(value: held_entry) => {
+                  if pkg::store::expired(expires: held_entry^.expires, now: time^.check) {
+                    set save = True();
                   }
                 }
-                if save {
-                  pkg::store::attempt_save(undo: journal, index: rank, slot: slot);
-                }
+              }
+              if save {
+                pkg::store::attempt_save(undo: journal, index: rank, slot: slot);
               }
             }
           }

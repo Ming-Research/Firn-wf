@@ -62,39 +62,35 @@ fn case_entry(length: u64, capacity: u64) -> made: Option<Entry> pure contract {
     let placed = deque_push_back::<Box<Slots<u8>>>(values: &list, value: move element);
   }
   let value = Value::Items(items: move list);
-  let held = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
-  return Some<Entry>(value: move held);
+  let held_value = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
+  return Some<Entry>(value: move held_value);
 }
 
 fn case_original(slot: &Option<Entry>, length: u64) -> same: Bool reads(slot) {
   match slot^ {
-    Some(value: held) => {
-      if held^.expires != 123_u64 {
+    Some(value: held_value) => {
+      if held_value^.expires != 123_u64 {
         return False();
       }
-      if held^.access != 456_u32 {
+      if held_value^.access != 456_u32 {
         return False();
       }
-      if held^.last_write != 789_u64 {
+      if held_value^.last_write != 789_u64 {
         return False();
       }
-      match held^.value {
+      match held_value^.value {
         Items(items: list) => {
           if list^.inner.len != length {
             return False();
           }
           for (index in 0_u64..length) {
-            if index < list^.inner.len {
-              let element = &list^.inner[index];
-              if element^.inner.len != 1_u64 {
-                return False();
-              }
-              let byte = cvt.wrap::<u64, u8>(index);
-              let expected = byte +wrap 65_u8;
-              if element^.inner[0_u64] != expected {
-                return False();
-              }
-            } else {
+            let element = &list^.inner[index];
+            if element^.inner.len != 1_u64 {
+              return False();
+            }
+            let byte = cvt.wrap::<u64, u8>(index);
+            let expected = byte +wrap 65_u8;
+            if element^.inner[0_u64] != expected {
               return False();
             }
           }
@@ -121,8 +117,8 @@ fn case_original(slot: &Option<Entry>, length: u64) -> same: Bool reads(slot) {
 fn case_contents(slot: &Option<Entry>, initial: u64, added: u64, front: Bool, rotating: Bool, from_head: Bool) -> same: Bool reads(slot) {
   doc "Checks every logical element of a successful push or rotation, independently of the command's reported length.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Items(items: list) => {
           if list^.inner.len != 8_u64 {
             return False();
@@ -155,15 +151,11 @@ fn case_contents(slot: &Option<Entry>, initial: u64, added: u64, front: Bool, ro
               let byte = cvt.wrap::<u64, u8>(index);
               set expected = byte +wrap 65_u8;
             }
-            if index < list^.inner.len {
-              let element = &list^.inner[index];
-              if element^.inner.len != 1_u64 {
-                return False();
-              }
-              if element^.inner[0_u64] != expected {
-                return False();
-              }
-            } else {
+            let element = &list^.inner[index];
+            if element^.inner.len != 1_u64 {
+              return False();
+            }
+            if element^.inner[0_u64] != expected {
               return False();
             }
           }
@@ -373,17 +365,13 @@ fn case_move(from_head: Bool, to_head: Bool, same: Bool) -> passed: Bool pure wa
   set client.now = 1_u64;
   let passed = True();
   atomic slots = &map[keys] {
-    if source < slots^.len {
-      if same {
-        set slots^[source] = case_entry(length: 8_u64, capacity: 8_u64);
-      } else {
-        set slots^[source] = case_entry(length: 2_u64, capacity: 8_u64);
-      }
+    if same {
+      set slots^[source] = case_entry(length: 8_u64, capacity: 8_u64);
+    } else {
+      set slots^[source] = case_entry(length: 2_u64, capacity: 8_u64);
     }
     if bnot(same) {
-      if destination < slots^.len {
-        set slots^[destination] = case_entry(length: 8_u64, capacity: 8_u64);
-      }
+      set slots^[destination] = case_entry(length: 8_u64, capacity: 8_u64);
     }
     let sequence = pkg::store::sequence_inert();
     let journal = None<pkg::store::AccessJournal>();
@@ -395,13 +383,9 @@ fn case_move(from_head: Bool, to_head: Bool, same: Bool) -> passed: Bool pure wa
       if client.number != 7_u64 {
         set passed = False();
       }
-      if source < slots^.len {
-        let yes = True();
-        let checked_case_5 = case_contents(slot: &slots^[source], initial: 8_u64, added: 0_u64, front: to_head, rotating: yes, from_head: from_head);
-        if bnot(checked_case_5) {
-          set passed = False();
-        }
-      } else {
+      let yes = True();
+      let checked_case_5 = case_contents(slot: &slots^[source], initial: 8_u64, added: 0_u64, front: to_head, rotating: yes, from_head: from_head);
+      if bnot(checked_case_5) {
         set passed = False();
       }
     } else {
@@ -411,20 +395,12 @@ fn case_move(from_head: Bool, to_head: Bool, same: Bool) -> passed: Bool pure wa
       if bor(work.source_expired, work.target_expired) {
         set passed = False();
       }
-      if source < slots^.len {
-        let checked_case_6 = case_original(slot: &slots^[source], length: 2_u64);
-        if bnot(checked_case_6) {
-          set passed = False();
-        }
-      } else {
+      let checked_case_6 = case_original(slot: &slots^[source], length: 2_u64);
+      if bnot(checked_case_6) {
         set passed = False();
       }
-      if destination < slots^.len {
-        let checked_case_7 = case_original(slot: &slots^[destination], length: 8_u64);
-        if bnot(checked_case_7) {
-          set passed = False();
-        }
-      } else {
+      let checked_case_7 = case_original(slot: &slots^[destination], length: 8_u64);
+      if bnot(checked_case_7) {
         set passed = False();
       }
     }
@@ -448,30 +424,26 @@ fn case_move(from_head: Bool, to_head: Bool, same: Bool) -> passed: Bool pure wa
 fn case_move_list(slot: &Option<Entry>, length: u64, first: u8, expires_at: u64, write_stamp: u64) -> same: Bool reads(slot) {
   doc "Checks dataset contents, expiry and write stamp; normal lookup access refresh is allowed.";
   match slot^ {
-    Some(value: held) => {
-      if held^.expires != expires_at {
+    Some(value: held_value) => {
+      if held_value^.expires != expires_at {
         return False();
       }
-      if held^.last_write != write_stamp {
+      if held_value^.last_write != write_stamp {
         return False();
       }
-      match held^.value {
+      match held_value^.value {
         Items(items: list) => {
           if list^.inner.len != length {
             return False();
           }
           for (index in 0_u64..length) {
-            if index < list^.inner.len {
-              let element = &list^.inner[index];
-              if element^.inner.len != 1_u64 {
-                return False();
-              }
-              let offset = cvt.wrap::<u64, u8>(index);
-              let expected = first +wrap offset;
-              if element^.inner[0_u64] != expected {
-                return False();
-              }
-            } else {
+            let element = &list^.inner[index];
+            if element^.inner.len != 1_u64 {
+              return False();
+            }
+            let offset = cvt.wrap::<u64, u8>(index);
+            let expected = first +wrap offset;
+            if element^.inner[0_u64] != expected {
               return False();
             }
           }
@@ -499,20 +471,20 @@ fn case_text_entry() -> made: Option<Entry> pure {
   let payload = case_element(value: 'z'_u8);
   let bytes = Bytes::Long(bytes: move payload);
   let value = Value::Text(bytes: move bytes);
-  let held = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
-  return Some<Entry>(value: move held);
+  let held_value = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
+  return Some<Entry>(value: move held_value);
 }
 
 fn case_text_original(slot: &Option<Entry>) -> same: Bool reads(slot) {
   match slot^ {
-    Some(value: held) => {
-      if held^.expires != 123_u64 {
+    Some(value: held_value) => {
+      if held_value^.expires != 123_u64 {
         return False();
       }
-      if held^.last_write != 789_u64 {
+      if held_value^.last_write != 789_u64 {
         return False();
       }
-      match held^.value {
+      match held_value^.value {
         Text(bytes: stored) => {
           match stored^ {
             Long(bytes: payload) => {
@@ -555,31 +527,23 @@ fn case_move_lookup(from_head: Bool, to_head: Bool, scenario: u64) -> passed: Bo
   }
   let passed = True();
   atomic slots = &map[keys] {
-    if source < slots^.len {
-      if scenario != 0_u64 {
-        set slots^[source] = case_entry(length: 8_u64, capacity: 8_u64);
-        if scenario == 2_u64 {
-          match &slots^[source] {
-            Some(value: live_source) => {
-              set live_source^.expires = 1000_u64;
-            }
-            None() => {
-              set passed = False();
-            }
+    if scenario != 0_u64 {
+      set slots^[source] = case_entry(length: 8_u64, capacity: 8_u64);
+      if scenario == 2_u64 {
+        match &slots^[source] {
+          Some(value: live_source) => {
+            set live_source^.expires = 1000_u64;
+          }
+          None() => {
+            set passed = False();
           }
         }
       }
-    } else {
-      set passed = False();
     }
-    if destination < slots^.len {
-      if scenario == 1_u64 {
-        set slots^[destination] = case_text_entry();
-      } else {
-        set slots^[destination] = case_entry(length: 8_u64, capacity: 8_u64);
-      }
+    if scenario == 1_u64 {
+      set slots^[destination] = case_text_entry();
     } else {
-      set passed = False();
+      set slots^[destination] = case_entry(length: 8_u64, capacity: 8_u64);
     }
     let sequence = pkg::store::sequence_inert();
     let journal = None<pkg::store::AccessJournal>();
@@ -604,54 +568,38 @@ fn case_move_lookup(from_head: Bool, to_head: Bool, scenario: u64) -> passed: Bo
       } else {
         give 'H'_u8;
       }
-      if source < slots^.len {
-        let source_matches = case_move_list(slot: &slots^[source], length: 7_u64, first: remaining_first, expires_at: 1000_u64, write_stamp: 0_u64);
-        if bnot(source_matches) {
-          set passed = False();
-        }
-      } else {
+      let source_matches = case_move_list(slot: &slots^[source], length: 7_u64, first: remaining_first, expires_at: 1000_u64, write_stamp: 0_u64);
+      if bnot(source_matches) {
         set passed = False();
       }
-      if destination < slots^.len {
-        let destination_matches = case_move_list(slot: &slots^[destination], length: 1_u64, first: moved_byte, expires_at: 0_u64, write_stamp: 0_u64);
-        if bnot(destination_matches) {
-          set passed = False();
-        }
-      } else {
+      let destination_matches = case_move_list(slot: &slots^[destination], length: 1_u64, first: moved_byte, expires_at: 0_u64, write_stamp: 0_u64);
+      if bnot(destination_matches) {
         set passed = False();
       }
     } else {
       if bor(work.target_expired, work.changed) {
         set passed = False();
       }
-      if source < slots^.len {
-        if scenario == 0_u64 {
-          match &slots^[source] {
-            Some(..) => {
-              set passed = False();
-            }
-            None() => {
-            }
-          }
-        } else {
-          let source_matches = case_move_list(slot: &slots^[source], length: 8_u64, first: 'A'_u8, expires_at: 123_u64, write_stamp: 789_u64);
-          if bnot(source_matches) {
+      if scenario == 0_u64 {
+        match &slots^[source] {
+          Some(..) => {
             set passed = False();
           }
+          None() => {
+          }
         }
       } else {
-        set passed = False();
-      }
-      if destination < slots^.len {
-        let destination_matches = if scenario == 0_u64 {
-          give case_original(slot: &slots^[destination], length: 8_u64);
-        } else {
-          give case_text_original(slot: &slots^[destination]);
-        }
-        if bnot(destination_matches) {
+        let source_matches = case_move_list(slot: &slots^[source], length: 8_u64, first: 'A'_u8, expires_at: 123_u64, write_stamp: 789_u64);
+        if bnot(source_matches) {
           set passed = False();
         }
+      }
+      let destination_matches = if scenario == 0_u64 {
+        give case_original(slot: &slots^[destination], length: 8_u64);
       } else {
+        give case_text_original(slot: &slots^[destination]);
+      }
+      if bnot(destination_matches) {
         set passed = False();
       }
     }
@@ -749,12 +697,8 @@ fn case_move_room(from_head: Bool, to_head: Bool) -> passed: Bool pure waits {
   set client.now = 1_u64;
   let passed = True();
   atomic slots = &map[keys] {
-    if source < slots^.len {
-      set slots^[source] = case_entry(length: 2_u64, capacity: 8_u64);
-    }
-    if destination < slots^.len {
-      set slots^[destination] = case_entry(length: 7_u64, capacity: 8_u64);
-    }
+    set slots^[source] = case_entry(length: 2_u64, capacity: 8_u64);
+    set slots^[destination] = case_entry(length: 7_u64, capacity: 8_u64);
     let sequence = pkg::store::sequence_inert();
     let journal = None<pkg::store::AccessJournal>();
     let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head);
@@ -764,33 +708,25 @@ fn case_move_room(from_head: Bool, to_head: Bool) -> passed: Bool pure waits {
     if client.state == state_list_full {
       set passed = False();
     }
-    if source < slots^.len {
-      match live_list_size(slot: &slots^[source], now: client.now) {
-        Some(value: length) => {
-          if length != 1_u64 {
-            set passed = False();
-          }
-        }
-        None() => {
+    match live_list_size(slot: &slots^[source], now: client.now) {
+      Some(value: length) => {
+        if length != 1_u64 {
           set passed = False();
         }
       }
-    } else {
-      set passed = False();
+      None() => {
+        set passed = False();
+      }
     }
-    if destination < slots^.len {
-      match live_list_size(slot: &slots^[destination], now: client.now) {
-        Some(value: length) => {
-          if length != 8_u64 {
-            set passed = False();
-          }
-        }
-        None() => {
+    match live_list_size(slot: &slots^[destination], now: client.now) {
+      Some(value: length) => {
+        if length != 8_u64 {
           set passed = False();
         }
       }
-    } else {
-      set passed = False();
+      None() => {
+        set passed = False();
+      }
     }
   }
   lmove_finish(client: &client);

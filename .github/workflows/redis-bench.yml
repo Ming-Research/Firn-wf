@@ -152,7 +152,7 @@ jobs:
   bench:
     name: redis-bench ${{ inputs.mode }} (${{ inputs.runner }})
     runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 150
+    timeout-minutes: 180
     env:
       MODE: ${{ inputs.mode }}
       REVISIONS: ${{ inputs.revisions }}
@@ -417,7 +417,7 @@ jobs:
 
       - name: Measure
         if: ${{ inputs.mode != 'build' }}
-        timeout-minutes: 110
+        timeout-minutes: 150
         env:
           SERVER_CPU_LIST: ${{ inputs.server_cpus }}
           CLIENT_CPU_LIST: ${{ inputs.client_cpus }}
