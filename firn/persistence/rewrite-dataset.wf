@@ -371,7 +371,7 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &[u8], dec
           }
         }
       }
-    } else if offset < block^.len {
+    } else {
       let byte = block^[offset];
       let wide = cvt.wrap::<u8, u64>(byte);
       let part = wide *wrap decoder^.factor;

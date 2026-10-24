@@ -1057,10 +1057,8 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       if bnot(parsed_memory.valid) {
         return unit;
       }
-      if memory_slot < 6_u64 {
-        set memory_given[memory_slot] = 1_u64;
-        set memory_values[memory_slot] = parsed_memory.value;
-      }
+      set memory_given[memory_slot] = 1_u64;
+      set memory_values[memory_slot] = parsed_memory.value;
     } else if which < 32_u64 {
       let slot = parameter_slots[which];
       if slot < 11_u64 {

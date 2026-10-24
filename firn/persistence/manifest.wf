@@ -375,10 +375,8 @@ fn aof_hex(output: &Box<Slots<u8>>, byte: u8) -> result: unit writes(output) {
   let low = wide % 16_u64;
   let high_glyph = aof_hex_digits[high];
   aof_emit(log: output, value: high_glyph);
-  if low < 16_u64 {
-    let low_glyph = aof_hex_digits[low];
-    aof_emit(log: output, value: low_glyph);
-  }
+  let low_glyph = aof_hex_digits[low];
+  aof_emit(log: output, value: low_glyph);
   return unit;
 }
 

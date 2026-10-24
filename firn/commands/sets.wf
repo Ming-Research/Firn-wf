@@ -287,17 +287,15 @@ fn pick_member(members: &HashMap<Key, unit, ceiling>, start: u64) -> found: Opti
   for @scan (step in 0_u64..buckets) {
     let offset = first +wrap step;
     let index = offset % buckets;
-    if index < members^.cells.inner.len {
-      let slot = &members^.cells.inner[index];
-      match slot^ {
-        HashMapFilled(key: member, value: nothing) => {
-          let copied = copy_key(key: member);
-          return Some<Key>(value: move copied);
-        }
-        HashMapVacant() => {
-        }
-        HashMapDeleted() => {
-        }
+    let slot = &members^.cells.inner[index];
+    match slot^ {
+      HashMapFilled(key: member, value: nothing) => {
+        let copied = copy_key(key: member);
+        return Some<Key>(value: move copied);
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
       }
     }
   }
@@ -657,22 +655,20 @@ fn random_members(env: &Client, value: &Entry) -> kind: u64 reads(value), writes
           if remaining == 0_u64 {
             break @buckets;
           }
-          if index < set_of^.cells.inner.len {
-            let slot = &set_of^.cells.inner[index];
-            match slot^ {
-              HashMapFilled(key: member, value: nothing) => {
-                set env^.random = next_random(state: env^.random);
-                let draw = env^.random % remaining;
-                if draw < needed {
-                  reply_text(client: env, text: &member^.bytes);
-                  set needed = needed -wrap 1_u64;
-                }
-                set remaining = remaining -wrap 1_u64;
+          let slot = &set_of^.cells.inner[index];
+          match slot^ {
+            HashMapFilled(key: member, value: nothing) => {
+              set env^.random = next_random(state: env^.random);
+              let draw = env^.random % remaining;
+              if draw < needed {
+                reply_text(client: env, text: &member^.bytes);
+                set needed = needed -wrap 1_u64;
               }
-              HashMapVacant() => {
-              }
-              HashMapDeleted() => {
-              }
+              set remaining = remaining -wrap 1_u64;
+            }
+            HashMapVacant() => {
+            }
+            HashMapDeleted() => {
             }
           }
         }
@@ -1123,39 +1119,37 @@ fn combine(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, posit
           Members(members: set_of) => {
             let buckets = set_of^.cells.inner.len;
             for @buckets (index in 0_u64..buckets) {
-              if index < set_of^.cells.inner.len {
-                let slot = &set_of^.cells.inner[index];
-                match slot^ {
-                  HashMapFilled(key: member, value: nothing) => {
-                    let taken = False();
-                    if wanted {
-                      let others = held_by_others(slots: slots, keys: keys, ranks: ranks, positions: positions, skip: from, member: member, env: env, now: now, every: every);
-                      if every {
-                        set taken = others;
-                      } else {
-                        set taken = bnot(others);
-                      }
+              let slot = &set_of^.cells.inner[index];
+              match slot^ {
+                HashMapFilled(key: member, value: nothing) => {
+                  let taken = False();
+                  if wanted {
+                    let others = held_by_others(slots: slots, keys: keys, ranks: ranks, positions: positions, skip: from, member: member, env: env, now: now, every: every);
+                    if every {
+                      set taken = others;
                     } else {
-                      let known = set_holds(members: result, member: member, keys: env);
-                      set taken = bnot(known);
+                      set taken = bnot(others);
                     }
-                    if taken {
-                      set count = count +wrap 1_u64;
-                      if keep {
-                        let copied = copy_key(key: member);
-                        let put = hash_map_put::<KeyHash, unit, ceiling>(map: result, key: move copied, value: unit, env: env);
-                      }
-                      if limit != 0_u64 {
-                        if count >= limit {
-                          return count;
-                        }
+                  } else {
+                    let known = set_holds(members: result, member: member, keys: env);
+                    set taken = bnot(known);
+                  }
+                  if taken {
+                    set count = count +wrap 1_u64;
+                    if keep {
+                      let copied = copy_key(key: member);
+                      let put = hash_map_put::<KeyHash, unit, ceiling>(map: result, key: move copied, value: unit, env: env);
+                    }
+                    if limit != 0_u64 {
+                      if count >= limit {
+                        return count;
                       }
                     }
                   }
-                  HashMapVacant() => {
-                  }
-                  HashMapDeleted() => {
-                  }
+                }
+                HashMapVacant() => {
+                }
+                HashMapDeleted() => {
                 }
               }
             }
@@ -1881,13 +1875,11 @@ fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64
       at in 0_u64..removed^.inner.len,
       invariant log_extent: log^.inner.len >= log_initial_length
     ) {
-      if at < removed^.inner.len {
-        let position = removed^.inner[at];
-        let place = key_bounds(input: input, args: args, index: position);
-        let key = &input^[place.start..place.end];
-        log_removal(log: log, key: key, budget: budget);
-        set appended = appended +wrap 1_u64;
-      }
+      let position = removed^.inner[at];
+      let place = key_bounds(input: input, args: args, index: position);
+      let key = &input^[place.start..place.end];
+      log_removal(log: log, key: key, budget: budget);
+      set appended = appended +wrap 1_u64;
     }
     if changed {
       log_command(log: log, input: input, args: args, budget: budget);

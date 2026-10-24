@@ -243,44 +243,40 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
   let entries = &keys^[gathered];
   let length = gathered.len;
   for (index in 0_u64..length) {
-    if index < entries^.len {
-      let slot = &entries^[index];
-      match slot^ {
-        Some(value: sampled) => {
-          let expiring = sampled^.expires != 0_u64;
-          let all = bnot(volatile);
-          if bor(all, expiring) {
-            set seen = seen +sat 1_u64;
-            let position = candidates.inner.len;
-            if position >= client^.maxmemory_samples {
-              set position = eviction_draw(client: client, count: seen);
-            }
-            if position < client^.maxmemory_samples {
-              let score = eviction_score(item: sampled, client: client);
-              let owned = scanned_key(keys: &gathered, index: index);
-              let candidate = EvictionCandidate(key: move owned, score: score);
-              if position < candidates.inner.len {
-                set candidates.inner[position] = move candidate;
+    let slot = &entries^[index];
+    match slot^ {
+      Some(value: sampled) => {
+        let expiring = sampled^.expires != 0_u64;
+        let all = bnot(volatile);
+        if bor(all, expiring) {
+          set seen = seen +sat 1_u64;
+          let position = candidates.inner.len;
+          if position >= client^.maxmemory_samples {
+            set position = eviction_draw(client: client, count: seen);
+          }
+          if position < client^.maxmemory_samples {
+            let score = eviction_score(item: sampled, client: client);
+            let owned = scanned_key(keys: &gathered, index: index);
+            let candidate = EvictionCandidate(key: move owned, score: score);
+            if position < candidates.inner.len {
+              set candidates.inner[position] = move candidate;
+            } else {
+              if candidates.inner.len == candidates.inner.cap {
+                let needed = candidates.inner.cap +sat 1_u64;
+                let twice = candidates.inner.cap *sat 2_u64;
+                let capacity = imax(needed, twice);
+                grow(cell: &candidates, capacity: capacity);
+              }
+              if candidates.inner.len < candidates.inner.cap {
+                place_back(window: &candidates.inner, value: move candidate);
               } else {
-                if candidates.inner.len == candidates.inner.cap {
-                  let needed = candidates.inner.cap +sat 1_u64;
-                  let twice = candidates.inner.cap *sat 2_u64;
-                  let capacity = imax(needed, twice);
-                  if capacity >= candidates.inner.cap {
-                    grow(cell: &candidates, capacity: capacity);
-                  }
-                }
-                if candidates.inner.len < candidates.inner.cap {
-                  place_back(window: &candidates.inner, value: move candidate);
-                } else {
-                  let unplaced = move candidate;
-                }
+                let unplaced = move candidate;
               }
             }
           }
         }
-        None() => {
-        }
+      }
+      None() => {
       }
     }
   }

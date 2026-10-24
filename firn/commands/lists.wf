@@ -1012,12 +1012,10 @@ fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: 
       let length = list^.inner.len;
       let found = length;
       for @seek (index in 0_u64..length) {
-        if index < list^.inner.len {
-          let same = element_is(element: &list^.inner[index], input: input, span: pivot);
-          if same {
-            set found = index;
-            break @seek;
-          }
+        let same = element_is(element: &list^.inner[index], input: input, span: pivot);
+        if same {
+          set found = index;
+          break @seek;
         }
       }
       if found >= length {
@@ -2049,11 +2047,9 @@ fn lpos_finish(client: &Client, seek: &Seek, positions: &Box<Slots<u64>>) -> res
   if seek^.counted {
     reply_array(client: client, count: found);
     for @answers (at in 0_u64..found) {
-      if at < positions^.inner.len {
-        let position = positions^.inner[at];
-        let signed = cvt.wrap::<u64, i64>(position);
-        reply_integer(client: client, value: signed);
-      }
+      let position = positions^.inner[at];
+      let signed = cvt.wrap::<u64, i64>(position);
+      reply_integer(client: client, value: signed);
     }
     return unit;
   }
