@@ -1059,7 +1059,7 @@ the pass, the order of the images alternating). The images are those of Run A's
 commits built again: `base` 4e20c1e56df5 (Run A: 540d71af8a4f) and `head` and
 `head-twin` 212f34302ace (Run A: 4850a10247e4), the same release
 `wf-af7665be672d` in both dispatches. Two builds of one commit differ in
-bytes; whether in code layout or only in embedded data was not examined.
+bytes; the section "Two builds of each commit" below examines where.
 
 Per request, head/base and twin/base medians over the 6 passes, the range of
 the 6 in brackets (`compare-counters.csv`; the twin is the same binary as head):
@@ -1096,12 +1096,95 @@ the 6 in brackets (`compare-counters.csv`; the twin is the same binary as head):
   95% interval 0.9836-1.0174 (summary.py ratios over 18 passes), head slower
   than base in 9 of 18 passes and the twin in 10; median server CPU per request
   base 3.279, head 3.294 and twin 3.289 microseconds. set head/base 1.0025,
-  interval 0.9953-1.0098. Run A's mset ratio of 0.9906 was not reproduced.
+  interval 0.9953-1.0098. The mset interval holds both 1 and Run A's 0.9906,
+  so this dispatch did not detect a difference and neither confirms nor
+  contradicts Run A.
 
 Reading: about 0.2% of Run A's 0.9% mset deficit is the added NO-TOUCH test
 (instruction count +0.2% and cycles following it; the rate effect itself is
 deduced, not separated). The rest (0.7%) is not attributed: no counter or
 symbol separates the two binaries beyond what the twin shows, and a second pair
-of builds of the same two commits gave a ratio of 1.0005. Build-to-build
-difference between two binaries is a possibility that fits both rate results
-and that the images differing in bytes does not contradict; it was not tested.
+of builds of the same two commits gave a ratio of 1.0005 with an interval that
+holds both 1 and 0.9906. That the two rate results differ because the builds
+differ in code layout is not supported: the next section shows that two builds
+of one commit have the same code.
+
+#### Two builds of each commit
+
+Question: do two builds of one commit differ in code, so that a rate
+difference between dispatches could come from the build? The comparison was
+asked for in the item's log before it was made: how many bytes differ, in which
+section, and whether `.text` changed. The answer is "yes" if the `.text` size,
+a symbol address or an opcode differs, and "no" if the section headers and the
+symbol table are equal and the instruction streams differ only in operands that
+name data.
+
+Run [40060308360](https://github.com/Ming-Research/Firn-wf/actions/runs/40060308360),
+`redis-bench.yml` mode `build` on a GitHub-hosted runner at c125af8, `base` and
+`base2` both 05f7e89, `head` and `head2` both 5a0a1b9, each name built in a
+worktree of its own with the release `wf-af7665be672d`; the images were
+compared with `cmp -l`, a small ELF reader over the section headers and
+`objdump -d`. The builds were on a hosted runner, not the 14900K, whose builds
+were not kept, so this says nothing about differences that only that machine's
+builds would show.
+
+| pair | bytes | bytes differing | `.rodata` | `.text` | build id | `.rela.dyn` |
+| --- | --- | --- | --- | --- | --- | --- |
+| base, base2 | 1,985,984 | 903 | 857 | 24 | 20 | 2 |
+| head, head2 | 2,023,440 | 4,007 | 3,583 | 379 | 20 | 25 |
+
+For both pairs the section headers and the symbol table are equal, so every
+function has the same address and size; the disassembly has the same number of
+lines, the same address on each, and the same mnemonic on each. The only
+instructions whose text differs are `leaq` with an address relative to `%rip`:
+22 in the base pair and 324 in the head pair, each loading the address of a
+string in `.rodata` that is a few tens of bytes elsewhere in the other build.
+Those strings are listed in another order in `.rodata`; one of them is the
+compiler's temporary directory, named with its process number
+(`/tmp/whitefootc-10706-0/concurrent_map.c` in one head build,
+`/tmp/whitefootc-12836-0/concurrent_map.c` in the other). The `.text` bytes
+that differ are the displacements of those `leaq` instructions.
+
+Reading: two builds of one commit have the same code, at the same addresses, so
+a rate difference between builds of one commit does not come from code layout;
+the only difference is where read-only strings sit, and whether any of them is
+read on the MSET path was not checked. `base` and `head` are different sources
+and differ in code layout (`.text` 1,712,029 and 1,747,101 bytes); this
+comparison cannot say whether that layout accounts for any part of Run A's mset
+cell.
+
+#### Run B1 on the merged head
+
+Run [40060408858](https://github.com/Ming-Research/Firn-wf/actions/runs/40060408858),
+mode `workloads` with `workload_images`, firn only: `base` 05f7e89, `head` and
+`head-twin` 5a0a1b9, tests `limiter-tx` and `setmany-tx`, 50 connections,
+server CPUs 2 and 4, client CPUs 16-31, 18 passes of 10 seconds, at c125af8,
+`summary.py workloads`. No sample was marked client-limited: the median client
+work fraction was 0.26 in `limiter-tx` and 0.16 in `setmany-tx`, with the
+largest 0.267, for every line.
+
+| workload | rate base / head / twin | head/base median | head/base 95% interval | twin/head 95% interval | twin half-width | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| limiter-tx | 609.9k / 606.5k / 611.1k per second | 0.9927 | 0.9882-1.0121 | 0.9961-1.0143 | 0.91% | no detected change |
+| setmany-tx | 341.9k / 337.2k / 336.4k per second | 0.9877 | 0.9746-0.9923 | 0.9828-1.0152 | 1.62% | rejected (wholly slower) |
+
+`setmany-tx` (`MULTI`, one `MSET` of three keys, three `EXPIRE`, `EXEC`): head
+was slower than base in 16 of the 18 passes (head/base per pass 0.943 to
+1.004), the twin in 13; median p99 0.211, 0.222 and 0.223 ms for base, head and
+twin. The twin, the same binary as head, sits as far below base as head does, as
+in Run A's mset cell. `limiter-tx` (`MULTI`, `INCRBY`, `PTTL`, `EXEC`) has the
+same `EXEC` change and shows no detected change (head slower in 11 passes, the
+twin in 7). A fixed cost per `EXEC` would weigh more on `limiter-tx`, whose
+transaction is shorter (4 commands at 609.9k a second against 6 at 341.9k), so
+the `EXEC` change alone does not explain `setmany-tx` (deduced; `limiter-tx`'s
+interval does not exclude a 1% slowdown). Per transaction `limiter-tx` looks up
+two keys and `setmany-tx` six. The first measurement's `setmany-tx` at 9b514d5
+was 0.9927 (0.9761-1.0038, 12 pooled passes of two dispatches), no detected
+change.
+
+Taken with Run A, two cells are rejected, mset and `setmany-tx`, and both run
+`MSET`. Among the 22 cells of Run A and B1 the chance that at least two fall
+wholly on the slow side with no real difference is about 10% (deduced from
+`1 - 0.975^22 - 22 * 0.025 * 0.975^21`, each cell independent and its interval
+exact). The size of each rejected cell and the cause, 0.2% of which is the
+NO-TOUCH test, go to the owner on card firn-q-mset-regression.
