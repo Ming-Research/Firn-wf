@@ -1,0 +1,36 @@
+fn scan_pending(missing: &[Bool], count: u64) -> result: u64 reads(missing) contract {
+  requires count <= 1000_u64;
+  requires missing^.len <= 1000_u64;
+} {
+  doc "Redis XAUTOCLAIM CVE-2022-31144: count deleted and claimed IDs together when bounding the reply. https://github.com/redis/redis/pull/11002";
+  let deleted = box_array_filled::<u64>(count: count, value: 0_u64);
+  let returned = 0_u64;
+  let removed = 0_u64;
+  let scanned = missing^.len;
+  for (
+    at in 0_u64..scanned,
+    invariant reply_limit: returned <= count,
+    invariant deleted_limit: removed <= returned
+  ) {
+    if returned < count {
+      if missing^[at] {
+        set deleted.inner[removed] = at;
+        set removed = removed + 1_u64;
+      }
+      set returned = returned + 1_u64;
+    }
+  }
+  return removed;
+}
+
+fn main() -> status: std::process::ExitStatus pure {
+  let all_missing = True();
+  let entries = array_filled::<Bool, 2>(value: all_missing);
+  let source = &entries[0_u64..2_u64];
+  let removed = scan_pending(missing: source, count: 1_u64);
+  if removed == 1_u64 {
+    return std::process::exit_status(code: 0_u8);
+  } else {
+    return std::process::exit_status(code: 1_u8);
+  }
+}

@@ -1,0 +1,31 @@
+struct User {
+  doc "Valkey ACL LOAD use-after-free with a deferred-free client: https://github.com/valkey-io/valkey/pull/3800 . The client retains an owned frozen handle while the registry releases its handle.";
+  name: Array<u8, 4>;
+}
+
+struct Client {
+  user: Frozen<User>;
+  close_deferred: Bool;
+}
+
+fn acl_load(old_user: Frozen<User>) -> result: unit pure {
+  release::<Frozen<User>>(value: move old_user);
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure {
+  let name = array_filled::<u8, 4>(value: 97_u8);
+  let record = User(name: name);
+  let registry_user = frozen_new::<User>(value: record);
+  let client_user = frozen_share::<User>(frozen: &registry_user);
+  let deferred = True();
+  let client = Client(user: move client_user, close_deferred: deferred);
+  acl_load(old_user: move registry_user);
+  if client.close_deferred {
+    let first_name_byte = client.user.inner.name[0_u64];
+    if first_name_byte != 97_u8 {
+      return std::process::exit_status(code: 1_u8);
+    }
+  }
+  return std::process::exit_status(code: 0_u8);
+}

@@ -21,7 +21,6 @@ alias TcpSend = std::net::TcpSend;
 alias Time = pkg::store::Time;
 alias WallClock = std::time::WallClock;
 alias arg_get = std::text::arg_get;
-alias args_count = std::text::args_count;
 alias bytes_length = pkg::bytes::bytes_length;
 alias bytes_new = pkg::bytes::bytes_new;
 alias client_new = pkg::protocol::client_new;
@@ -37,8 +36,6 @@ alias transaction_new = pkg::commands::transaction_new;
 alias exit_status = std::process::exit_status;
 alias expire_batch = pkg::store::expire_batch;
 alias factory_share = std::io::factory_share;
-alias host_copy_utf8 = std::text::host_copy_utf8;
-alias host_utf8_len = std::text::host_utf8_len;
 alias input_grow = pkg::protocol::input_grow;
 alias input_new = pkg::protocol::input_new;
 alias instant_after = std::time::instant_after;
@@ -64,6 +61,41 @@ alias wall_clock_share = std::time::wall_clock_share;
 alias shutdown_requested = pkg::store::shutdown_requested;
 alias request_shutdown = pkg::store::request_shutdown;
 alias write_log = pkg::persistence::write_log;
+
+const maxclients_reply: Array<u8, 36> = "-ERR max number of clients reached\r\n";
+
+fn reject_client(connection: TcpConnection, factory: &HandleFactory, clock: &Clock) -> result: unit writes(factory), writes(clock) waits {
+  doc "Best-effort maxclients refusal without reading a request or allocating a client handler. Partial writes carry one absolute one-second deadline. Completion or a send error leads to both closes; zero-progress successes give no strict return-time bound.";
+  let TcpConnection(receive: receiver, send: sender) = move connection;
+  let source = &maxclients_reply[0_u64..36_u64];
+  invariant reply_length: source^.len == 36_u64;
+  let began = std::time::now(clock: clock);
+  let bound = instant_after(instant: began, nanoseconds: 1000000000_u64);
+  let deadline = Some<Instant>(value: bound);
+  let never = std::time::cancel_never();
+  let sent = 0_u64;
+  loop @refusing (
+    invariant sent_bound: sent <= 36_u64,
+    invariant source_length: source^.len == 36_u64
+  ) {
+    if sent == 36_u64 {
+      break @refusing;
+    }
+    match send_once(send: &sender, source: source, start: sent, end: 36_u64, deadline: deadline, cancel: &never) {
+      Ok(value: next) => {
+        invariant next_bound: next <= 36_u64;
+        set sent = next;
+      }
+      Err(error: problem) => {
+        break @refusing;
+      }
+    }
+  }
+  std::time::close_cancel_watch(watch: move never);
+  close_receive(factory: factory, receive: move receiver);
+  close_send(factory: factory, send: move sender);
+  return unit;
+}
 
 const accept_error_prefix: Array<u8, 29> = "Accepting client connection: ";
 
@@ -480,7 +512,7 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
 }
 
 fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
-  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
+  doc "Before its first successful subscription, serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A first successful subscription commits the accumulated reply prefix in the event hub and ends these loops before transferring socket, parser, client and transaction ownership to serve_promoted; a connection that never subscribes retains this path. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
   set client.meter = Some<std::process::MemoryMeter>(value: move meter);
@@ -506,6 +538,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let last = nanoseconds_from(earlier: origin, later: started);
   let polled = last;
   let held = 0_u64;
+  let promoted = False();
   loop @requests {
     if client.closing {
       break @requests;
@@ -609,11 +642,16 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         break @commands;
       }
       if parsed.state == 1_u64 {
-        let requested = execute_client(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
+        let requested = execute_client::<0>(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
         if requested {
           std::time::cancel_fire(source: &shutdown);
         }
         pkg::commands::record_memory_peak(store: &store, client: &client);
+        if client.pubsub_id != 0_u64 {
+          set consumed = parsed.next;
+          set promoted = True();
+          break @commands;
+        }
         if client.closing {
           set closing = True();
           break @commands;
@@ -633,6 +671,10 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         }
       }
     }
+    if promoted {
+      set held = keep_rest(input: &input, from: consumed, held: held);
+      break @requests;
+    }
     if client.at > 0_u64 {
       let delivered = flush(send: &connection.send, client: &client, store: &store, clock: &clock, base: woke);
       if delivered {
@@ -645,6 +687,19 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       break @requests;
     }
     set held = keep_rest(input: &input, from: consumed, held: held);
+  }
+  if promoted {
+    std::time::close_cancel_watch(watch: move limits.cancel);
+    let promoted_store = keyspace_share(store: &store);
+    let promoted_clock = clock_share(clock: &clock);
+    let promoted_wall = wall_clock_share(clock: &wall);
+    let promoted_shutdown = std::time::cancel_share(source: &shutdown);
+    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held: held, transaction: move transaction);
+    std::time::close_cancel_source(source: move shutdown);
+    atomic m = &store.meta {
+      set m^.clients = m^.clients -wrap 1_u64;
+    }
+    return unit;
   }
   std::time::close_cancel_watch(watch: move limits.cancel);
   std::time::close_cancel_source(source: move shutdown);
@@ -693,7 +748,7 @@ fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock, cancel: CancelWat
 }
 
 fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, shutdown: CancelSource) -> result: unit pure waits {
-  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, the receive generation fired and the separate shutdown source fired, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. The wait has no deadline: shutdown by another context cancels it, including main stopping after the client limit. Cancellation or another wait failure closes the listener without making a new request.";
+  doc "Waits in a context of its own, from before the append-only file's replay, for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either; during the replay the request is what the replay reads to end early. The listener is closed before the request is recorded, the receive generation fired and the separate shutdown source fired, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops, during the replay too. The wait has no deadline: shutdown by another context cancels it, including main stopping after the client limit or after a replay that did not load or that a request ended. Cancellation or another wait failure closes the listener without making a new request.";
   let heard = False();
   let cancel = std::time::cancel_watch(source: &shutdown);
   let limit = None<Instant>();
@@ -726,8 +781,6 @@ const option_appendfilename: Array<u8, 14> =[65_u8, 80_u8, 80_u8, 69_u8, 78_u8, 
 
 const option_requirepass: Array<u8, 11> =[82_u8, 69_u8, 81_u8, 85_u8, 73_u8, 82_u8, 69_u8, 80_u8, 65_u8, 83_u8, 83_u8];
 
-const option_clients: Array<u8, 7> =[67_u8, 76_u8, 73_u8, 69_u8, 78_u8, 84_u8, 83_u8];
-
 const word_yes: Array<u8, 3> =[89_u8, 69_u8, 83_u8];
 
 const word_no: Array<u8, 2> =[78_u8, 79_u8];
@@ -758,34 +811,35 @@ struct Options {
   port: u64;
   count: u64;
   idle: u64;
+  maxclients: u64;
   logging: Bool;
   aof: Box<Slots<u8>>;
   bind: Box<Slots<u8>>;
   password: Box<Slots<u8>>;
   rewrite_percentage: u64;
   rewrite_min_size: u64;
+  memory: Array<u64, 6>;
   valid: Bool;
 }
 
 fn option_text(args: &std::text::Args, position: u64) -> text: Text reads(args) {
-  doc "The UTF-8 bytes of the invocation argument at a position; valid is false when it is absent, is not UTF-8 or holds more than 65,536 bytes.";
+  doc "Reads an invocation argument as host bytes without a UTF-8 restriction; the configuration syntax operates on bytes as Redis does.";
   let invalid = False();
   match arg_get(args: args, position: position) {
     Ok(value: host) => {
-      match host_utf8_len(value: &host) {
-        Ok(value: length) => {
-          if length <= 65536_u64 {
-            let made = input_new(capacity: length);
-            let window = &made.inner[0_u64..length];
-            match host_copy_utf8(value: &host, destination: window, start: 0_u64, end: length) {
-              Ok(value: next) => {
-                let complete = next == length;
-                return Text(bytes: move made, valid: complete);
-              }
-              Err(error: problem) => {
-              }
-            }
+      let length = std::text::host_bytes_len(value: &host);
+      let made = box_array_filled::<u8>(count: length, value: 0_u8);
+      invariant argument_storage: made.inner.len == length;
+      match std::text::host_copy_bytes(value: &host, destination: &made.inner[0_u64..length], start: 0_u64, end: length) {
+        Ok(value: next) => {
+          invariant copied_endpoint: next <= length;
+          invariant copied_prefix: next <= made.inner.len;
+          let result = config_buffer();
+          config_append(buffer: &result, source: &made.inner[0_u64..next]);
+          if next != length {
+            set result.valid = False();
           }
+          return move result;
         }
         Err(error: problem) => {
         }
@@ -825,18 +879,6 @@ fn dashed(text: &Box<Slots<u8>>) -> marked: Bool reads(text) {
   let two = second == 45_u8;
   let both = band(one, two);
   return both;
-}
-
-fn option_named(text: &Box<Slots<u8>>, word: &[u8]) -> named: Bool reads(text), reads(word) {
-  doc "Whether an argument is -- followed by an option's upper-case name, in either case.";
-  let length = text^.inner.len;
-  if length < 2_u64 {
-    return False();
-  }
-  let window = &text^.inner[0_u64..length];
-  let size = length -wrap 2_u64;
-  let named = name_is(input: window, start: 2_u64, length: size, word: word);
-  return named;
 }
 
 fn spelled(text: &Box<Slots<u8>>, word: &[u8]) -> same: Bool reads(text), reads(word) {
@@ -967,227 +1009,21 @@ const option_rewrite_percentage: Array<u8, 27> = "AUTO-AOF-REWRITE-PERCENTAGE";
 
 const option_rewrite_min_size: Array<u8, 25> = "AUTO-AOF-REWRITE-MIN-SIZE";
 
-fn rewrite_option_size(text: &Box<Slots<u8>>) -> number: Decimal reads(text) {
-  doc "A nonnegative byte count with Redis's b, decimal k, m, g or binary kb, mb, gb suffix, compared in either case.";
-  let end = text^.inner.len;
-  let multiplier = 1_u64;
-  let binary = False();
-  if end > 0_u64 {
-    let last = end -wrap 1_u64;
-    if last < text^.inner.len {
-      let tail = pkg::bytes::lower(byte: text^.inner[last]);
-      if tail == 98_u8 {
-        set binary = True();
-        set end = last;
-      }
-    }
-  }
-  if end > 0_u64 {
-    let last = end -wrap 1_u64;
-    if last < text^.inner.len {
-      let suffix = pkg::bytes::lower(byte: text^.inner[last]);
-      let scale = 1000_u64;
-      if binary {
-        set scale = 1024_u64;
-      }
-      if suffix == 107_u8 {
-        set multiplier = scale;
-        set end = last;
-      } else if suffix == 109_u8 {
-        set multiplier = scale *wrap scale;
-        set end = last;
-      } else if suffix == 103_u8 {
-        let square = scale *wrap scale;
-        set multiplier = square *wrap scale;
-        set end = last;
-      }
-    }
-  }
-  let digits = box_slots_new::<u8>(capacity: end);
-  for (index in 0_u64..end) {
-    if index < text^.inner.len {
-      if digits.inner.len < digits.inner.cap {
-        place_back(window: &digits.inner, value: text^.inner[index]);
-      }
-    }
-  }
-  if multiplier > 0_u64 {
-    let limit = 9223372036854775807_u64 / multiplier;
-    let parsed = decimal(text: &digits, limit: limit);
-    let bytes = parsed.value *wrap multiplier;
-    return Decimal(value: bytes, valid: parsed.valid);
-  }
-  let invalid = False();
-  return Decimal(value: 0_u64, valid: invalid);
-}
-
-fn apply_named(options: &Options, name: Box<Slots<u8>>, value: Box<Slots<u8>>) -> applied: Bool writes(options) {
-  doc "Applies one option given by name to the options, returning false for an unknown name or a value that does not read.";
-  let is_port = option_named(text: &name, word: &option_port[0_u64..4_u64]);
-  let is_bind = option_named(text: &name, word: &option_bind[0_u64..4_u64]);
-  let is_timeout = option_named(text: &name, word: &option_timeout[0_u64..7_u64]);
-  let is_appendonly = option_named(text: &name, word: &option_appendonly[0_u64..10_u64]);
-  let is_appendfilename = option_named(text: &name, word: &option_appendfilename[0_u64..14_u64]);
-  let is_requirepass = option_named(text: &name, word: &option_requirepass[0_u64..11_u64]);
-  let is_clients = option_named(text: &name, word: &option_clients[0_u64..7_u64]);
-  let is_rewrite_percentage = option_named(text: &name, word: &option_rewrite_percentage[0_u64..27_u64]);
-  let is_rewrite_min_size = option_named(text: &name, word: &option_rewrite_min_size[0_u64..25_u64]);
-  if is_rewrite_percentage {
-    let number = decimal(text: &value, limit: 2147483647_u64);
-    set options^.rewrite_percentage = number.value;
-    return number.valid;
-  }
-  if is_rewrite_min_size {
-    let number = rewrite_option_size(text: &value);
-    set options^.rewrite_min_size = number.value;
-    return number.valid;
-  }
-  if is_port {
-    let number = decimal(text: &value, limit: 65535_u64);
-    set options^.port = number.value;
-    return number.valid;
-  }
-  if is_bind {
-    let address = parse_address(text: &value);
-    set options^.bind = move value;
-    return address.valid;
-  }
-  if is_timeout {
-    let number = decimal(text: &value, limit: 2147483647_u64);
-    set options^.idle = number.value;
-    return number.valid;
-  }
-  if is_appendonly {
-    let yes = spelled(text: &value, word: &word_yes[0_u64..3_u64]);
-    let no = spelled(text: &value, word: &word_no[0_u64..2_u64]);
-    set options^.logging = yes;
-    let either = bor(yes, no);
-    return either;
-  }
-  if is_appendfilename {
-    let length = value.inner.len;
-    set options^.aof = move value;
-    let named = length > 0_u64;
-    return named;
-  }
-  if is_requirepass {
-    set options^.password = move value;
-    return True();
-  }
-  if is_clients {
-    let number = decimal(text: &value, limit: 18446744073709551615_u64);
-    set options^.count = number.value;
-    return number.valid;
-  }
-  return False();
-}
-
-fn apply_positional(options: &Options, ordinal: u64, value: Box<Slots<u8>>) -> applied: Bool writes(options) {
-  doc "Applies the argument at an ordinal by position to the options, as firn has always read them: the port, how many clients to accept, the append-only file's name, - or an empty one for none, and the idle limit; false reports a value that does not read.";
-  if ordinal == 0_u64 {
-    let number = decimal(text: &value, limit: 65535_u64);
-    set options^.port = number.value;
-    return number.valid;
-  }
-  if ordinal == 1_u64 {
-    let number = decimal(text: &value, limit: 18446744073709551615_u64);
-    set options^.count = number.value;
-    return number.valid;
-  }
-  if ordinal == 2_u64 {
-    let length = value.inner.len;
-    let none = length == 0_u64;
-    if length == 1_u64 {
-      let only = value.inner[0_u64];
-      if only == 45_u8 {
-        set none = True();
-      }
-    }
-    if none {
-      set options^.logging = False();
-      return True();
-    }
-    set options^.logging = True();
-    set options^.aof = move value;
-    return True();
-  }
-  let number = decimal(text: &value, limit: 2147483647_u64);
-  set options^.idle = number.value;
-  return number.valid;
-}
-
-fn read_options(args: &std::text::Args) -> options: Options reads(args) {
-  doc "Reads firn's invocation. Up to four arguments come by position, as firn has always taken them: the port, how many clients to accept, the append-only file's name or - for none, and the idle limit in seconds. Options by name follow, each -- and a name in either case, then its value: --port; --bind, an IPv4 address or *; --timeout, the idle limit; --appendonly, yes or no; --appendfilename, the file's name, which alone does not turn the file on, as in Redis; --requirepass, the password clients must give, empty for none; and --clients, how many clients to accept before stopping; --auto-aof-rewrite-percentage, zero disabling automatic rewrites; and --auto-aof-rewrite-min-size, a byte count with Redis memory suffixes. A later value replaces an earlier one, one by position included. The defaults are port 6379, the loopback address 127.0.0.1, no idle limit, no append-only file, named appendonly.aof once turned on, no password and no limit on clients. valid is false for an unknown name, a name without its value, an argument by position after one by name or past the fourth, and a value that does not read: a port past 65,535, an idle limit past 2,147,483,647 seconds, Redis's limit, an empty file name, or an argument that is not UTF-8 or holds more than 65,536 bytes.";
-  let total = args_count(args: args);
-  let aof = text_of(word: &default_file[0_u64..14_u64]);
-  let bind = text_of(word: &default_bind[0_u64..9_u64]);
-  let password = box_slots_new::<u8>(capacity: 0_u64);
-  let off = False();
-  let readable = True();
-  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, valid: readable);
-  let position = 1_u64;
-  let ordinal = 0_u64;
-  let named = False();
-  loop @arguments {
-    if position >= total {
-      break @arguments;
-    }
-    let text = option_text(args: args, position: position);
-    let Text(bytes: argument, valid: read) = move text;
-    if read {
-    } else {
-      set options.valid = False();
-      break @arguments;
-    }
-    let marked = dashed(text: &argument);
-    if marked {
-      set named = True();
-      let value_position = position +wrap 1_u64;
-      if value_position >= total {
-        set options.valid = False();
-        break @arguments;
-      }
-      let given = option_text(args: args, position: value_position);
-      let Text(bytes: value, valid: value_read) = move given;
-      if value_read {
-      } else {
-        set options.valid = False();
-        break @arguments;
-      }
-      let applied = apply_named(options: &options, name: move argument, value: move value);
-      if applied {
-      } else {
-        set options.valid = False();
-        break @arguments;
-      }
-      set position = position +wrap 2_u64;
-    } else {
-      let full = ordinal >= 4_u64;
-      let late = bor(named, full);
-      if late {
-        set options.valid = False();
-        break @arguments;
-      }
-      let applied = apply_positional(options: &options, ordinal: ordinal, value: move argument);
-      if applied {
-      } else {
-        set options.valid = False();
-        break @arguments;
-      }
-      set ordinal = ordinal +wrap 1_u64;
-      set position = position +wrap 1_u64;
-    }
-  }
-  return move options;
-}
-
 fn main(inputs: Inputs) -> status: ExitStatus pure waits {
-  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation, which read_options reads, names up to four arguments by position, the port, how many clients to accept, zero for no limit, the append-only file's name or - for none, and the idle limit, then options by name, --port, --bind, --timeout, --appendonly, --appendfilename, --requirepass, --clients, --auto-aof-rewrite-percentage and --auto-aof-rewrite-min-size; an invocation that does not read stops firn with status 1. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
-  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: diagnostics, handles: handles, stdin: unused_stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
+  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation reads an optional Redis configuration file or stdin -, followed by --directive values, with the later directives overriding the file. Maxclients defaults to 10000 and refuses excess connected clients with Redis's error; --firn-clients limits served clients for tests. Invalid invocation or configuration prints its reason and exits 1; include and directory changes beyond dir . or ./ are refused explicitly pending firn-req-host-paths. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from before the append-only file's replay, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; a request the replay sees, at most 1024 commands after it is made, ends firn with status 0, leaving appendonlydir as the replay found it, as Redis 7.2.16 exits while it loads. firn stops with status 3 when the host refuses it those signals, before it replays anything, or when it cannot listen on its address.";
+  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: stderr, handles: handles, stdin: stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
   let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
-  let options = read_options(args: &args);
+  let options = read_options(args: &args, factory: &handles, root: &cwd, input: &stdin, output: &stderr);
   if options.valid {
   } else {
+    close_directory_write(factory: &handles, directory: move cwd_write);
+    close_directory(factory: &handles, directory: move cwd);
+    return exit_status(code: 1_u8);
+  }
+  let no_port = options.port == 0_u64;
+  let no_bind = options.bind.inner.len == 0_u64;
+  if bor(no_port, no_bind) {
+    config_write(factory: &handles, output: &stderr, bytes: &config_no_listener[0_u64..44_u64]);
     close_directory_write(factory: &handles, directory: move cwd_write);
     close_directory(factory: &handles, directory: move cwd);
     return exit_status(code: 1_u8);
@@ -1212,13 +1048,41 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let quiet = False();
   let startup = read_time(wall: &wall_clock);
   let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms);
+  atomic v = &root.server {
+    set v^.maxclients = options.maxclients;
+    set v^.memory.maxmemory = options.memory[0_u64];
+    set v^.memory.maxmemory_policy = options.memory[1_u64];
+    set v^.memory.maxmemory_samples = options.memory[2_u64];
+    set v^.memory.lfu_log_factor = options.memory[3_u64];
+    set v^.memory.lfu_decay_time = options.memory[4_u64];
+    set v^.memory.maxmemory_eviction_tenacity = options.memory[5_u64];
+  }
   atomic m = &root.meta {
     set m^.aof_rewrite_percentage = options.rewrite_percentage;
     set m^.aof_rewrite_min_size = options.rewrite_min_size;
   }
   let logging = False();
   let failed = False();
+  let interrupted = False();
   let shutdown = std::time::cancel_source();
+  let hearing = True();
+  match stop_listen(factory: &handles, stops: &stops) {
+    Ok(value: stop_listener) => {
+      let stop_factory = factory_share(factory: &handles);
+      let stop_store = keyspace_share(store: &root);
+      let stop_shutdown = std::time::cancel_share(source: &shutdown);
+      spawn stop_on_signal(listener: move stop_listener, factory: move stop_factory, store: move stop_store, shutdown: move stop_shutdown);
+    }
+    Err(error: stop_problem) => {
+      set hearing = False();
+    }
+  }
+  if hearing {
+  } else {
+    close_directory_write(factory: &handles, directory: move cwd_write);
+    close_directory(factory: &handles, directory: move cwd);
+    return exit_status(code: 3_u8);
+  }
   if options.logging {
     let read = read_time(wall: &wall_clock);
     let replaying = True();
@@ -1233,16 +1097,34 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
         spawn write_log(store: move writer_store, factory: move writer_factory, log: move started_log, clock: move writer_clock, time: time, meter: move writer_meter);
       }
       Err(error: problem) => {
-        set failed = True();
+        match problem {
+          Failed() => {
+            set failed = True();
+          }
+          Interrupted() => {
+            set interrupted = True();
+          }
+        }
       }
     }
   }
   close_directory_write(factory: &handles, directory: move cwd_write);
   close_directory(factory: &handles, directory: move cwd);
   if failed {
+    std::time::cancel_fire(source: &shutdown);
     return exit_status(code: 4_u8);
   }
+  if interrupted {
+    std::time::cancel_fire(source: &shutdown);
+    return exit_status(code: 0_u8);
+  }
   let keyspace = keyspace_logging(store: &root, logging: logging);
+  let delivery_hub = pkg::connection_events::hub_share(hub: &keyspace.pubsub);
+  spawn pkg::connection_events::dispatch(hub: move delivery_hub);
+  let timing_hub = pkg::connection_events::hub_share(hub: &keyspace.pubsub);
+  let timing_clock = clock_share(clock: &clock);
+  let timing_wall = wall_clock_share(clock: &wall_clock);
+  spawn pkg::connection_events::timer(hub: move timing_hub, clock: move timing_clock, wall: move timing_wall);
   let expiring_store = keyspace_share(store: &keyspace);
   let expiring_clock = clock_share(clock: &clock);
   let expiring_wall = wall_clock_share(clock: &wall_clock);
@@ -1250,113 +1132,110 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   spawn expire_keys(store: move expiring_store, clock: move expiring_clock, wall: move expiring_wall, cancel: move expiring_cancel);
   let address = socket_address_v4(a: listen_at.a, b: listen_at.b, c: listen_at.c, d: listen_at.d, port: port);
   let listened = True();
-  match stop_listen(factory: &handles, stops: &stops) {
-    Ok(value: stop_listener) => {
-      let stop_factory = factory_share(factory: &handles);
-      let stop_store = keyspace_share(store: &keyspace);
-      let stop_shutdown = std::time::cancel_share(source: &shutdown);
-      spawn stop_on_signal(listener: move stop_listener, factory: move stop_factory, store: move stop_store, shutdown: move stop_shutdown);
-    }
-    Err(error: stop_problem) => {
-      set listened = False();
-    }
-  }
-  if listened {
-    match tcp_listen(factory: &handles, address: &address) {
-      Ok(value: listener) => {
-        let accepted = 0_u64;
-        let cancel = std::time::cancel_watch(source: &shutdown);
-        let next_diagnostic = None<Instant>();
-        let suppressed_errors = 0_u64;
-        loop @accepting {
-          if count != 0_u64 {
-            if accepted >= count {
-              break @accepting;
-            }
-          }
-          if shutdown_requested(store: &keyspace) {
+  match tcp_listen(factory: &handles, address: &address) {
+    Ok(value: listener) => {
+      let accepted = 0_u64;
+      let cancel = std::time::cancel_watch(source: &shutdown);
+      let next_diagnostic = None<Instant>();
+      let suppressed_errors = 0_u64;
+      loop @accepting {
+        if count != 0_u64 {
+          if accepted >= count {
             break @accepting;
           }
-          let limit = None<Instant>();
-          match tcp_accept(factory: &handles, listener: &listener, deadline: limit, cancel: &cancel) {
-            Ok(value: next) => {
-              let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
-              if shutdown_requested(store: &keyspace) {
-                let TcpConnection(receive: receiver, send: sender) = move connection;
-                close_receive(factory: &handles, receive: move receiver);
-                close_send(factory: &handles, send: move sender);
-                break @accepting;
-              }
-              let factory = factory_share(factory: &handles);
-              let handle = keyspace_share(store: &keyspace);
-              let serving_clock = clock_share(clock: &clock);
-              let serving_wall = wall_clock_share(clock: &wall_clock);
-              let serving_meter = std::process::meter_share(meter: &memory_meter);
-              let serving_settings = settings_copy(settings: &settings);
-              let id = accepted +wrap 1_u64;
-              atomic m = &keyspace.meta {
+        }
+        if shutdown_requested(store: &keyspace) {
+          break @accepting;
+        }
+        let limit = None<Instant>();
+        match tcp_accept(factory: &handles, listener: &listener, deadline: limit, cancel: &cancel) {
+          Ok(value: next) => {
+            let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
+            if shutdown_requested(store: &keyspace) {
+              let TcpConnection(receive: receiver, send: sender) = move connection;
+              close_receive(factory: &handles, receive: move receiver);
+              close_send(factory: &handles, send: move sender);
+              break @accepting;
+            }
+            let admitted = False();
+            let required = False();
+            atomic m = &keyspace.meta, v = &keyspace.server {
+              if m^.clients < v^.maxclients {
                 set m^.clients = m^.clients +wrap 1_u64;
-              }
-              let required = False();
-              atomic v = &keyspace.server {
                 set v^.connections = v^.connections +wrap 1_u64;
                 let length = bytes_length(bytes: &v^.password);
                 set required = length > 0_u64;
-              }
-              set accepted = accepted +wrap 1_u64;
-              let serving_shutdown = std::time::cancel_share(source: &shutdown);
-              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
-            }
-            Err(error: problem) => {
-              let cancelled = IoError::Cancelled();
-              if problem == cancelled {
-                break @accepting;
-              }
-              if shutdown_requested(store: &keyspace) {
-                break @accepting;
-              }
-              let observed = std::time::now(clock: &clock);
-              let log_due = match next_diagnostic {
-                Some(value: diagnostic_bound) => {
-                  give std::time::instant_reached(deadline: diagnostic_bound, instant: observed);
-                }
-                None() => {
-                  give True();
-                }
-              }
-              if log_due {
-                log_accept_error(factory: &handles, output: &diagnostics, error: &problem, suppressed: suppressed_errors, clock: &clock, cancel: &cancel);
-                set suppressed_errors = 0_u64;
-                let logged = std::time::now(clock: &clock);
-                let next_bound = instant_after(instant: logged, nanoseconds: 1000000000_u64);
-                set next_diagnostic = Some<Instant>(value: next_bound);
+                set admitted = True();
               } else {
-                set suppressed_errors = suppressed_errors +sat 1_u64;
+                set v^.rejected_connections = v^.rejected_connections +wrap 1_u64;
               }
-              if accept_error_needs_pause(error: &problem) {
-                let retry_from = std::time::now(clock: &clock);
-                let retry_at = instant_after(instant: retry_from, nanoseconds: 100000000_u64);
-                match sleep_until(deadline: retry_at, cancel: &cancel) {
-                  Ok(value: rested) => {
-                  }
-                  Err(error: stopped) => {
-                    break @accepting;
-                  }
+            }
+            if admitted {
+            } else {
+              reject_client(connection: move connection, factory: &handles, clock: &clock);
+              continue @accepting;
+            }
+            let factory = factory_share(factory: &handles);
+            let handle = keyspace_share(store: &keyspace);
+            let serving_clock = clock_share(clock: &clock);
+            let serving_wall = wall_clock_share(clock: &wall_clock);
+            let serving_meter = std::process::meter_share(meter: &memory_meter);
+            let serving_settings = settings_copy(settings: &settings);
+            let id = accepted +wrap 1_u64;
+            set accepted = accepted +wrap 1_u64;
+            let serving_shutdown = std::time::cancel_share(source: &shutdown);
+            spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
+          }
+          Err(error: problem) => {
+            let cancelled = IoError::Cancelled();
+            if problem == cancelled {
+              break @accepting;
+            }
+            if shutdown_requested(store: &keyspace) {
+              break @accepting;
+            }
+            let observed = std::time::now(clock: &clock);
+            let log_due = match next_diagnostic {
+              Some(value: diagnostic_bound) => {
+                give std::time::instant_reached(deadline: diagnostic_bound, instant: observed);
+              }
+              None() => {
+                give True();
+              }
+            }
+            if log_due {
+              log_accept_error(factory: &handles, output: &stderr, error: &problem, suppressed: suppressed_errors, clock: &clock, cancel: &cancel);
+              set suppressed_errors = 0_u64;
+              let logged = std::time::now(clock: &clock);
+              let next_bound = instant_after(instant: logged, nanoseconds: 1000000000_u64);
+              set next_diagnostic = Some<Instant>(value: next_bound);
+            } else {
+              set suppressed_errors = suppressed_errors +sat 1_u64;
+            }
+            if accept_error_needs_pause(error: &problem) {
+              let retry_from = std::time::now(clock: &clock);
+              let retry_at = instant_after(instant: retry_from, nanoseconds: 100000000_u64);
+              match sleep_until(deadline: retry_at, cancel: &cancel) {
+                Ok(value: rested) => {
+                }
+                Err(error: stopped) => {
+                  break @accepting;
                 }
               }
             }
           }
         }
-        std::time::close_cancel_watch(watch: move cancel);
-        close_listener(factory: &handles, listener: move listener);
       }
-      Err(error: problem) => {
-        set listened = False();
-      }
+      std::time::close_cancel_watch(watch: move cancel);
+      close_listener(factory: &handles, listener: move listener);
+    }
+    Err(error: problem) => {
+      set listened = False();
     }
   }
   atomic m = &keyspace.meta when m^.clients == 0_u64 {
   }
+  pkg::connection_events::hub_stop(hub: &keyspace.pubsub);
   let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
     set m^.stopping = True();

@@ -5,8 +5,9 @@
 # `setup` before the cases and `teardown` after them, whatever they did.
 #
 # usage: aof_sync_fault_device.sh setup MOUNT OWNER
-#        aof_sync_fault_device.sh fail | heal | remount | reset
+#        aof_sync_fault_device.sh fail | heal | remount | reset | fill | unfill
 #        aof_sync_fault_device.sh check-writeback MOUNT
+#        aof_sync_fault_device.sh bind SOURCE TARGET | unbind TARGET
 #        aof_sync_fault_device.sh teardown MOUNT
 #
 #   setup    makes a 64 MiB loop file, puts device-mapper device
@@ -30,10 +31,19 @@
 #            mount, give the mount to the OWNER `setup` was given), so that
 #            a case whose metadata was lost cannot break the next; each case
 #            calls it before it starts
+#   fill     allocates the remaining blocks to a disposable file until the
+#            kernel returns ENOSPC; the rewrite cases stop the rewrite worker
+#            first, then observe ENOSPC on its temporary file after resuming
+#   unfill   removes that file, leaving the server's files alone
 #   check-writeback MOUNT
 #            the self-check of the writeback setting: creates a file on
 #            MOUNT, fails the device for 40 s with no fsync, heals, remounts
 #            and requires the file and undamaged metadata
+#   bind SOURCE TARGET
+#            covers the healthy old-increment pathname with SOURCE on the
+#            faulty device before startup; the manifest stays healthy
+#   unbind TARGET
+#            removes a registered binding after its server has stopped
 #   teardown unmounts MOUNT, removes the device-mapper device, detaches the
 #            loop device, deletes the image and restores the writeback
 #            settings; each step is skipped when
@@ -77,6 +87,9 @@ device=/dev/mapper/$name
 # image, the saved vm.dirty_writeback_centisecs, the saved
 # vm.dirty_expire_centisecs and the owner of the mount.
 state=/var/tmp/$name.state
+# File bindings the isolated close-sync case owns, for teardown after a
+# killed test process as well as its normal, ordered cleanup.
+bindings=/var/tmp/$name.bindings
 writeback=/proc/sys/vm/dirty_writeback_centisecs
 expire=/proc/sys/vm/dirty_expire_centisecs
 
@@ -118,7 +131,55 @@ heal() {
 }
 
 mount_point() {
-    findmnt -n -o TARGET --source "$device"
+    findmnt -n -o TARGET --source "$device" --first-only
+}
+
+# Only a regular file below the live fault mount may cover an existing
+# regular file on another filesystem. Directories, links and newline paths
+# are refused; the registry is root-owned and names only these test mounts.
+bind_file() {
+    local source target root
+    source=$(realpath -e -- "$1")
+    target=$(realpath -e -- "$2")
+    root=$(mount_point)
+    [[ "$1" = "$source" && "$2" = "$target" && "$source" = "$root/"* ]] || return 1
+    [[ "$source" != *$'\n'* && "$target" != *$'\n'* ]] || return 1
+    [ -f "$source" ] && [ -f "$target" ] || return 1
+    [ "$(stat -c %d "$source")" = "$(stat -c %d "$root")" ] || return 1
+    [ "$(stat -c %d "$target")" != "$(stat -c %d "$root")" ] || return 1
+    ! findmnt -rn --mountpoint "$target" >/dev/null || return 1
+    # Register before mounting so teardown also finds a partially failed bind.
+    printf '%s\n' "$target" >>"$bindings"
+    mount --bind "$source" "$target"
+}
+
+unbind_file() {
+    local target=$1
+    [ -f "$bindings" ] && grep -Fxq -- "$target" "$bindings" || return 1
+    if findmnt -rn --mountpoint "$target" >/dev/null; then
+        umount -- "$target"
+    fi
+    # Keep an entry until its unmount succeeded: a failed cleanup must leave
+    # enough information for the workflow's teardown.
+    python3 -I - "$bindings" "$target" <<'EOF'
+import pathlib, sys
+registry, target = pathlib.Path(sys.argv[1]), sys.argv[2]
+registry.write_text(''.join(line + '\n' for line in registry.read_text().splitlines() if line != target))
+EOF
+}
+
+unbind_all() {
+    local target
+    [ -f "$bindings" ] || return 0
+    while IFS= read -r target; do
+        [ -n "$target" ] || continue
+        if findmnt -rn --mountpoint "$target" >/dev/null; then
+            if ! umount -- "$target"; then
+                [ "${1:-}" = lazy ] && umount -l -- "$target" || return 1
+            fi
+        fi
+    done <"$bindings"
+    rm -f "$bindings"
 }
 
 # Run on the unmounted device. -n changes nothing; any exit status but 0
@@ -144,10 +205,41 @@ reset() {
     { read -r loop && read -r image && read -r wb && read -r exp && read -r owner; } <"$state"
     target=$(mount_point)
     heal >/dev/null
+    unbind_all
     umount "$target"
     mkfs.ext4 -q -F -O ^has_journal "$device"
     mount -o errors=continue "$device" "$target"
     chown "$owner" "$target"
+}
+
+# Real allocation, not a sparse file or RLIMIT_FSIZE (which returns EFBIG).
+# Keep the allocation durable so a later remount tests the server's files,
+# without a filesystem-wide write failure losing unrelated metadata.
+fill() {
+    python3 -I - "$(mount_point)/rewrite-fault-filler" <<'EOF'
+import errno, os, sys
+
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+offset = 0
+try:
+    for chunk in (1024 * 1024, 4096):
+        while True:
+            try:
+                os.posix_fallocate(fd, offset, chunk)
+                offset += chunk
+            except OSError as error:
+                if error.errno != errno.ENOSPC:
+                    raise
+                break
+    os.fsync(fd)
+    print(f"rewrite-fault fill: allocated {offset} bytes; final allocation failed with ENOSPC")
+finally:
+    os.close(fd)
+EOF
+}
+
+unfill() {
+    rm -f "$(mount_point)/rewrite-fault-filler"
 }
 
 # Shows that no periodic writeback reaches the failing device: a file made
@@ -184,20 +276,25 @@ import errno, os, subprocess, sys
 
 path, script = sys.argv[1], sys.argv[2]
 
-def sync_fails(fd, what):
+def sync_fails(fd, what, sync=os.fsync):
     try:
-        os.fsync(fd)
+        sync(fd)
     except OSError as error:
         if error.errno != errno.EIO:
-            sys.exit(f"{what}: fsync failed with {error!r}, not EIO")
-        print(f"probe: {what}: fsync failed with EIO")
+            sys.exit(f"{what}: sync failed with {error!r}, not EIO")
+        print(f"probe: {what}: sync failed with EIO")
         return
-    sys.exit(f"{what}: fsync succeeded on the failing device")
+    sys.exit(f"{what}: sync succeeded on the failing device")
 
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
 os.write(fd, b"before\n")
 os.fsync(fd)
 subprocess.run([script, "fail"], check=True)
+# The close-sync case writes nothing after the fault. Both servers use
+# fdatasync on Linux; verify both it and fsync on this already-synced inode.
+# Check this independently of failed dirty-page writeback below.
+sync_fails(fd, "clean file fsync")
+sync_fails(fd, "clean file fdatasync", os.fdatasync)
 written = os.write(fd, b"during\n")
 if written != 7:
     sys.exit(f"write on the failing device wrote {written} of 7 bytes")
@@ -210,6 +307,7 @@ for attempt in range(1, 4):
     sync_fails(fd, f"repeat {attempt}, nothing new written")
 subprocess.run([script, "heal"], check=True)
 os.fsync(fd)
+os.fdatasync(fd)
 print("probe: fsync on the healed device succeeded")
 os.close(fd)
 os.unlink(path)
@@ -225,6 +323,12 @@ teardown() {
     if [ -f "$state" ]; then
         { read -r loop && read -r image && read -r wb && read -r exp && read -r owner; } <"$state" || true
     fi
+    if dmsetup info "$name" >/dev/null 2>&1; then
+        heal >/dev/null 2>&1 || true
+    fi
+    # Release file bindings before their source filesystem; otherwise a
+    # killed case keeps the device busy after its main mount disappears.
+    unbind_all lazy || true
     if findmnt -n "$target" >/dev/null 2>&1; then
         umount "$target" 2>/dev/null || umount -l "$target" || true
     fi
@@ -297,6 +401,10 @@ case $action in
     heal) [ $# -eq 0 ] || usage; heal ;;
     remount) [ $# -eq 0 ] || usage; remount ;;
     reset) [ $# -eq 0 ] || usage; reset ;;
+    bind) [ $# -eq 2 ] || usage; bind_file "$1" "$2" ;;
+    unbind) [ $# -eq 1 ] || usage; unbind_file "$1" ;;
+    fill) [ $# -eq 0 ] || usage; fill ;;
+    unfill) [ $# -eq 0 ] || usage; unfill ;;
     check-writeback) [ $# -eq 1 ] || usage; check_writeback "$1" ;;
     teardown) [ $# -eq 1 ] || usage; teardown "$1" ;;
     *) usage ;;

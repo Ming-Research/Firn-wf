@@ -1,0 +1,291 @@
+alias Bytes = pkg::bytes::Bytes;
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias Key = pkg::bytes::Key;
+alias Keyspace = pkg::store::Keyspace;
+alias Rank = pkg::store::Rank;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias arg = pkg::protocol::arg;
+alias bytes_length = pkg::bytes::bytes_length;
+alias bytes_new = pkg::bytes::bytes_new;
+alias ceiling = pkg::store::ceiling;
+alias hash_map_each = std::collections::hash_map::hash_map_each;
+alias name_code = pkg::bytes::name_code;
+alias ordered_map_each = std::collections::ordered_map::ordered_map_each;
+alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
+alias read_integer = pkg::bytes::read_integer;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_text = pkg::protocol::reply_text;
+alias reply_wrong_type = pkg::protocol::reply_wrong_type;
+
+const arity_collection_scan: i64 = -3_i64;
+
+const code_hscan: u64 = 336102380360_u64;
+
+const code_sscan: u64 = 336102380371_u64;
+
+const code_zscan: u64 = 336102380378_u64;
+
+const collection_scan_zero: Array<u8, 1> = "0";
+
+struct CollectionScanVisit {
+  pattern: Bytes;
+  matching: Bool;
+  emitting: Bool;
+  compact_scores: Bool;
+  count: u64;
+  client: Client;
+}
+
+fn collection_scan_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: ScanPlan reads(input), reads(args) {
+  doc "Redis 7.2.16 scanGenericCommand accepts only MATCH and COUNT for collection scans, with the last repeated option winning; options are checked only after a live correctly typed lookup.";
+  let absent = Span(start: 0_u64, length: 0_u64);
+  let no = False();
+  let plan = ScanPlan(cursor: 0_u64, count: 10_u64, pattern: absent, matching: no, kind: 0_u64, state: 1_u64);
+  let index = 3_u64;
+  loop {
+    if index >= args^.inner.len {
+      break;
+    }
+    let following = index +wrap 1_u64;
+    if following >= args^.inner.len {
+      set plan.state = 4_u64;
+      return plan;
+    }
+    let option = arg(args: args, index: index);
+    let length = before_zero(input: input, span: option);
+    let code = name_code(input: input, start: option.start, length: length);
+    let value = arg(args: args, index: following);
+    if code == 362091466563_u64 {
+      let number = read_integer(input: input, start: value.start, length: value.length);
+      if number.state == 0_u64 {
+        set plan.state = 3_u64;
+        return plan;
+      }
+      if number.value < 1_i64 {
+        set plan.state = 4_u64;
+        return plan;
+      }
+      set plan.count = cvt.wrap::<i64, u64>(number.value);
+    } else if code == 310367240525_u64 {
+      set plan.pattern = value;
+      set plan.matching = True();
+    } else {
+      set plan.state = 4_u64;
+      return plan;
+    }
+    set index = index +wrap 2_u64;
+  }
+  return plan;
+}
+
+fn collection_scan_cursor(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> accepted: Bool reads(input), reads(args), writes(client) {
+  doc "The cursor is parsed before lookup, even for a missing or wrong-type key. This provisional full traversal accepts every Redis cursor and terminates with zero.";
+  let span = arg(args: args, index: 2_u64);
+  let parsed = scan_cursor(input: input, span: span);
+  if parsed.valid {
+    return True();
+  }
+  reply_error(client: client, word: &text_invalid_cursor[0_u64..18_u64]);
+  return False();
+}
+
+fn collection_scan_matches(pattern: &[u8], name: &Bytes) -> matched: Bool reads(pattern), reads(name) {
+  let span = Span(start: 0_u64, length: pattern^.len);
+  match name^ {
+    Short(bytes: short) => {
+      return scan_matches(input: pattern, pattern: span, key: &short^[0_u64..short^.len]);
+    }
+    Long(bytes: long) => {
+      return scan_matches(input: pattern, pattern: span, key: &long^.inner[0_u64..long^.inner.len]);
+    }
+  }
+}
+
+fn collection_scan_wanted(env: &CollectionScanVisit, name: &Bytes) -> wanted: Bool reads(env.pattern), reads(env.matching), reads(name) {
+  if bnot(env^.matching) {
+    return True();
+  }
+  match env^.pattern {
+    Short(bytes: short) => {
+      return collection_scan_matches(pattern: &short^[0_u64..short^.len], name: name);
+    }
+    Long(bytes: long) => {
+      return collection_scan_matches(pattern: &long^.inner[0_u64..long^.inner.len], name: name);
+    }
+  }
+}
+
+fn collection_scan_member(env: &CollectionScanVisit, key: &Key, value: &unit) -> result: unit reads(key), writes(env) {
+  if collection_scan_wanted(env: env, name: &key^.bytes) {
+    if env^.emitting {
+      reply_text(client: &env^.client, text: &key^.bytes);
+    } else {
+      set env^.count = env^.count +wrap 1_u64;
+    }
+  }
+  return unit;
+}
+
+fn collection_scan_field(env: &CollectionScanVisit, key: &Key, value: &Bytes) -> result: unit reads(key), reads(value), writes(env) {
+  if collection_scan_wanted(env: env, name: &key^.bytes) {
+    if env^.emitting {
+      reply_text(client: &env^.client, text: &key^.bytes);
+      reply_text(client: &env^.client, text: value);
+    } else {
+      set env^.count = env^.count +wrap 2_u64;
+    }
+  }
+  return unit;
+}
+
+fn collection_scan_rank(env: &CollectionScanVisit, key: &Rank, value: &unit) -> result: unit reads(key), writes(env) {
+  doc "ZSCAN scores remain bulk strings under RESP3 too. Before emission every member, including those excluded by MATCH, contributes to the current-size classification: at most 128 members and every member at most 64 bytes uses the compact writer, otherwise %.17g.";
+  if bnot(env^.emitting) {
+    let length = bytes_length(bytes: &key^.member.bytes);
+    if length > 64_u64 {
+      set env^.compact_scores = False();
+    }
+  }
+  if collection_scan_wanted(env: env, name: &key^.member.bytes) {
+    if env^.emitting {
+      reply_text(client: &env^.client, text: &key^.member.bytes);
+      if env^.compact_scores {
+        let compact = box_slots_new::<u8>(capacity: 32_u64);
+        pkg::scores::append_double_text(out: &compact, x: key^.score);
+        let length = compact.inner.len;
+        reply_bulk_input(client: &env^.client, input: &compact.inner[0_u64..length], start: 0_u64, length: length);
+      } else {
+        let precise = pkg::scores::score_bytes_17g(score: key^.score);
+        reply_text(client: &env^.client, text: &precise);
+      }
+    } else {
+      set env^.count = env^.count +wrap 2_u64;
+    }
+  }
+  return unit;
+}
+
+fn collection_scan_header(client: &Client, count: u64) -> result: unit writes(client) {
+  reply_array(client: client, count: 2_u64);
+  reply_bulk_input(client: client, input: &collection_scan_zero[0_u64..1_u64], start: 0_u64, length: 1_u64);
+  reply_array(client: client, count: count);
+  return unit;
+}
+
+fn collection_scan_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, client: &Client, expected: u64) -> lapsed: Bool reads(access_key), reads(input), reads(args), writes(sequence), writes(journal), writes(slot), writes(client) {
+  doc "Collection scans follow firn's existing element order and return every matching element with cursor zero. coord-wfbl-02-01 tracks the missing std HashMap resumable scan: above Redis's compact thresholds this path is unbounded work per call, to be replaced when that interface exists. Both traversals share this entry hold, so their counts and replies describe one collection.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, capture_key: access_key, slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if kind == 0_u64 {
+    collection_scan_header(client: client, count: 0_u64);
+    return removed;
+  }
+  if kind != expected {
+    reply_wrong_type(client: client);
+    return removed;
+  }
+  let plan = collection_scan_plan(input: input, args: args);
+  let refused = scan_refused(client: client, plan: &plan);
+  if refused {
+    return removed;
+  }
+  let pattern = bytes_new(input: input, start: plan.pattern.start, length: plan.pattern.length);
+  let temporary_client = pkg::protocol::client_new(capacity: 0_u64);
+  let no = False();
+  let visit = CollectionScanVisit(pattern: move pattern, matching: plan.matching, emitting: no, compact_scores: no, count: 0_u64, client: move temporary_client);
+  swap(first: client, second: &visit.client);
+  match slot^ {
+    Some(value: held) => {
+      match held^.value {
+        Members(members: set_of) => {
+          hash_map_each::<Key, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, env: &visit);
+          collection_scan_header(client: &visit.client, count: visit.count);
+          set visit.emitting = True();
+          hash_map_each::<Key, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, env: &visit);
+        }
+        Fields(fields: hash_of) => {
+          hash_map_each::<Key, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, env: &visit);
+          collection_scan_header(client: &visit.client, count: visit.count);
+          set visit.emitting = True();
+          hash_map_each::<Key, Bytes, CollectionScanVisit, fn collection_scan_field, ceiling>(map: hash_of, env: &visit);
+        }
+        Ranked(ranked: sorted) => {
+          let cardinality = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
+          set visit.compact_scores = cardinality <= 128_u64;
+          ordered_map_each::<Rank, unit, CollectionScanVisit, fn collection_scan_rank, ceiling>(map: &sorted^.order, env: &visit);
+          collection_scan_header(client: &visit.client, count: visit.count);
+          set visit.emitting = True();
+          ordered_map_each::<Rank, unit, CollectionScanVisit, fn collection_scan_rank, ceiling>(map: &sorted^.order, env: &visit);
+        }
+        Stream(..) => {
+        }
+        Text(..) => {
+        }
+        Items(..) => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  swap(first: client, second: &visit.client);
+  return removed;
+}
+
+fn run_collection_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, expected: u64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  let accepted = collection_scan_cursor(input: input, args: args, client: client);
+  if bnot(accepted) {
+    return unit;
+  }
+  let journal = None<pkg::store::AccessJournal>();
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let sequence = if store^.logging {
+      let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let lapsed = collection_scan_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, args: args, client: client, expected: expected);
+    if store^.logging {
+      let budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let appended = ttl_meta(log: &m^.log, logged: store^.logging, removed: lapsed, key: key, budget: &budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
+    }
+  }
+  return unit;
+}
+
+fn script_collection_scan(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, expected: u64) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} {
+  let accepted = collection_scan_cursor(input: input, args: args, client: client);
+  if bnot(accepted) {
+    return 0_u64;
+  }
+  let ready = script_entries_ready(kind: kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+  if bnot(ready) {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let rank = script_key_rank(keys: declared, key: key);
+  if rank >= keys^.len {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  set client^.now = time^.check;
+  let lapsed = collection_scan_body(sequence: sequence, journal: journal, access_key: key, slot: &keys^[rank], input: input, args: args, client: client, expected: expected);
+  let budget = pkg::store::log_budget_new();
+  return ttl_meta(log: effects, logged: logged, removed: lapsed, key: key, budget: &budget);
+}

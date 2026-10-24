@@ -326,6 +326,56 @@ the twins differ by up to 3%, so a gain from dropping the per-receive timer
 (at most 1.25% at depth 1 in the polling measurement above) is below this
 probe's noise. The result is reported as no measured loss, not as a gain.
 
+## Stop signals during the replay
+
+### Question and comparison, stated before measuring
+
+Until this change firn opened its stop listener just before it listened, so a
+SIGTERM or SIGINT that came while it replayed its append-only file met the
+host default and ended firn by the signal. Redis 7.2.16 installs its handler
+in `initServer` (`server.c:2561-2566`), before it loads. Its loader serves
+events every 1024 commands (`aof.c:1480-1485`); there `whileBlockedCron`, at
+most once a millisecond, finds a stop signal's request while loading and
+calls `prepareForShutdown(SHUTDOWN_NOSAVE)` and `exit(0)`
+(`server.c:1592-1599`). It opens the file for appending and removes history
+only after loading (`server.c:7332-7333`), so nothing in `appendonlydir`
+changes. Its upgrade of an old-style file runs before loading
+(`aof.c:1668-1676`) and is not part of this question.
+
+firn now opens the listener before the replay, and the replay reads the
+shutdown request the signal context records in the server's state before
+the first command it parses and then before every 1024th; a request seen there makes main exit with
+status 0 before any step after the replay.
+
+The case `firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does`
+(`tests/network.rs`) gives each server, Redis 7.2.16 and firn, a base file of
+3,000,000 `SET` records under a manifest that lists no increment, which is
+expected to take well over a second to load on a hosted runner. It waits until
+the server holds the base file open while it does not yet serve, then sends
+one signal, recording whether the process took SIGTERM and SIGINT at that
+moment (caught by Redis's handler, blocked for firn's signal reader). A server
+that serves before the case sees its replay fails the case as a missed window.
+**Rejection rule.** The change is rejected if, for either signal,
+firn does not exit with status 0, if `appendonlydir`'s file names or bytes
+differ afterwards, or if a restart does not load every key. The same case on
+the previous main must fail: there the signal finds the host default and ends
+firn by it. Redis must pass the same checks, or the case does not describe
+Redis. A second layout puts the same records in an increment after a one-key
+base and ends it in an unfinished record, so the signal stops a later file's
+replay whose end a whole replay would cut; it runs once for each server, with
+SIGTERM. The restart checks the key the last record writes, so a restart that
+lost the file's end fails.
+
+**Results.** With the base-only layout, gate
+[run 38479342901](https://github.com/Ming-Research/Firn-wf/actions/runs/38479342901)
+passed all four signal and server combinations. The same case without the
+firn change failed in
+[run 38479346275](https://github.com/Ming-Research/Firn-wf/actions/runs/38479346275):
+Redis passed both signals, and firn, sent SIGTERM during its replay, ended by
+signal 15. The second layout and the last-record check, added after review,
+passed with the first in
+[run 38480647161](https://github.com/Ming-Research/Firn-wf/actions/runs/38480647161).
+
 ## Accept errors keep serving
 
 ### Question and acceptance criteria
@@ -655,10 +705,12 @@ on the adapter and native route. The one-second stop result does not
 isolate sleep cancellation. This run provides no fault-injection evidence
 for ENFILE, ENOMEM, ENOBUFS or the newly paced non-resource errors.
 
-No local compiler, build, test or measurement was run. The current broader
-pause classifier and the two stop-case name corrections are uncommitted
-and have no CI result. The green resource-only gate does not validate this
-new error-class policy. Its non-resource paths and immediate
-ConnectionAborted exception have source-inspection evidence only; the
-existing EMFILE cases and the full gate must still pass on the revised
-code. No required Whitefoot gap, pin movement or submodule change was found.
+The broader pause classifier and the corrected stop-case names are in
+`c42f37650eb400031d9b3238aa35e080765a395d`, where the
+[full gate and AOF sync-fault job passed](https://github.com/Ming-Research/Firn-wf/actions/runs/38518869894).
+The EMFILE cases exercise the resource-exhaustion path only. The paced
+non-resource paths and the immediate ConnectionAborted exception have
+source-inspection evidence only, and no fault injection reached ENFILE,
+ENOMEM, ENOBUFS or those errors. No local compiler, build, test or
+measurement was run. No required Whitefoot gap, pin movement or submodule
+change was found.

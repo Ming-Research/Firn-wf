@@ -444,12 +444,26 @@ fn parse_inline(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>) ->
       set content_end = last_position;
     }
   }
+  if start <= content_end {
+    if content_end <= input^.len {
+      let parsed = split_arguments(input: input, start: start, end: content_end, args: args);
+      return Parsed(state: parsed.state, next: next);
+    }
+  }
+  return Parsed(state: 7_u64, next: next);
+}
+
+fn split_arguments(input: &[u8], start: u64, end: u64, args: &Box<Slots<Span>>) -> parsed: Parsed writes(input), writes(args) contract {
+  requires start <= end;
+  requires end <= input^.len;
+} {
+  doc "Splits a bounded byte line with Redis sdssplitargs rules, decoding in place and replacing args. State 1 means arguments, 6 an empty line, 7 malformed quoting; next is end. An input zero terminates the line, while a decoded escaped zero remains part of its argument.";
   clear_args(args: args);
   let read = start;
   let write = start;
   loop @arguments {
     loop @blanks {
-      let leading = byte_before(input: input, position: read, end: content_end);
+      let leading = byte_before(input: input, position: read, end: end);
       let skipped = blank(byte: leading);
       if skipped {
         set read = read +wrap 1_u64;
@@ -457,7 +471,11 @@ fn parse_inline(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>) ->
         break @blanks;
       }
     }
-    if read >= content_end {
+    let leading_byte = byte_before(input: input, position: read, end: end);
+    if leading_byte == 0_u8 {
+      break @arguments;
+    }
+    if read >= end {
       break @arguments;
     }
     let first = write;
@@ -467,15 +485,15 @@ fn parse_inline(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>) ->
       if done {
         break @bytes;
       }
-      let byte = byte_before(input: input, position: read, end: content_end);
+      let byte = byte_before(input: input, position: read, end: end);
       let second_position = read +wrap 1_u64;
-      let second = byte_before(input: input, position: second_position, end: content_end);
+      let second = byte_before(input: input, position: second_position, end: end);
       let consumed = 1_u64;
       if mode == 1_u64 {
         let third_position = read +wrap 2_u64;
-        let third = byte_before(input: input, position: third_position, end: content_end);
+        let third = byte_before(input: input, position: third_position, end: end);
         let fourth_position = read +wrap 3_u64;
-        let fourth = byte_before(input: input, position: fourth_position, end: content_end);
+        let fourth = byte_before(input: input, position: fourth_position, end: end);
         let high = hex_value(byte: third);
         let low = hex_value(byte: fourth);
         let backslash = byte == 92_u8;
@@ -504,11 +522,11 @@ fn parse_inline(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>) ->
           let closes = bor(spaced, ended);
           if closes {
           } else {
-            return Parsed(state: 7_u64, next: next);
+            return Parsed(state: 7_u64, next: end);
           }
           set done = True();
         } else if byte == 0_u8 {
-          return Parsed(state: 7_u64, next: next);
+          return Parsed(state: 7_u64, next: end);
         } else {
           put_decoded(input: input, position: write, value: byte);
           set write = write +wrap 1_u64;
@@ -527,11 +545,11 @@ fn parse_inline(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>) ->
           let closes = bor(spaced, ended);
           if closes {
           } else {
-            return Parsed(state: 7_u64, next: next);
+            return Parsed(state: 7_u64, next: end);
           }
           set done = True();
         } else if byte == 0_u8 {
-          return Parsed(state: 7_u64, next: next);
+          return Parsed(state: 7_u64, next: end);
         } else {
           put_decoded(input: input, position: write, value: byte);
           set write = write +wrap 1_u64;
@@ -564,9 +582,9 @@ fn parse_inline(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>) ->
     push_arg(args: args, start: first, length: length);
   }
   if args^.inner.len == 0_u64 {
-    return Parsed(state: 6_u64, next: next);
+    return Parsed(state: 6_u64, next: end);
   }
-  return Parsed(state: 1_u64, next: next);
+  return Parsed(state: 1_u64, next: end);
 }
 
 fn parse_request(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, locked: Bool) -> parsed: Parsed writes(input), writes(args) {
@@ -699,7 +717,7 @@ fn client_new(capacity: u64) -> made: Client pure contract {
   let settings = settings_empty();
   let key_lookups = box_slots_new::<u64>(capacity: 0_u64);
   let meter = None<std::process::MemoryMeter>();
-  return Client(bytes: move bytes, at: 0_u64, now: 0_u64, state: 0_u64, number: 0_u64, low: 0_i64, high: 0_i64, items: move items, scores: move scores, key_metadata: move key_metadata, key_lookups: move key_lookups, keys: keys, random: 0_u64, access_ms: 0_u64, memory_policy: 7_u64, maxmemory: 0_u64, maxmemory_samples: 5_u64, maxmemory_tenacity: 10_u64, pre_command_oom: unlocked, meter: move meter, lfu_log_factor: 10_u64, lfu_decay_time: 1_u64, id: 0_u64, name: move name, authenticated: trusted, locked: unlocked, closing: open, resp: 2_u64, unix_us: 0_u64, since_us: 0_u64, settings: move settings, seen_peak: 0_u64);
+  return Client(bytes: move bytes, at: 0_u64, now: 0_u64, state: 0_u64, number: 0_u64, low: 0_i64, high: 0_i64, items: move items, scores: move scores, key_metadata: move key_metadata, key_lookups: move key_lookups, keys: keys, random: 0_u64, access_ms: 0_u64, memory_policy: 7_u64, maxmemory: 0_u64, maxmemory_samples: 5_u64, maxmemory_tenacity: 10_u64, pre_command_oom: unlocked, meter: move meter, lfu_log_factor: 10_u64, lfu_decay_time: 1_u64, stream_node_bytes: 4096_u64, stream_node_entries: 100_u64, id: 0_u64, pubsub_id: 0_u64, sub: 0_u64, psub: 0_u64, ssub: 0_u64, name: move name, authenticated: trusted, locked: unlocked, closing: open, resp: 2_u64, unix_us: 0_u64, since_us: 0_u64, settings: move settings, seen_peak: 0_u64);
 }
 
 fn empty_text() -> made: Bytes pure {
