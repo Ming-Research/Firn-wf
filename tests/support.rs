@@ -1049,23 +1049,30 @@ mod tests {
         );
     }
 
-    /// Temporary (firn-accept-emfile-ready-reset): the rate at which the
-    /// first connection to a freshly leased port is not refused when four
-    /// threads lease a port and spawn a child through the harness at the
-    /// same moment, as the first four accept_errors cases do.
+    /// Temporary (firn-accept-emfile-ready-reset): how the first connection
+    /// to a freshly leased port ends when four threads lease a port and spawn
+    /// a child through the harness at the same moment, as the first four
+    /// accept_errors cases do. Nothing listens on the port, so every outcome
+    /// but a refusal is a connection that something else took.
     #[test]
     #[ignore = "temporary experiment run by the tmp-lease-race workflow"]
     fn tmp_natural_start_race_rate() {
         use std::sync::atomic::AtomicUsize;
         const THREADS: usize = 4;
         const ROUNDS: usize = 3_000;
+        const KINDS: [&str; 5] = [
+            "refused",
+            "reset at connect",
+            "accepted, then reset at read",
+            "accepted, other read outcome",
+            "other connect error",
+        ];
         let barrier = Arc::new(std::sync::Barrier::new(THREADS));
-        let hits = Arc::new(AtomicUsize::new(0));
-        let resets = Arc::new(AtomicUsize::new(0));
+        let counts: Arc<Vec<AtomicUsize>> =
+            Arc::new(KINDS.iter().map(|_| AtomicUsize::new(0)).collect());
         let threads: Vec<_> = (0..THREADS)
             .map(|_| {
-                let (barrier, hits, resets) =
-                    (Arc::clone(&barrier), Arc::clone(&hits), Arc::clone(&resets));
+                let (barrier, counts) = (Arc::clone(&barrier), Arc::clone(&counts));
                 std::thread::spawn(move || {
                     for _ in 0..ROUNDS {
                         barrier.wait();
@@ -1080,21 +1087,20 @@ mod tests {
                             .expect("spawn prlimit witness")
                             .with_port(&lease);
                         let address = std::net::SocketAddr::from(([127, 0, 0, 1], lease.port()));
-                        match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
-                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
-                            Err(error) => panic!("unexpected connect error: {error}"),
+                        let kind = match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => 0,
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => 1,
+                            Err(_) => 4,
                             Ok(mut stream) => {
-                                hits.fetch_add(1, Ordering::Relaxed);
-                                stream.write_all(b"PING\r\n").expect("write PING");
-                                stream.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
-                                let mut byte = [0_u8; 1];
-                                if let Err(error) = stream.read(&mut byte) {
-                                    if error.kind() == std::io::ErrorKind::ConnectionReset {
-                                        resets.fetch_add(1, Ordering::Relaxed);
-                                    }
+                                let _ = stream.write_all(b"PING\r\n");
+                                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                                match stream.read(&mut [0_u8; 1]) {
+                                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => 2,
+                                    _ => 3,
                                 }
                             }
-                        }
+                        };
+                        counts[kind].fetch_add(1, Ordering::Relaxed);
                         drop(child);
                     }
                 })
@@ -1103,12 +1109,10 @@ mod tests {
         for thread in threads {
             thread.join().expect("round thread");
         }
-        eprintln!(
-            "tmp-lease-race: {} connections accepted and {} reset, of {} first connections to freshly leased ports",
-            hits.load(Ordering::Relaxed),
-            resets.load(Ordering::Relaxed),
-            THREADS * ROUNDS
-        );
+        eprintln!("tmp-lease-race: first connections to freshly leased ports, {} in all", THREADS * ROUNDS);
+        for (kind, count) in KINDS.iter().zip(counts.iter()) {
+            eprintln!("tmp-lease-race:   {kind}: {}", count.load(Ordering::Relaxed));
+        }
     }
 
     #[test]
