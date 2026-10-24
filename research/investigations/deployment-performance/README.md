@@ -1030,3 +1030,78 @@ interval were exact and the cells independent, the chance that at least one of
 20 falls wholly on the slow side with no real difference is about 40%
 (1 - 0.975^20, deduced). A difference in code layout between the two binaries
 is a possibility not examined.
+
+#### Attribution of the mset cell
+
+Question: does the 5a0a1b9 binary do more work per `MSET` than the 05f7e89
+binary, and is that work what made Run A's mset cell slower? Both fall out of
+the comparisons below; no new rate verdict is drawn from this dispatch.
+
+Written before the dispatch (in the item's log) and copied here: (1) per-request
+user-mode instructions, head over base for mset, with set as the control and
+the twin as the noise: more instructions in head than base, and more than the
+twin differs, would say the code does more; equal instructions with more
+cycles, L1 instruction-cache misses or branch misses would say layout or
+front end; no difference in any would say this set of counters cannot tell.
+(2) The perf profile of mset against set: whether `update_access`,
+`mset_body`, `refresh_access` or the `MSET` write loop got heavier. (3) This
+dispatch's mset rate is recorded and neither enters the verdict nor overturns
+Run A's rejection.
+
+Run [40057908485](https://github.com/Ming-Research/Firn-wf/actions/runs/40057908485),
+`redis-bench.yml` mode `compare` on the 14900K at the head of the branch
+(74ca257, which differs from 5a0a1b9 only in measuring tooling): `base` 05f7e89,
+`head` and `head-twin` 5a0a1b9, tests `mset` and `set`, depth 1, server CPUs 2
+and 4, client CPUs 16-31, 18 passes of 5 seconds for the rates, then a profile
+of each image and 6 passes of `perf stat` (user-mode instructions, cycles,
+L1-icache-load-misses, branch-misses of the server, divided by the requests of
+the pass, the order of the images alternating). The images are those of Run A's
+commits built again: `base` 4e20c1e56df5 (Run A: 540d71af8a4f) and `head` and
+`head-twin` 212f34302ace (Run A: 4850a10247e4), the same release
+`wf-af7665be672d` in both dispatches. Two builds of one commit differ in
+bytes; whether in code layout or only in embedded data was not examined.
+
+Per request, head/base and twin/base medians over the 6 passes, the range of
+the 6 in brackets (`compare-counters.csv`; the twin is the same binary as head):
+
+| test | counter | base median | head/base | twin/base |
+| --- | --- | --- | --- | --- |
+| mset | instructions | 14,820 | 1.0020 (1.0008-1.0025) | 1.0015 (1.0006-1.0018) |
+| mset | cycles | 6,906 | 1.0021 (0.9995-1.0343) | 1.0002 (0.9811-1.0125) |
+| mset | L1i misses | 538.6 | 1.0015 (0.9858-1.0236) | 0.9980 (0.9818-1.0044) |
+| mset | branch misses | 19.9 | 1.0038 (0.9875-1.0675) | 1.0048 (0.9657-1.0404) |
+| set | instructions | 4,703 | 1.0010 (1.0005-1.0017) | 1.0006 (0.9996-1.0028) |
+| set | cycles | 2,963 | 1.0059 (0.9916-1.0245) | 1.0048 (0.9645-1.0155) |
+| set | L1i misses | 443.6 | 1.0171 (1.0086-1.0258) | 1.0138 (0.9711-1.0299) |
+| set | branch misses | 1.5 | 1.0298 (1.0090-1.0498) | 1.0078 (0.9828-1.0745) |
+
+- Instructions: the 5a0a1b9 binary executes about 29 more user-mode
+  instructions per `MSET` (ten keys) and about 5 more per `SET` (one key), in
+  all 6 passes, and the twin agrees with head to 0.04%. That is about 3
+  instructions per key, which is what the added `if client^.no_touch` in
+  `update_access` costs (a load, a test and a branch; deduced from the diff,
+  the instruction count was not split by function).
+- Cycles, L1i misses and branch misses: the medians of head and of twin over
+  base lie inside the spread of the 6 passes of either (mset cycles: 1.0021
+  and 1.0002 against spreads of 0.98 to 1.03), in both tests; the cycles median
+  (1.0021) follows the instruction median (1.0020). These counters cannot tell
+  a layout difference at this size.
+- Profile (one perf record per image, about 50 G cycles each): the share of
+  `wf_commands.update_access` in mset is 0.18% (base), 0.28% (head) and 0.24%
+  (twin), in set 0.04%, 0.05% and 0.06%. No other firn symbol of `mset`
+  moves more between base and head than between head and twin (the largest,
+  `wf_server.serve.resume` +0.155 G cycles head over base, `wf_cmap_hold_take`
+  +0.152 G twin over head); `mset_body` is 2.87%, 2.79% and 3.02%.
+- Rates of this dispatch (not entering a verdict): mset head/base median 1.0005,
+  95% interval 0.9836-1.0174 (summary.py ratios over 18 passes), head slower
+  than base in 9 of 18 passes and the twin in 10; median server CPU per request
+  base 3.279, head 3.294 and twin 3.289 microseconds. set head/base 1.0025,
+  interval 0.9953-1.0098. Run A's mset ratio of 0.9906 was not reproduced.
+
+Reading: about 0.2% of Run A's 0.9% mset deficit is the added NO-TOUCH test
+(instruction count +0.2% and cycles following it; the rate effect itself is
+deduced, not separated). The rest (0.7%) is not attributed: no counter or
+symbol separates the two binaries beyond what the twin shows, and a second pair
+of builds of the same two commits gave a ratio of 1.0005. Build-to-build
+difference between two binaries is a possibility that fits both rate results
+and that the images differing in bytes does not contradict; it was not tested.
