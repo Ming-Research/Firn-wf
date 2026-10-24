@@ -194,11 +194,9 @@ fn rewrite_journal_byte(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u8) -> result
   let count = chunks^.inner.len;
   if count > 0_u64 {
     let last = count - 1_u64;
-    if last < chunks^.inner.len {
-      let output = &chunks^.inner[last];
-      if output^.inner.len < output^.inner.cap {
-        place_back(window: &output^.inner, value: value);
-      }
+    let output = &chunks^.inner[last];
+    if output^.inner.len < output^.inner.cap {
+      place_back(window: &output^.inner, value: value);
     }
   }
   return unit;
@@ -218,10 +216,8 @@ fn rewrite_journal_room(capture: &RewriteCapture, length: u64) -> accepted: Bool
       set capacity = chunks^.inner.cap;
       if count > 0_u64 {
         let last = count - 1_u64;
-        if last < chunks^.inner.len {
-          let output = &chunks^.inner[last];
-          set free = output^.inner.cap -sat output^.inner.len;
-        }
+        let output = &chunks^.inner[last];
+        set free = output^.inner.cap -sat output^.inner.len;
       }
     }
     None() => {
@@ -254,9 +250,7 @@ fn rewrite_journal_put(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u8) -> result:
   let count = chunks^.inner.len;
   if count > 0_u64 {
     let last = count - 1_u64;
-    if last < chunks^.inner.len {
-      set fresh = chunks^.inner[last].inner.len == chunks^.inner[last].inner.cap;
-    }
+    set fresh = chunks^.inner[last].inner.len == chunks^.inner[last].inner.cap;
   }
   if fresh {
     if chunks^.inner.len < chunks^.inner.cap {

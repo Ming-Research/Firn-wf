@@ -152,9 +152,7 @@ fn config_number(buffer: &Text, number: u64) -> result: unit writes(buffer) {
       break;
     }
     set count = count - 1_u64;
-    if count < 20_u64 {
-      config_byte(buffer: buffer, byte: digits[count]);
-    }
+    config_byte(buffer: buffer, byte: digits[count]);
   }
   return unit;
 }

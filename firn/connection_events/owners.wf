@@ -396,28 +396,24 @@ fn hub_stop(hub: &Shared<Hub>) -> result: unit reads(hub) waits {
     let ids = box_slots_new::<u64>(capacity: 0_u64);
     let count = state^.records.cells.inner.len;
     for (index in 0_u64..count) {
-      if index < state^.records.cells.inner.len {
-        let held_value = &state^.records.cells.inner[index];
-        match held_value^ {
-          HashMapFilled(key: identity, value: record) => {
-            slots_push::<u64>(values: &ids, value: identity^);
-          }
-          HashMapVacant() => {
-          }
-          HashMapDeleted() => {
-          }
+      let held_value = &state^.records.cells.inner[index];
+      match held_value^ {
+        HashMapFilled(key: identity, value: record) => {
+          slots_push::<u64>(values: &ids, value: identity^);
+        }
+        HashMapVacant() => {
+        }
+        HashMapDeleted() => {
         }
       }
     }
     let size = ids.inner.len;
     for (index in 0_u64..size) {
-      if index < ids.inner.len {
-        match take_record(hub: state, id: ids.inner[index]) {
-          Some(value: record) => {
-            close_record(hub: state, record: move record);
-          }
-          None() => {
-          }
+      match take_record(hub: state, id: ids.inner[index]) {
+        Some(value: record) => {
+          close_record(hub: state, record: move record);
+        }
+        None() => {
         }
       }
     }

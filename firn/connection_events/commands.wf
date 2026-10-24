@@ -136,9 +136,7 @@ fn observe_members(env: &Empty, key: &Key, value: &Box<Slots<u64>>) -> result: B
   let count = value^.inner.len;
   let copied = box_slots_new::<u64>(capacity: count);
   for (index in 0_u64..count) {
-    if index < value^.inner.len {
-      slots_push::<u64>(values: &copied, value: value^.inner[index]);
-    }
+    slots_push::<u64>(values: &copied, value: value^.inner[index]);
   }
   return move copied;
 }
@@ -177,15 +175,13 @@ fn publish_to(hub: &Hub, members: &Box<Slots<u64>>, channel: &Key, pattern: &Key
   let delivered = 0_u64;
   let size = members^.inner.len;
   for (index in 0_u64..size) {
-    if index < members^.inner.len {
-      let id = members^.inner[index];
-      let resp = recipient_resp(hub: hub, id: id);
-      if resp != 0_u64 {
-        let frame = publication_frame(channel: channel, pattern: pattern, patterned: patterned, shard: shard, resp: resp, body: body);
-        let delivery = Delivery(id: id, frame: move frame);
-        queue_push::<Delivery>(queue: &stage^.publications, value: move delivery);
-        set delivered = delivered +wrap 1_u64;
-      }
+    let id = members^.inner[index];
+    let resp = recipient_resp(hub: hub, id: id);
+    if resp != 0_u64 {
+      let frame = publication_frame(channel: channel, pattern: pattern, patterned: patterned, shard: shard, resp: resp, body: body);
+      let delivery = Delivery(id: id, frame: move frame);
+      queue_push::<Delivery>(queue: &stage^.publications, value: move delivery);
+      set delivered = delivered +wrap 1_u64;
     }
   }
   return delivered;
@@ -218,20 +214,18 @@ fn publish(hub: &Hub, shard: Bool, input: &[u8], args: &Box<Slots<Span>>, client
   } else {
     let size = hub^.patterns.cells.inner.len;
     for (index in 0_u64..size) {
-      if index < hub^.patterns.cells.inner.len {
-        let held_value = &hub^.patterns.cells.inner[index];
-        match held_value^ {
-          HashMapFilled(key: pattern, value: members) => {
-            if pattern_matches(pattern: pattern, channel: &channel) {
-              let matched = True();
-              let delivered = publish_to(hub: hub, members: members, channel: &channel, pattern: pattern, patterned: matched, shard: shard, body: &body, stage: stage);
-              set count = count +wrap delivered;
-            }
+      let held_value = &hub^.patterns.cells.inner[index];
+      match held_value^ {
+        HashMapFilled(key: pattern, value: members) => {
+          if pattern_matches(pattern: pattern, channel: &channel) {
+            let matched = True();
+            let delivered = publish_to(hub: hub, members: members, channel: &channel, pattern: pattern, patterned: matched, shard: shard, body: &body, stage: stage);
+            set count = count +wrap delivered;
           }
-          HashMapVacant() => {
-          }
-          HashMapDeleted() => {
-          }
+        }
+        HashMapVacant() => {
+        }
+        HashMapDeleted() => {
         }
       }
     }
@@ -264,32 +258,28 @@ fn list_channels(map: &HashMap<Key, Box<Slots<u64>>, extent>, input: &[u8], args
   let selected = box_slots_new::<Key>(capacity: 0_u64);
   let size = map^.cells.inner.len;
   for (index in 0_u64..size) {
-    if index < map^.cells.inner.len {
-      let held_value = &map^.cells.inner[index];
-      match held_value^ {
-        HashMapFilled(key: channel, value: members) => {
-          let matched = True();
-          if filtered {
-            set matched = pattern_matches(pattern: &pattern, channel: channel);
-          }
-          if matched {
-            let copied = pkg::bytes::copy_key(key: channel);
-            slots_push::<Key>(values: &selected, value: move copied);
-          }
+    let held_value = &map^.cells.inner[index];
+    match held_value^ {
+      HashMapFilled(key: channel, value: members) => {
+        let matched = True();
+        if filtered {
+          set matched = pattern_matches(pattern: &pattern, channel: channel);
         }
-        HashMapVacant() => {
+        if matched {
+          let copied = pkg::bytes::copy_key(key: channel);
+          slots_push::<Key>(values: &selected, value: move copied);
         }
-        HashMapDeleted() => {
-        }
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
       }
     }
   }
   let count = selected.inner.len;
   reply_array(client: client, count: count);
   for (index in 0_u64..count) {
-    if index < selected.inner.len {
-      reply_text(client: client, text: &selected.inner[index].bytes);
-    }
+    reply_text(client: client, text: &selected.inner[index].bytes);
   }
   return unit;
 }

@@ -82,21 +82,17 @@ fn rewrite_score(env: &RewriteEmitter, key: &Key, value: &f64) -> result: unit r
 fn rewrite_stream_node(env: &RewriteEmitter, key: &StreamId, value: &StreamNode) -> result: unit reads(value), writes(env) {
   doc "Writes one XADD key id field value ... for each live entry of a stream node, in ID order, as Redis 7.2.16's rewriteStreamObject does.";
   for @items (index in 0_u64..value^.items.inner.len) {
-    if index < value^.items.inner.len {
-      let item = &value^.items.inner[index];
-      if bnot(item^.deleted) {
-        let pairs = item^.pairs.inner.len;
-        let count = pairs +wrap 3_u64;
-        log_count(log: &env^.output, count: count, room: 256_u64, budget: &env^.budget);
-        log_word(log: &env^.output, word: &rewrite_xadd[0_u64..4_u64], budget: &env^.budget);
-        log_text(log: &env^.output, text: &env^.key, budget: &env^.budget);
-        let spelled = stream_id_text(id: item^.id);
-        log_text(log: &env^.output, text: &spelled, budget: &env^.budget);
-        for @pairs (at in 0_u64..pairs) {
-          if at < item^.pairs.inner.len {
-            log_text(log: &env^.output, text: &item^.pairs.inner[at], budget: &env^.budget);
-          }
-        }
+    let item = &value^.items.inner[index];
+    if bnot(item^.deleted) {
+      let pairs = item^.pairs.inner.len;
+      let count = pairs +wrap 3_u64;
+      log_count(log: &env^.output, count: count, room: 256_u64, budget: &env^.budget);
+      log_word(log: &env^.output, word: &rewrite_xadd[0_u64..4_u64], budget: &env^.budget);
+      log_text(log: &env^.output, text: &env^.key, budget: &env^.budget);
+      let spelled = stream_id_text(id: item^.id);
+      log_text(log: &env^.output, text: &spelled, budget: &env^.budget);
+      for @pairs (at in 0_u64..pairs) {
+        log_text(log: &env^.output, text: &item^.pairs.inner[at], budget: &env^.budget);
       }
     }
   }
@@ -205,17 +201,13 @@ fn rewrite_measure_score(env: &RewriteMeasure, key: &Key, value: &f64) -> result
 fn rewrite_measure_stream(env: &StreamMeasure, key: &StreamId, value: &StreamNode) -> result: unit reads(value), writes(env) {
   doc "Adds the bytes one stream node's XADD commands can take: per live entry, a header with the key and ID, and each field and value with its framing.";
   for @items (index in 0_u64..value^.items.inner.len) {
-    if index < value^.items.inner.len {
-      let item = &value^.items.inner[index];
-      if bnot(item^.deleted) {
-        set env^.bytes = env^.bytes +sat env^.key_room;
-        for @pairs (at in 0_u64..item^.pairs.inner.len) {
-          if at < item^.pairs.inner.len {
-            let length = pkg::bytes::bytes_length(bytes: &item^.pairs.inner[at]);
-            let framed = length +sat 32_u64;
-            set env^.bytes = env^.bytes +sat framed;
-          }
-        }
+    let item = &value^.items.inner[index];
+    if bnot(item^.deleted) {
+      set env^.bytes = env^.bytes +sat env^.key_room;
+      for @pairs (at in 0_u64..item^.pairs.inner.len) {
+        let length = pkg::bytes::bytes_length(bytes: &item^.pairs.inner[at]);
+        let framed = length +sat 32_u64;
+        set env^.bytes = env^.bytes +sat framed;
       }
     }
   }

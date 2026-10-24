@@ -373,13 +373,11 @@ fn aof_hex(output: &Box<Slots<u8>>, byte: u8) -> result: unit writes(output) {
   let wide = cvt::<u8, u64>(byte);
   let high = wide / 16_u64;
   let low = wide % 16_u64;
-  if high < 16_u64 {
-    let glyph = aof_hex_digits[high];
-    aof_emit(log: output, value: glyph);
-  }
+  let high_glyph = aof_hex_digits[high];
+  aof_emit(log: output, value: high_glyph);
   if low < 16_u64 {
-    let glyph = aof_hex_digits[low];
-    aof_emit(log: output, value: glyph);
+    let low_glyph = aof_hex_digits[low];
+    aof_emit(log: output, value: low_glyph);
   }
   return unit;
 }

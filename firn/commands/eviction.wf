@@ -184,15 +184,12 @@ fn eviction_pool_take(pool: &Box<Slots<EvictionCandidate>>) -> key: Option<Box<A
       set best = index;
     }
   }
-  if pool^.inner.len > 0_u64 {
-    let candidate = take_back(window: &pool^.inner);
-    if best < pool^.inner.len {
-      swap(first: &candidate, second: &pool^.inner[best]);
-    }
-    let EvictionCandidate(key: owned, score: unused_score) = move candidate;
-    return Some<Box<Array<u8>>>(value: move owned);
+  let candidate = take_back(window: &pool^.inner);
+  if best < pool^.inner.len {
+    swap(first: &candidate, second: &pool^.inner[best]);
   }
-  return None<Box<Array<u8>>>();
+  let EvictionCandidate(key: owned, score: unused_score) = move candidate;
+  return Some<Box<Array<u8>>>(value: move owned);
 }
 
 struct EvictionSample {

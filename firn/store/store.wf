@@ -277,19 +277,17 @@ fn log_reserve(log: &Box<Slots<u8>>, needed: u64, budget: &LogBudget) -> result:
     let target = imax(doubled, wanted);
     let fits = target <= 4611686018427387904_u64;
     if fits {
-      if target >= log^.inner.cap {
-        if budget^.enabled {
-          let charge = target +sat 24_u64;
-          let available = budget^.allowance -sat budget^.charged;
-          if charge > available {
-            set budget^.failed = True();
-            set budget^.enabled = False();
-          } else {
-            set budget^.charged = budget^.charged +sat charge;
-          }
+      if budget^.enabled {
+        let charge = target +sat 24_u64;
+        let available = budget^.allowance -sat budget^.charged;
+        if charge > available {
+          set budget^.failed = True();
+          set budget^.enabled = False();
+        } else {
+          set budget^.charged = budget^.charged +sat charge;
         }
-        grow(cell: log, capacity: target);
       }
+      grow(cell: log, capacity: target);
     }
   }
   return unit;
@@ -557,14 +555,12 @@ fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32) -> res
         let target = imax(needed, doubled);
         grow(cell: &recording^.entries, capacity: target);
       }
-      if recording^.entries.inner.len < recording^.entries.inner.cap {
-        let copied = box_array_filled::<u8>(count: key^.len, value: 0_u8);
-        for (at in 0_u64..key^.len) {
-          set copied.inner[at] = key^[at];
-        }
-        let undo = AccessUndo(key: move copied, stamp: stamp);
-        place_back(window: &recording^.entries.inner, value: move undo);
+      let copied = box_array_filled::<u8>(count: key^.len, value: 0_u8);
+      for (at in 0_u64..key^.len) {
+        set copied.inner[at] = key^[at];
       }
+      let undo = AccessUndo(key: move copied, stamp: stamp);
+      place_back(window: &recording^.entries.inner, value: move undo);
     }
     None() => {
     }
