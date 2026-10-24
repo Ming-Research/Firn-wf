@@ -90,11 +90,20 @@ unit/expire	TTL / PTTL / EXPIRETIME / PEXPIRETIME return -2 if key does not exit
 unit/expire	TTL returns time to live in seconds	1
 unit/functions	FUNCTION - test function wrong argument	1
 unit/functions	FUNCTION - test wrong subcommand	1
+unit/introspection	After CLIENT SETNAME, connection can still be closed	1
 unit/introspection	CLIENT GETNAME should return NIL if name is not assigned	1
+unit/introspection	CLIENT LIST shows empty fields for unassigned names	1
+unit/introspection	CLIENT LIST with IDs	1
+unit/introspection	CLIENT SETINFO can clear library name	1
+unit/introspection	CLIENT SETINFO can set a library name to this connection	1
+unit/introspection	CLIENT SETINFO invalid args	1
+unit/introspection	CLIENT SETNAME can assign a name to this connection	1
+unit/introspection	CLIENT SETNAME can change the name of an existing connection	1
 unit/introspection	CLIENT SETNAME does not accept spaces	1
 unit/introspection	CONFIG SET duplicate configs	1
 unit/introspection	CONFIG sanity	1
 unit/introspection	PING	1
+unit/introspection	RESET does NOT clean library name	1
 unit/introspection-2	TOUCH alters the last access time of a key	1
 unit/introspection-2	TOUCH returns the number of existing keys specified	1
 unit/introspection-2	TTL, TYPE and EXISTS do not alter the last access time of a key	1

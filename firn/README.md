@@ -94,7 +94,8 @@ clients send on their own:
 - connection: `PING`, `ECHO`, `QUIT`, `RESET`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3,
   `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,
-  `CLIENT SETNAME` and `CLIENT INFO`, described below;
+  `CLIENT SETNAME`, `CLIENT INFO`, `CLIENT SETINFO`, `CLIENT LIST` and
+  `CLIENT NO-TOUCH`, described below;
 - pub/sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`,
   `PUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, `SPUBLISH`, and `PUBSUB CHANNELS`,
   `NUMSUB`, `NUMPAT`, `SHARDCHANNELS`, `SHARDNUMSUB` and `HELP`;
@@ -105,7 +106,10 @@ clients send on their own:
   `ZSCAN`, `KEYS` and `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`, plus pub/sub commands;
   `SSUBSCRIBE` is refused during EXEC as in Redis 7.2.16. `INFO` is not among
-  them. The data commands, publications and PUBSUB queries run in scripts,
+  them. The supported `CLIENT` subcommands also run in the transaction's
+  statement, using the connection's state and the shared table of clients;
+  they remain unavailable to scripts. The data commands, publications and
+  PUBSUB queries run in scripts,
   except that `EVAL_RO` and `EVALSHA_RO` refuse `PUBLISH` and `SPUBLISH`, which
   Redis 7.2.16 flags may-replicate, as it refuses write commands there;
   all six subscription commands are NOSCRIPT. All four EVAL commands
@@ -296,6 +300,7 @@ discarded because of: OOM command not allowed when used memory >
 'maxmemory'.` instead. After admission there are no memory checks between
 queued commands. These replies follow Redis 7.0.15. `RESET` discards a
 transaction and resets the name, authentication and protocol to RESP2.
+It also clears NO-TOUCH, while keeping the library name and version.
 
 A script without a shebang captures OOM at its start. A DENYOOM call is
 refused until it has accepted a WRITE-flagged command: `DEL` of a missing
@@ -422,12 +427,40 @@ and its keyspace line gives `keys` alone, without the `expires` and
 several names without duplicates and ignores unknown names. `debug` selects
 an empty Debug header explicitly; `all` and `everything` do not include it.
 
-`CLIENT INFO` answers the connection's line in Redis's form, with real
-values for the id, the name, the age, the protocol and `sub`, `psub`, `ssub`,
-with the pub/sub flag reflecting active memberships, and values fixed and
-true of firn for the others it gives. It leaves out what firn cannot report:
-the peer's and its own address, which Whitefoot's socket address does not
-show, the descriptor, the events and the sizes of Redis's buffers.
+`CLIENT INFO` and `CLIENT LIST` answer the connections' lines in Redis
+7.2.16's form, as bulk strings under RESP2 and verbatim text under RESP3,
+with real values for the id, the peer's and the server's
+address (`ip:port`, written in brackets for an IPv6 address, which no test
+reaches since firn binds IPv4 only; empty where the host refuses to report one,
+as Redis leaves it), the name, the age, the protocol, the
+subscription counts `sub`, `psub` and `ssub`, the library name and version
+`CLIENT SETINFO` set, and values fixed and true of firn for the others they
+give. They leave out what firn cannot report: the descriptor, the events and
+the sizes of Redis's buffers. The line of the connection that runs the command
+also gives idle, flags (`P` while it holds a subscription, `x` during `EXEC`,
+`T` while `CLIENT NO-TOUCH ON` holds, `N` when none applies), multi and cmd.
+During `EXEC`, the calling connection shows `x` before `T` when present, the
+full queued command count in multi, and `cmd=exec`, as Redis's
+`catClientInfoString` reports them; outside a transaction it shows multi=-1.
+The lines of the other connections in `CLIENT LIST` leave those four out,
+firn keeping no per-command state of one connection where the others can read
+it; their subscription counts come from the pub/sub registries. `CLIENT LIST` takes `TYPE normal|master|replica|slave|pubsub`, listing the
+connections that hold no subscription for normal, those that hold one for
+pubsub and nothing for the others, and `ID id...`. `CLIENT NO-TOUCH ON` makes
+the connection's reads leave the access stamps of keys alone, except `TOUCH`
+sent directly or queued in `MULTI`. A script's `redis.call('TOUCH', ...)`
+still leaves them alone while NO-TOUCH is on, because Redis checks the
+outer connection's command, which remains `EVAL` or `EVALSHA`.
+`RESET` turns NO-TOUCH off and keeps `lib-name` and `lib-ver`, as Redis's
+`clearClientConnectionState` does.
+The other `CLIENT` subcommands of Redis 7.2.16 (`CACHING`, `GETREDIR`,
+`HELP`, `KILL`, `NO-EVICT`, `PAUSE`, `REPLY`, `TRACKING`, `TRACKINGINFO`,
+`UNBLOCK` and `UNPAUSE`) are answered as unknown subcommands. Supported
+`CLIENT` subcommands inside `MULTI` answer `QUEUED` and run in order during
+`EXEC`, with their replies in its array. Name, library and NO-TOUCH changes
+apply to later queued commands and remain after `EXEC`. Invalid subcommands
+or command-table arities dirty the transaction when sent; option and value
+errors occur in the `EXEC` array and leave subsequent commands running.
 
 `HELLO` and `INFO` report the server as `redis` version 7.2.16, the
 reference firn follows.

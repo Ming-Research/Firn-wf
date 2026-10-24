@@ -21,6 +21,19 @@ acceptance rows.
       passes of head's rate over base's, with the 95% interval of the mean log
       ratio over the passes (Student's t); the twin, an image measured again
       as head, gives the run's noise as its own ratio to head.
+  summary.py workloads DIR --base NAME --head NAME [--twin NAME]
+      workloads.csv of a workloads run whose firn lines are image-NAME: per
+      cpus, workload and connection count, head's rate over base's per pass
+      with the 95% interval of the mean log ratio (Student's t) and its
+      verdict; the twin's ratio to head with its half-width, the run's noise;
+      and, where competitors ran, head's median rate and p99 against each
+      competitor's, and against the fastest one the 95% interval of the
+      per-pass ratio and the depth-1 criteria (the median not below it, the
+      p99 not above its p99). A cell is client-limited
+      when the median client work fraction in workload-limited.csv of head or
+      of the fastest competitor is above 0.90, and then asks only that head is
+      not behind: its p99 is reported and not judged. The last line counts the
+      criteria not met.
   summary.py selftest
 
 Only the standard library, since the hosts that run it have no more.
@@ -173,6 +186,68 @@ def pubsub(args):
         print(f"{above} cells above the floor of {args.floor:.2f}%")
 
 
+def workloads(args):
+    directory = Path(args.dir)
+    rates = defaultdict(lambda: defaultdict(dict))
+    p99s = defaultdict(lambda: defaultdict(list))
+    for r in rows(directory / "workloads.csv"):
+        key = (int(r["cpus"]), r["workload"], int(r["connections"]))
+        rates[key][r["line"]][int(r["pass"])] = float(r["rate"])
+        p99s[key][r["line"]].append(float(r["p99_ms"]))
+    work = defaultdict(lambda: defaultdict(list))
+    limited_file = directory / "workload-limited.csv"
+    if limited_file.exists():
+        for r in rows(limited_file):
+            key = (int(r["cpus"]), r["workload"], int(r["connections"]))
+            work[key][r["line"]].append(float(r["client_work_fraction"]))
+    base, head = f"image-{args.base}", f"image-{args.head}"
+    twin = f"image-{args.twin}" if args.twin else None
+    failures = 0
+    for key in sorted(rates):
+        cpus, workload, connections = key
+        lines = rates[key]
+        print(f"== {cpus} server CPUs, {workload}, {connections} connections")
+        shared = sorted(set(lines.get(base, {})) & set(lines.get(head, {})))
+        if len(shared) >= 2:
+            pairs = [lines[head][p] / lines[base][p] for p in shared]
+            low, high = interval(pairs)
+            print(f"{head} / {base}: median {statistics.median(pairs):.4f}, 95% interval "
+                  f"{low:.4f}-{high:.4f} over {len(shared)} passes ({verdict(low, high)})")
+        shared = sorted(set(lines.get(twin, {})) & set(lines.get(head, {})))
+        if len(shared) >= 2:
+            pairs = [lines[twin][p] / lines[head][p] for p in shared]
+            low, high = interval(pairs)
+            print(f"twin {twin} / {head}: median {statistics.median(pairs):.4f}, 95% interval "
+                  f"{low:.4f}-{high:.4f}, half-width {(high - low) / 2 * 100:.2f}% over "
+                  f"{len(shared)} passes ({verdict(low, high)})")
+        competitors = [l for l in lines if not is_firn(l)]
+        if head in lines and competitors:
+            median = {l: statistics.median(lines[l].values()) for l in lines}
+            head_p99 = statistics.median(p99s[key][head])
+            for line in sorted(competitors, key=lambda l: -median[l]):
+                print(f"{head} / {line}: {median[head] / median[line]:.3f}, p99 {head_p99:.3f} ms "
+                      f"against {statistics.median(p99s[key][line]):.3f} ms")
+            best = max(competitors, key=lambda l: median[l])
+            limited = any(statistics.median(work[key][l]) > 0.90
+                          for l in (head, best) if work[key][l])
+            multiple = median[head] / median[best]
+            best_p99 = statistics.median(p99s[key][best])
+            rate_ok = multiple >= 1.0
+            p99_ok = limited or head_p99 <= best_p99
+            failures += (not rate_ok) + (not p99_ok)
+            shared = sorted(set(lines[head]) & set(lines[best]))
+            if len(shared) >= 2:
+                low, high = interval([lines[head][p] / lines[best][p] for p in shared])
+                print(f"{head} / {best} per pass: 95% interval {low:.4f}-{high:.4f} over "
+                      f"{len(shared)} passes ({verdict(low, high)})")
+            print(f"{head} / {best} (the fastest competitor): {multiple:.3f}, needs at least 1.0"
+                  f"{' (client-limited)' if limited else ''}: {'ok' if rate_ok else 'BELOW'}")
+            print(f"p99 {head_p99:.3f} ms against the fastest competitor's {best_p99:.3f} ms: "
+                  f"{'not judged (client-limited)' if limited else 'ok' if p99_ok else 'HIGHER'}")
+        print()
+    print(f"{failures} criteria not met")
+
+
 def selftest():
     # t values
     assert t95(1) == 12.706 and t95(5) == 2.571 and t95(21) == 2.086 and t95(100) == 1.96
@@ -283,6 +358,41 @@ def selftest():
             assert "largest twin half-width over 1 cells:" in text, text
             assert ("does not count" in text) == (not counts), text
             assert text.rstrip().endswith(f"{0 if counts else 1} cells above the floor of {floor:.2f}%"), text
+        # A workloads run: head against base and its twin, and against the
+        # fastest competitor on rate and p99.
+        header = "line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms"
+        data = [header]
+        for p, (b, h, t) in enumerate([(100, 90, 90), (100, 91, 91), (100, 89, 89), (100, 90, 90)], 1):
+            for line, rate, p99 in (("image-before", b, 1.0), ("image-after", h, 2.0),
+                                    ("image-after-twin", t, 2.0), ("reference", 80, 3.0),
+                                    ("garnet", 95, 1.5)):
+                data.append(f"{line},{p},2,handshake,50,1000,10,{rate},0.5,{p99}")
+        (Path(tmp) / "workloads.csv").write_text("\n".join(data) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            workloads(argparse.Namespace(dir=tmp, base="before", head="after", twin="after-twin"))
+        text = out.getvalue()
+        assert "image-after / image-before: median 0.9000, 95% interval" in text and "(slower)" in text, text
+        assert "twin image-after-twin / image-after: median 1.0000" in text, text
+        # 90 against Garnet's 95 is below, and p99 2.0 ms against its 1.5 ms is higher
+        assert "image-after / garnet (the fastest competitor): 0.947, needs at least 1.0: BELOW" in text, text
+        assert "p99 2.000 ms against the fastest competitor's 1.500 ms: HIGHER" in text, text
+        assert "image-after / reference: 1.125, p99 2.000 ms against 3.000 ms" in text, text
+        # the per-pass interval against the fastest competitor lies wholly
+        # under 1 here: 90 against 95 in every pass, give or take one
+        assert "image-after / garnet per pass: 95% interval " in text and "over 4 passes (slower)" in text, text
+        assert text.rstrip().endswith("2 criteria not met"), text
+        # A client-limited cell does not judge the p99: 3 criteria become 1.
+        limited = ["line,pass,cpus,workload,connections,client_busy_mean,client_work_fraction,client_limited"]
+        for p in (1, 2, 3, 4):
+            limited.append(f"garnet,{p},2,handshake,50,0.99,0.95,1")
+        (Path(tmp) / "workload-limited.csv").write_text("\n".join(limited) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            workloads(argparse.Namespace(dir=tmp, base="before", head="after", twin="after-twin"))
+        text = out.getvalue()
+        assert "needs at least 1.0 (client-limited): BELOW" in text, text
+        assert "not judged (client-limited)" in text and text.rstrip().endswith("1 criteria not met"), text
     print("summary selftest: passed")
 
 
@@ -299,9 +409,14 @@ def main():
     p.add_argument("--base", required=True)
     p.add_argument("--head", required=True)
     p.add_argument("--twin")
+    p = sub.add_parser("workloads")
+    p.add_argument("dir")
+    p.add_argument("--base", required=True)
+    p.add_argument("--head", required=True)
+    p.add_argument("--twin")
     sub.add_parser("selftest")
     args = parser.parse_args()
-    {"pubsub": pubsub, "ratios": ratios}.get(args.command, lambda _: selftest())(args)
+    {"pubsub": pubsub, "ratios": ratios, "workloads": workloads}.get(args.command, lambda _: selftest())(args)
 
 
 if __name__ == "__main__":

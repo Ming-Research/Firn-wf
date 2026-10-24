@@ -1,0 +1,38 @@
+# Temporary (firn-handshake-client): runs redis-bench.sh's selftests once in CI
+# and shows that the new counter parsing fails on four broken versions. Deleted
+# before the PR is ready.
+name: tmp-bench-counters
+on:
+  push:
+    branches: [claude/client-handshake]
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The selftests pass on the script as it is
+        run: |
+          sh research/experiments/redis-bench/redis-bench.sh invocation-selftest
+          sh research/experiments/redis-bench/redis-bench.sh placement-selftest
+      - name: The placement selftest fails on four broken counter_total versions
+        run: |
+          python3 -I - <<'PY'
+          import pathlib, subprocess
+          directory = pathlib.Path("research/experiments/redis-bench")
+          source = (directory / "redis-bench.sh").read_text()
+          mutations = [
+              ('"(:u|/u)$"', '"(:[uk]|/[uk])$"', "counter_total gave"),
+              ('else printf "NA"', 'else printf "0"', "counter_total gave"),
+              # awk cannot open the absent file and set -e ends the selftest.
+              ('[ -r "$1" ] || { printf NA; return 0; }', ':', "cannot open file"),
+              ("&& $1 ~ /^[0-9]+$/", "&& 1", "counter_total gave"),
+          ]
+          for old, new, message in mutations:
+              assert source.count(old) == 1, old
+              broken = directory / "redis-bench-broken.sh"
+              broken.write_text(source.replace(old, new))
+              done = subprocess.run(["sh", str(broken), "placement-selftest"], capture_output=True, text=True)
+              print(f"{old!r} -> {new!r}: exit {done.returncode}: {done.stderr.strip()}")
+              assert done.returncode != 0, "the selftest passed on a broken script"
+              assert message in done.stderr, "it failed for another reason"
+          PY

@@ -50,6 +50,12 @@
 #                                 naming a perf executable it then records a
 #                                 flat profile of each image under
 #                                 COMPARE_PROFILE (default mset at depth 16),
+#                                 counts for those tests the user-mode
+#                                 instructions, cycles, L1 instruction cache
+#                                 load misses and branch misses of the server
+#                                 over one run of the measured size per image,
+#                                 COMPARE_COUNTER_PASSES times (default 6, 0
+#                                 for none), in compare-counters.csv,
 #                                 and with PERF_C2C set a perf c2c report of
 #                                 the cache lines cores contend for;
 #                                 on Linux it records each server and client
@@ -570,6 +576,18 @@ work_limited() {
         END { if (!ok) { print "work_limited: no client_work_fraction" > "/dev/stderr"; exit 1 } }' "$1"
 }
 
+# The user-mode count of one event in <file>, a `perf stat -x,` output:
+# prints the sum of the lines naming <event> with the user modifier, NA when
+# there is none. A hybrid CPU's perf names the core type (cpu_core/event/u)
+# and reports the other type's counter as <not counted>, which is no number;
+# kernel-mode lines (:k) are not this event's user count.
+counter_total() {
+    [ -r "$1" ] || { printf NA; return 0; }
+    awk -F, -v event="$2" '
+        $3 ~ ("(^|/)" event "(:u|/u)$") && $1 ~ /^[0-9]+$/ { sum += $1; seen = 1 }
+        END { if (seen) printf "%.0f", sum; else printf "NA" }' "$1"
+}
+
 placement_selftest() (
     fixture=$(mktemp -d)
     trap 'rm -rf "$fixture"' EXIT
@@ -731,6 +749,31 @@ placement_selftest() (
         echo "placement-selftest: cpu_busy accepted a CPU /proc/stat lacks" >&2
         exit 1
     }
+    # counter_total: a hybrid CPU's perf stat names the core type, reports the
+    # other type's counter as <not counted> and lists kernel-mode counts apart;
+    # a plain CPU's names carry only the modifier. A missing event or file is
+    # NA, never 0.
+    printf '%s\n' '# started on Fri Oct 24 01:30:00 2026' '' \
+        '1000,,cpu_core/instructions/u,5000000,100.00,,' \
+        '<not counted>,,cpu_atom/instructions/u,0,0.00,,' \
+        '300,,cpu_core/instructions/k,5000000,100.00,,' \
+        '500,,cpu_core/cycles/u,5000000,100.00,,' \
+        '40,,cpu_core/L1-icache-load-misses/u,5000000,100.00,,' \
+        '<not supported>,,cpu_atom/branch-misses/u,0,0.00,,' >"$fixture/counters-hybrid"
+    printf '%s\n' '70,,instructions:u,5000000,100.00,,' \
+        '9,,instructions:k,5000000,100.00,,' \
+        '20,,branch-misses:u,5000000,100.00,,' >"$fixture/counters-plain"
+    for row in 'hybrid instructions 1000' 'hybrid cycles 500' \
+        'hybrid L1-icache-load-misses 40' 'hybrid branch-misses NA' \
+        'plain instructions 70' 'plain branch-misses 20' 'plain cycles NA' \
+        'absent instructions NA'; do
+        set -- $row
+        actual=$(counter_total "$fixture/counters-$1" "$2")
+        [ "$actual" = "$3" ] || {
+            echo "placement-selftest: counter_total gave '$actual' for $1 $2, expected '$3'" >&2
+            exit 1
+        }
+    done
     echo 'placement-selftest: passed'
 )
 
@@ -1619,6 +1662,45 @@ if [ "$MODE" = compare ]; then
                     fi
                 done
             done
+            # The same tests again, unmeasured, counting what the server
+            # executes per request in user mode: the instructions of an image
+            # that does more work differ from the other's, while an image whose
+            # code only sits elsewhere runs the same instructions in more
+            # cycles or with more instruction cache and branch misses. The
+            # images alternate in order from pass to pass, twins included.
+            counter_passes=${COMPARE_COUNTER_PASSES:-6}
+            if [ "$counter_passes" -gt 0 ]; then
+                counters="$OUT/compare-counters.csv"
+                test -f "$counters" ||
+                    echo 'line,pass,cpus,test,depth,requests,instructions,cycles,l1i_misses,branch_misses' >"$counters"
+                echo "${COMPARE_PROFILE:-mset 16}" | tr ';' '\n' | while read -r ptest pdepth; do
+                    test -n "$ptest" || continue
+                    requests=$(awk -v t="$ptest" -v d="$pdepth" '$1 == t && $2 == d { print $3 }' "$sizes")
+                    test -n "$requests" || continue
+                    cpass=1
+                    while [ "$cpass" -le "$counter_passes" ]; do
+                        order=$names
+                        if [ $((cpass % 2)) -eq 0 ]; then
+                            order=$reversed
+                        fi
+                        for name in $order; do
+                            stat="$OUT/counters-stat.txt"
+                            rm -f "$stat"
+                            start "$(compare_arg "$name")"
+                            "$PERF" stat -x, -e instructions:u,cycles:u,L1-icache-load-misses:u,branch-misses:u \
+                                -p "$server" -o "$stat" >/dev/null 2>&1 &
+                            recorder=$!
+                            sleep 1
+                            compare_client "$ptest" "$pdepth" "$requests" | sed "s/^/counted,$name,$n,$ptest,/"
+                            kill -INT "$recorder"
+                            wait "$recorder" || true
+                            stop
+                            echo "$name,$cpass,$n,$ptest,$pdepth,$requests,$(counter_total "$stat" instructions),$(counter_total "$stat" cycles),$(counter_total "$stat" L1-icache-load-misses),$(counter_total "$stat" branch-misses)" >>"$counters"
+                        done
+                        cpass=$((cpass + 1))
+                    done
+                done
+            fi
         fi
     done
     cat "$OUT/compare.csv"

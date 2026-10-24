@@ -263,38 +263,165 @@ fn time_reply(stream: &mut TcpStream, what: &str) -> u64 {
     parts[0] * 1000 + parts[1] / 1000
 }
 
-/// Reads one whole RESP reply, a bulk string's or an array's elements
-/// included, and returns its bytes.
+/// Reads one whole RESP2 or RESP3 reply, including length-prefixed strings
+/// and aggregate children, and returns its bytes. A map's count is pairs.
 #[cfg(target_os = "linux")]
 fn whole_reply(stream: &mut TcpStream, what: &str) -> String {
     let mut reply = reply_line(stream, what);
     let count = reply[1..reply.len() - 2].parse::<i64>().unwrap_or(-1);
-    if reply.starts_with('$') && count >= 0 {
+    if matches!(reply.as_bytes()[0], b'$' | b'=' | b'!') && count >= 0 {
         let mut body = vec![0_u8; count as usize + 2];
         stream
             .read_exact(&mut body)
             .unwrap_or_else(|error| panic!("{what}: {error}"));
         reply.push_str(&String::from_utf8_lossy(&body));
-    } else if reply.starts_with('*') {
-        for _ in 0..count.max(0) {
+    } else if matches!(reply.as_bytes()[0], b'*' | b'%' | b'~' | b'>') {
+        let children = count.max(0) * if reply.starts_with('%') { 2 } else { 1 };
+        for _ in 0..children {
             reply.push_str(&whole_reply(stream, what));
         }
     }
     reply
 }
 
+/// A RESP3 map must consume both halves of every pair, including nested
+/// aggregates and verbatim/blob payloads, before the following reply. The
+/// old reader returned only %2 and misread HELLO's first key as CLIENT LIST.
+#[cfg(target_os = "linux")]
+#[test]
+fn whole_reply_consumes_resp3_children_before_the_next_reply() {
+    let port_lease = support::lease_port();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port_lease.port())).expect("bind reader fixture");
+    let mut reader = bounded_stream(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+    let (mut writer, _) = listener.accept().expect("accept reader fixture");
+    let first = "%2\r\n$6\r\nserver\r\n$5\r\nredis\r\n+data\r\n*3\r\n=7\r\ntxt:one\r\n~2\r\n:1\r\n_\r\n!3\r\nERR\r\n";
+    writer.write_all(format!("{first}>2\r\n+event\r\n*0\r\n+OK\r\n").as_bytes()).unwrap();
+    assert_eq!(whole_reply(&mut reader, "RESP3 map"), first);
+    assert_eq!(whole_reply(&mut reader, "RESP3 push"), ">2\r\n+event\r\n*0\r\n");
+    assert_eq!(whole_reply(&mut reader, "reply after the aggregates"), "+OK\r\n");
+}
+
 /// Reads exactly the bytes of the expected replies and compares them.
 #[cfg(target_os = "linux")]
 fn expect_replies(stream: &mut TcpStream, expected: &[u8], what: &str) {
-    let mut returned = vec![0_u8; expected.len()];
-    stream
-        .read_exact(&mut returned)
-        .unwrap_or_else(|error| panic!("{what}: {error}"));
+    let returned = read_reply_bytes(stream, expected.len(), what, None)
+        .unwrap_or_else(|failure| panic!("{failure}"));
     assert_eq!(
         returned.as_slice(),
         expected,
         "{what}"
     );
+}
+
+/// The same reply check, with bounded child diagnostics in the read-error
+/// panic rather than only in Drop's direct stderr output.
+#[cfg(target_os = "linux")]
+fn expect_replies_with_child(stream: &mut TcpStream, expected: &[u8], what: &str, child: &mut ProgramChild) {
+    let returned = read_reply_bytes(stream, expected.len(), what, Some(child))
+        .unwrap_or_else(|failure| panic!("{failure}"));
+    assert_eq!(
+        returned.as_slice(),
+        expected,
+        "{what}"
+    );
+}
+
+/// Returns the read result without panicking, so the diagnostic failure path
+/// can be checked using an injected socket error without catching a panic.
+#[cfg(target_os = "linux")]
+fn read_reply_bytes(stream: &mut impl Read, length: usize, what: &str, child: Option<&mut ProgramChild>) -> Result<Vec<u8>, String> {
+    let mut returned = vec![0_u8; length];
+    stream.read_exact(&mut returned).map_err(|error| match child {
+        Some(child) => child.reply_read_failure(what, &error),
+        None => format!("{what}: {error}"),
+    })?;
+    Ok(returned)
+}
+
+/// The read-error result contains the diagnostics that the caller puts in
+/// its panic payload. A reset reports a naturally exited child and its stderr;
+/// an EOF while the child is alive identifies the harness's forced stop.
+/// Both fixtures use the real capture/cleanup machinery, without panic hooks.
+#[cfg(target_os = "linux")]
+#[test]
+fn reply_read_failures_include_child_exit_or_forced_stop_in_the_message() {
+    struct ResetReply;
+    impl Read for ResetReply {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "RESET-MARK"))
+        }
+    }
+    for naturally_exited in [true, false] {
+        let lease = support::lease_port();
+        let mut command = std::process::Command::new("/bin/sh");
+        let script = if naturally_exited {
+            "echo OUT-MARK; echo ERR-MARK >&2; exit 7"
+        } else {
+            "sleep 30"
+        };
+        command.args(["-c", script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = ProgramChild::spawn(&mut command).expect("spawn reply diagnostic witness").with_port(&lease);
+        let pid = child.id();
+        if naturally_exited {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while child.try_wait().expect("probe exited witness").is_none() {
+                assert!(Instant::now() < deadline, "witness did not exit promptly");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        } else {
+            assert!(child.try_wait().expect("probe live witness").is_none());
+        }
+        let started = Instant::now();
+        let failure = if naturally_exited {
+            read_reply_bytes(&mut ResetReply, 1, "loaded", Some(&mut child)).unwrap_err()
+        } else {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", lease.port())).expect("bind closed-peer witness");
+            let mut reader = bounded_stream(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+            let (peer, _) = listener.accept().expect("accept closed-peer witness");
+            drop(peer);
+            read_reply_bytes(&mut reader, 1, "GET key", Some(&mut child)).unwrap_err()
+        };
+        assert!(failure.contains("BEGIN TEST CHILD DIAGNOSTICS"), "{failure}");
+        assert!(failure.contains("program: /bin/sh"), "{failure}");
+        assert!(failure.contains(&format!("PID: {pid}")), "{failure}");
+        assert!(failure.contains(&format!("port: {}", lease.port())), "{failure}");
+        if naturally_exited {
+            assert!(failure.starts_with("loaded: RESET-MARK"), "{failure}");
+            assert!(failure.contains("already exited: yes"), "{failure}");
+            assert!(failure.contains("exit status: 7"), "{failure}");
+            assert!(failure.contains("OUT-MARK"), "{failure}");
+            assert!(failure.contains("ERR-MARK"), "{failure}");
+        } else {
+            assert!(failure.starts_with("GET key:"), "{failure}");
+            assert!(failure.contains("already exited: no; killed by harness"), "{failure}");
+            assert!(child.try_wait().expect("probe stopped witness").is_some());
+        }
+        drop(child);
+        assert!(started.elapsed() < Duration::from_secs(8), "diagnostics and Drop exceeded the existing fixture budget: {failure}");
+    }
+}
+
+/// libtest must receive the diagnostic in the panic payload itself; a block
+/// written only to stderr by ProgramChild::drop cannot satisfy should_panic.
+#[cfg(target_os = "linux")]
+#[test]
+#[should_panic(expected = "already exited: no; killed by harness")]
+fn reply_read_failure_carries_child_diagnostics_in_the_panic_payload() {
+    let lease = support::lease_port();
+    let mut command = std::process::Command::new("/bin/sh");
+    command.args(["-c", "sleep 30"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = ProgramChild::spawn(&mut command).expect("spawn panic-payload witness").with_port(&lease);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", lease.port())).expect("bind closed panic-payload peer");
+    let mut reader = bounded_stream(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+    let (peer, _) = listener.accept().expect("accept panic-payload peer");
+    drop(peer);
+    expect_replies_with_child(&mut reader, b"+PONG\r\n", "loaded", &mut child);
 }
 
 #[test]
@@ -4269,9 +4396,9 @@ fn firn_requires_its_password_as_redis_does() {
 /// firn answers the connection commands as Redis does. CLIENT ID counts the
 /// connections from 1 in the order firn accepted them, and HELLO reports the
 /// same id; CLIENT SETNAME gives a name, refuses one with a space keeping the
-/// old one, and removes it with the empty name; CLIENT SETINFO, which Redis
-/// 7.0 does not have, is an unknown subcommand; HELLO answers RESP2's map with
-/// no version or version 2 and RESP3's with 3, and refuses 1 as unsupported,
+/// old one, and removes it with the empty name; CLIENT SETINFO answers OK as
+/// Redis 7.2.16 networking.c clientSetinfoCommand does; HELLO answers RESP2's
+/// map with no version or version 2 and RESP3's with 3, and refuses 1 as unsupported,
 /// and its SETNAME names the connection, an option's name
 /// read up to a zero byte as Redis's strcasecmp reads it; AUTH without a
 /// configured password is answered with Redis's error for the password alone
@@ -4289,7 +4416,8 @@ fn firn_requires_its_password_as_redis_does() {
 /// database, but for the ids and the keyspace line, which leaves out the
 /// expires and avg_ttl firn does not count, and the version in HELLO and
 /// INFO, which follows Redis 7.2.16 networking.c:helloCommand and
-/// server.c:genRedisInfoString, both reading version.h's REDIS_VERSION.
+/// server.c:genRedisInfoString, both reading version.h's REDIS_VERSION,
+/// and SETINFO's OK, which follows Redis 7.2.16 clientSetinfoCommand.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_connection_commands_as_redis_does() {
@@ -4345,7 +4473,7 @@ fn firn_answers_connection_commands_as_redis_does() {
     // Redis 7.2.16 networking.c:helloCommand with version.h's REDIS_VERSION.
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
-        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n-ERR unknown subcommand 'SETINFO'. Try CLIENT HELP.\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}{hello3}-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
+        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n+OK\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}{hello3}-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the connection batch");
     let before = std::time::SystemTime::now()
@@ -4989,8 +5117,8 @@ fn firn_answers_zrank_withscore_as_redis_does() {
 /// 7.0.15's form, a bulk string under RESP2 and a verbatim string under RESP3,
 /// the name CLIENT SETNAME gave and the protocol HELLO selected in it, and
 /// CLIENT INFO with an argument is Redis's arity error. The line is
-/// redis-server 7.0.15's but for the fields firn leaves out, the addresses,
-/// descriptor, events and buffer sizes, and for the age, 0 or 1 as the second
+/// redis-server 7.2.16's but for the fields firn leaves out, the descriptor,
+/// events and buffer sizes, and for the age, 0 or 1 as the second
 /// may turn between the connection and the command, and at least 2 after
 /// more than two seconds, though no more than firn has run. The HELLO
 /// version follows Redis 7.2.16 networking.c:helloCommand and
@@ -5018,9 +5146,14 @@ fn firn_answers_client_info_as_redis_does() {
     client
         .write_all(&batch)
         .expect("send the CLIENT INFO batch");
+    // The addresses are the ones the Rust client sees: firn's addr is the
+    // client's own address and its laddr the address the client connected to
+    // (Redis 7.2.16 catClientInfoString: getClientPeerId, getClientSockname).
+    let addr = client.local_addr().expect("the client's address");
+    let laddr = client.peer_addr().expect("the server's address");
     let line = |name: &str, protocol: u32| {
         format!(
-            "id=1 name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp={protocol}\n"
+            "id=1 addr={addr} laddr={laddr} name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp={protocol} lib-name= lib-ver=\n"
         )
     };
     let first = line("", 2);
@@ -10600,13 +10733,20 @@ fn multipart_files(program: &CompiledProgram, files: &[(&str, &[&[&str]])], mani
 }
 
 fn multipart_values(client: &mut TcpStream, values: &[(&str, Option<&str>)]) {
+    multipart_values_reporting(client, values, None);
+}
+
+fn multipart_values_reporting(client: &mut TcpStream, values: &[(&str, Option<&str>)], mut child: Option<&mut ProgramChild>) {
     for (key, value) in values {
         client.write_all(&resp(&["GET", key])).unwrap();
         let expected = match value {
             Some(text) => format!("${}\r\n{text}\r\n", text.len()),
             None => "$-1\r\n".to_owned(),
         };
-        expect_replies(client, expected.as_bytes(), key);
+        match child.as_deref_mut() {
+            Some(child) => expect_replies_with_child(client, expected.as_bytes(), key, child),
+            None => expect_replies(client, expected.as_bytes(), key),
+        }
     }
 }
 
@@ -10614,12 +10754,12 @@ fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
+    let mut child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
-    multipart_values(&mut client, values);
+    multipart_values_reporting(&mut client, values, Some(&mut child));
     // Also make an empty expected-values case prove that startup completed.
     client.write_all(&resp(&["PING"])).unwrap();
-    expect_replies(&mut client, b"+PONG\r\n", "loaded");
+    expect_replies_with_child(&mut client, b"+PONG\r\n", "loaded", &mut child);
     drop(client);
     assert_eq!(finished(child).0, 0);
 }
@@ -12712,4 +12852,677 @@ fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
     drop(looping);
     drop(other);
     assert_eq!(finished(child).0, 0);
+}
+
+/// Writes every age in the lines of a CLIENT LIST or CLIENT INFO reply as 0,
+/// the whole seconds between a connection and the command turning with the
+/// clock.
+#[cfg(target_os = "linux")]
+fn zero_ages(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(" age=") {
+        let (before, after) = rest.split_at(at + " age=".len());
+        out.push_str(before);
+        let digits = after.chars().take_while(char::is_ascii_digit).count();
+        out.push('0');
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Reads one RESP3 verbatim string reply, `=` then its length, then `txt:` and
+/// the text, and returns the text.
+#[cfg(target_os = "linux")]
+fn verbatim_reply(stream: &mut TcpStream, what: &str) -> String {
+    let header = reply_line(stream, what);
+    let length = header
+        .strip_prefix('=')
+        .and_then(|rest| rest.strip_suffix("\r\n"))
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("{what}: not a verbatim string reply: {header:?}"));
+    let mut body = vec![0_u8; length + 2];
+    stream
+        .read_exact(&mut body)
+        .unwrap_or_else(|error| panic!("{what}: {error}"));
+    assert!(body.ends_with(b"\r\n"), "{what}: {body:?}");
+    body.truncate(length);
+    let body = String::from_utf8(body).unwrap_or_else(|error| panic!("{what}: {error}"));
+    body.strip_prefix("txt:")
+        .unwrap_or_else(|| panic!("{what}: not txt: {body:?}"))
+        .to_string()
+}
+
+/// firn answers CLIENT SETINFO as Redis 7.2.16 does (networking.c
+/// clientSetinfoCommand): LIB-NAME and LIB-VER in either case are stored and
+/// shown as lib-name= and lib-ver= in CLIENT INFO; a value holding a byte
+/// outside ! to ~ before its first zero byte and an attribute of another
+/// name are refused with the attribute as typed, leaving the stored values;
+/// the arity error is client|setinfo's (src/commands/client-setinfo.json,
+/// arity 4); RESET keeps
+/// the library name and version (networking.c clearClientConnectionState does
+/// not touch lib_name, and Redis's own suite asserts it); and the empty value
+/// removes the stored one. Before the change firn answered every SETINFO as an
+/// unknown subcommand.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_client_setinfo_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["CLIENT", "SETINFO", "lib-name", "redis.py"],
+        vec!["CLIENT", "SETINFO", "LIB-VER", "1.2.3"],
+        vec!["CLIENT", "SETINFO", "lib-name"],
+        vec!["CLIENT", "SETINFO", "lib-name", "redis py"],
+        vec!["CLIENT", "SETINFO", "Lib-Ver", "1.2\n3"],
+        vec!["CLIENT", "SETINFO", "badger", "hamster"],
+        vec!["CLIENT", "INFO"],
+        vec!["RESET"],
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "SETINFO", "lib-name", ""],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the SETINFO batch");
+    expect_replies(
+        &mut client,
+        b"+OK\r\n+OK\r\n-ERR wrong number of arguments for 'client|setinfo' command\r\n-ERR lib-name cannot contain spaces, newlines or special characters.\r\n-ERR Lib-Ver cannot contain spaces, newlines or special characters.\r\n-ERR Unrecognized option 'badger'\r\n",
+        "the SETINFO replies",
+    );
+    // networking.c catClientInfoString ends the line with lib-name, lib-ver.
+    let line = bulk_reply(&mut client, "CLIENT INFO after SETINFO");
+    assert!(line.ends_with(" lib-name=redis.py lib-ver=1.2.3\n"), "{line:?}");
+    assert_eq!(reply_line(&mut client, "RESET"), "+RESET\r\n");
+    let line = bulk_reply(&mut client, "CLIENT INFO after RESET");
+    assert!(line.ends_with(" lib-name=redis.py lib-ver=1.2.3\n"), "{line:?}");
+    assert_eq!(reply_line(&mut client, "SETINFO with an empty value"), "+OK\r\n");
+    let line = bulk_reply(&mut client, "CLIENT INFO after clearing");
+    assert!(line.ends_with(" lib-name= lib-ver=1.2.3\n"), "{line:?}");
+    // networking.c validateClientAttr stops at the first zero byte: invalid
+    // bytes after it are ignored. clientSetinfoCommand answers OK, while
+    // catClientInfoString's %s shows only the valid prefix of lib_name/lib_ver.
+    for (attribute, value, ending) in [
+        ("lib-name", "prefix\0 \n", " lib-name=prefix lib-ver=1.2.3\n"),
+        ("lib-ver", "2.0\0 \n", " lib-name=prefix lib-ver=2.0\n"),
+        ("lib-name", "\0 \n", " lib-name= lib-ver=2.0\n"),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CLIENT", "SETINFO", attribute, value]), "+OK\r\n");
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect a zero-terminated library value");
+        let line = bulk_reply(&mut client, "CLIENT INFO after zero-terminated SETINFO");
+        assert!(line.ends_with(ending), "{line:?}");
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// CLIENT LIST, SETINFO and NO-TOUCH have NOSCRIPT in Redis 7.2.16's
+/// src/commands/client-*.json. script.c scriptCall checks their table arity
+/// through scriptVerifyCommandArity before that restriction. Both redis.call
+/// and redis.pcall refuse them; malformed SETINFO gets the script arity error
+/// instead. An unconditional NOSCRIPT reply fails the SETINFO arity row.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_refuses_client_commands_from_scripts_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    // networking.c clientSetinfoCommand applies this standalone setter.
+    assert_eq!(memory_request(&mut client, &["CLIENT", "SETINFO", "lib-name", "outside"]), "+OK\r\n");
+    for (raised, sha, error) in [
+        ("return redis.call('CLIENT','LIST')", "7ef377844bde0643f7083e0212ea72b6a9879367", "ERR This Redis command is not allowed from script"),
+        ("return redis.call('CLIENT','SETINFO','lib-name','x')", "e42aafbb10ff09a3d1f10430770e697a267be831", "ERR This Redis command is not allowed from script"),
+        ("return redis.call('CLIENT','NO-TOUCH','ON')", "e370ecbcc08b5da292d057e82c688a9eaed7e8d8", "ERR This Redis command is not allowed from script"),
+        ("return redis.call('CLIENT','SETINFO','lib-name')", "fd97c1f9fb498995c5a69d94d5261fdd2876b3d3", "ERR Wrong number of args calling Redis command from script"),
+    ] {
+        // script.c scriptCall supplies the error; script_lua.c luaPushError
+        // adds ERR. luaRedisGenericCommand raises for redis.call, and
+        // luaCallFunction adds the SHA and @user_script:1 location.
+        assert_eq!(
+            memory_request(&mut client, &["EVAL", raised, "0"]),
+            format!("-{error} script: {sha}, on @user_script:1.\r\n"),
+            "{raised}"
+        );
+        let guarded = raised.replace("redis.call", "redis.pcall");
+        // luaRedisGenericCommand returns the error table for redis.pcall;
+        // luaReplyToRedisReply turns a returned err table into one error,
+        // with no raised-error source suffix.
+        assert_eq!(memory_request(&mut client, &["EVAL", &guarded, "0"]), format!("-{error}\r\n"), "{guarded}");
+        // The same table's .err field is a Lua string, so
+        // luaReplyToRedisReply writes it as a bulk containing the ERR prefix.
+        let field = format!("{guarded}.err");
+        assert_eq!(memory_request(&mut client, &["EVAL", &field, "0"]), format!("${}\r\n{error}\r\n", error.len()), "{field}");
+    }
+    // networking.c catClientInfoString exposes both setters' original state:
+    // a refused script must not change the library or enable NO-TOUCH.
+    client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect state after script refusals");
+    let line = bulk_reply(&mut client, "CLIENT INFO after script refusals");
+    assert!(line.contains(" flags=N "), "{line:?}");
+    assert!(line.ends_with(" lib-name=outside lib-ver=\n"), "{line:?}");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers CLIENT LIST as Redis 7.2.16 does (networking.c clientCommand,
+/// getAllClientsInfoString, catClientInfoString): every connection's line in
+/// the order of the connections, a connection's own line carrying the
+/// per-interaction fields idle, flags, multi and cmd=client|list, the others
+/// leaving those four out (design/firn/reported-facts.md), addr and laddr the
+/// addresses the Rust client sees, the name, library name and protocol a
+/// connection set showing in the other connection's list; TYPE normal lists
+/// them all, none holding a subscription (tests/pubsub.rs covers pubsub), and
+/// the other types none; ID lists the named connections in the
+/// order named, once for each name; and the errors are clientCommand's. Before
+/// the change firn answered CLIENT LIST as an unknown subcommand.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_lists_clients_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"3"]).with_port(&port_lease);
+    let mut first = connect_when_ready(port, &child);
+    first
+        .write_all(&[resp(&["CLIENT", "SETNAME", "alpha"]), resp(&["CLIENT", "SETINFO", "lib-name", "lib-a"])].concat())
+        .expect("name the first connection");
+    expect_replies(&mut first, b"+OK\r\n+OK\r\n", "naming the first connection");
+    let mut second = connect_when_ready(port, &child);
+    let first_addr = first.local_addr().expect("the first client's address");
+    let second_addr = second.local_addr().expect("the second client's address");
+    let server = first.peer_addr().expect("the server's address");
+    let own = |id: u32, addr: SocketAddr, name: &str, protocol: u32, lib: &str| {
+        format!(
+            "id={id} addr={addr} laddr={server} name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|list user=default redir=-1 resp={protocol} lib-name={lib} lib-ver=\n"
+        )
+    };
+    let other = |id: u32, addr: SocketAddr, name: &str, protocol: u32, lib: &str| {
+        format!(
+            "id={id} addr={addr} laddr={server} name={name} age=0 db=0 sub=0 psub=0 ssub=0 user=default redir=-1 resp={protocol} lib-name={lib} lib-ver=\n"
+        )
+    };
+    // The second connection sees both; its own line is complete.
+    second.write_all(&resp(&["CLIENT", "LIST"])).expect("list from the second connection");
+    let listed = zero_ages(&bulk_reply(&mut second, "CLIENT LIST from the second connection"));
+    assert_eq!(
+        listed,
+        other(1, first_addr, "alpha", 2, "lib-a") + &own(2, second_addr, "", 2, ""),
+        "the second connection's list"
+    );
+    // The first connection sees both; its own line is complete.
+    first.write_all(&resp(&["CLIENT", "LIST"])).expect("list from the first connection");
+    let listed = zero_ages(&bulk_reply(&mut first, "CLIENT LIST from the first connection"));
+    let first_own = own(1, first_addr, "alpha", 2, "lib-a");
+    let second_other = other(2, second_addr, "", 2, "");
+    assert_eq!(listed, first_own.clone() + &second_other, "the first connection's list");
+    // TYPE and ID filters (clientCommand's list branch).
+    let mut batch = Vec::new();
+    for request in [
+        vec!["CLIENT", "LIST", "TYPE", "NORMAL"],
+        vec!["CLIENT", "LIST", "TYPE", "pubsub"],
+        vec!["CLIENT", "LIST", "TYPE", "replica"],
+        vec!["CLIENT", "LIST", "ID", "-1", "0", "2", "1", "99", "2", "9223372036854775807"],
+        vec!["CLIENT", "LIST", "ID", "x"],
+        vec!["CLIENT", "LIST", "TYPE", "bogus"],
+        vec!["CLIENT", "LIST", "FOO"],
+        vec!["CLIENT", "LIST", "ID"],
+        vec!["CLIENT", "LIST", "TYPE"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    first.write_all(&batch).expect("send the filters");
+    let both = first_own.clone() + &second_other;
+    assert_eq!(zero_ages(&bulk_reply(&mut first, "TYPE NORMAL")), both, "TYPE NORMAL");
+    assert_eq!(bulk_reply(&mut first, "TYPE pubsub"), "", "TYPE pubsub");
+    assert_eq!(bulk_reply(&mut first, "TYPE replica"), "", "TYPE replica");
+    assert_eq!(
+        zero_ages(&bulk_reply(&mut first, "ID below, above, reversed and repeated")),
+        second_other.clone() + &first_own + &second_other,
+        "ID below, above, reversed and repeated"
+    );
+    expect_replies(
+        &mut first,
+        b"-ERR Invalid client ID\r\n-ERR Unknown client type 'bogus'\r\n-ERR syntax error\r\n-ERR syntax error\r\n-ERR syntax error\r\n",
+        "the list errors",
+    );
+    // HELLO 3 and the protocol show in the other connection's list, and the
+    // list is a verbatim string under RESP3.
+    first.write_all(&resp(&["HELLO", "3"])).expect("switch to RESP3");
+    let hello = whole_reply(&mut first, "HELLO 3");
+    assert!(hello.starts_with("%7\r\n"), "{hello:?}");
+    let first_resp3 = own(1, first_addr, "alpha", 3, "lib-a");
+    first.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("list under RESP3");
+    assert_eq!(
+        zero_ages(&verbatim_reply(&mut first, "CLIENT LIST under RESP3")),
+        first_resp3,
+        "the verbatim string under RESP3"
+    );
+    second.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("list the first from the second");
+    assert_eq!(
+        zero_ages(&bulk_reply(&mut second, "the first connection under RESP3")),
+        other(1, first_addr, "alpha", 3, "lib-a"),
+        "a RESP3 connection in another's list"
+    );
+    // A closed connection leaves the list.
+    drop(second);
+    let mut remaining = String::new();
+    for _ in 0..50 {
+        first.write_all(&resp(&["CLIENT", "LIST"])).expect("list after the close");
+        remaining = zero_ages(&verbatim_reply(&mut first, "CLIENT LIST after the close"));
+        if remaining.lines().count() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(remaining, first_resp3, "the list after the close");
+    // A later connection receives a fresh ID after the closed middle ID.
+    // networking.c clientCommand parses each requested ID as a signed
+    // integer, lookupClientByID returns no line for absent IDs, and the
+    // handler appends matches in request order, including duplicates.
+    let mut third = connect_when_ready(port, &child);
+    third.write_all(&resp(&["CLIENT", "ID"])).expect("identify the replacement connection");
+    assert_eq!(integer_reply(&mut third, "replacement connection ID"), 3);
+    let third_addr = third.local_addr().expect("the third client's address");
+    let third_other = other(3, third_addr, "", 2, "");
+    first.write_all(&resp(&["CLIENT", "LIST", "ID", "-1", "0", "3", "2", "1", "3", "4"])).expect("filter around a removed middle ID");
+    assert_eq!(
+        zero_ages(&verbatim_reply(&mut first, "ID filter after closing the middle connection")),
+        third_other.clone() + &first_resp3 + &third_other,
+        "missing middle, lower and upper boundaries, reverse order and duplicates"
+    );
+    third.write_all(&resp(&["CLIENT", "LIST", "ID", "3", "1", "3", "2", "0"])).expect("filter from the replacement connection");
+    let third_own = own(3, third_addr, "", 2, "");
+    assert_eq!(
+        zero_ages(&bulk_reply(&mut third, "replacement connection's ID filter")),
+        third_own.clone() + &other(1, first_addr, "alpha", 3, "lib-a") + &third_own,
+        "the replacement's own line after a closed connection"
+    );
+    drop(third);
+    drop(first);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers CLIENT NO-TOUCH as Redis 7.2.16 does (networking.c
+/// clientCommand, arity 3 in src/commands/client-no-touch.json): ON and OFF in
+/// either case answer OK and show as the flag T in CLIENT INFO; another
+/// argument is a syntax error; while it is on, reads leave a key's access time
+/// alone (db.c lookupKey, CLIENT_NO_TOUCH) but TOUCH refreshes it
+/// (touchCommand); and RESET turns it off (networking.c
+/// clearClientConnectionState clears CLIENT_NO_TOUCH). Before the change firn
+/// answered CLIENT NO-TOUCH as an unknown subcommand.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_access_times_in_no_touch_mode_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SET", "foo", "bar"],
+        vec!["CLIENT", "NO-TOUCH"],
+        vec!["CLIENT", "NO-TOUCH", "maybe"],
+        vec!["CLIENT", "no-touch", "on"],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the NO-TOUCH batch");
+    expect_replies(
+        &mut client,
+        b"+OK\r\n-ERR wrong number of arguments for 'client|no-touch' command\r\n-ERR syntax error\r\n+OK\r\n",
+        "the NO-TOUCH replies",
+    );
+    let line = bulk_reply(&mut client, "CLIENT INFO in no-touch mode");
+    assert!(line.contains(" flags=T "), "{line:?}");
+    std::thread::sleep(Duration::from_millis(2200));
+    let mut batch = Vec::new();
+    for request in [
+        vec!["GET", "foo"],
+        vec!["OBJECT", "IDLETIME", "foo"],
+        vec!["TOUCH", "foo"],
+        vec!["OBJECT", "IDLETIME", "foo"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("read in no-touch mode");
+    assert_eq!(bulk_reply(&mut client, "GET"), "bar");
+    assert!(integer_reply(&mut client, "IDLETIME after GET in no-touch mode") >= 2, "GET touched the key");
+    assert_eq!(integer_reply(&mut client, "TOUCH"), 1);
+    assert!(integer_reply(&mut client, "IDLETIME after TOUCH") <= 1, "TOUCH did not refresh the key");
+    let mut batch = Vec::new();
+    for request in [
+        vec!["RESET"],
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "NO-TOUCH", "ON"],
+        vec!["CLIENT", "NO-TOUCH", "OFF"],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("turn the mode off");
+    assert_eq!(reply_line(&mut client, "RESET"), "+RESET\r\n");
+    let line = bulk_reply(&mut client, "CLIENT INFO after RESET");
+    assert!(line.contains(" flags=N "), "{line:?}");
+    expect_replies(&mut client, b"+OK\r\n+OK\r\n", "NO-TOUCH ON and OFF");
+    let line = bulk_reply(&mut client, "CLIENT INFO after OFF");
+    assert!(line.contains(" flags=N "), "{line:?}");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// Redis 7.2.16 server.c processCommand queues these CLIENT subcommands:
+/// none of their src/commands/client-*.json flags contains NO_MULTI. Its
+/// multi.c execCommand returns the replies in order and keeps CLIENT_MULTI
+/// and the full queue count until all commands finish. Before this repair
+/// firn ran CLIENT SETINFO immediately, so its +QUEUED assertion fails; the
+/// former EXECABORT expectation also disagreed with Redis's source.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_executes_client_subcommands_in_transactions_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"2"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut observer = connect_when_ready(port, &child);
+    let queue = |client: &mut TcpStream, requests: &[Vec<&str>]| {
+        let mut batch = resp(&["MULTI"]);
+        for request in requests {
+            batch.extend(resp(request));
+        }
+        client.write_all(&batch).expect("queue CLIENT commands");
+        // multi.c multiCommand answers OK; server.c processCommand answers
+        // QUEUED after queueMultiCommand, without invoking clientCommand.
+        assert_eq!(reply_line(client, "MULTI"), "+OK\r\n");
+        for request in requests {
+            assert_eq!(reply_line(client, &request.join(" ")), "+QUEUED\r\n");
+        }
+    };
+    let fields = |line: &str, expected: &[&str]| {
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+        for field in expected {
+            assert!(line.split_ascii_whitespace().any(|value| value == *field), "missing {field:?}: {line:?}");
+        }
+    };
+    for protocol in ["2", "3"] {
+        let read_text = |client: &mut TcpStream, what: &str| {
+            // networking.c clientCommand uses addReplyVerbatim for INFO
+            // and LIST: bulk in RESP2, =length/txt: in RESP3.
+            if protocol == "2" { bulk_reply(client, what) } else { verbatim_reply(client, what) }
+        };
+        client.write_all(&resp(&["HELLO", protocol])).expect("select protocol");
+        // networking.c helloCommand uses addReplyMapLen(7), whose RESP2
+        // form is *14 and whose RESP3 form is %7.
+        let hello = whole_reply(&mut client, "HELLO");
+        assert!(hello.starts_with(if protocol == "2" { "*14\r\n" } else { "%7\r\n" }), "{hello:?}");
+        // CLIENT's OK replies come from clientCommand/clientSetinfoCommand;
+        // t_string.c setGenericCommand answers shared.ok for plain SET.
+        for request in [
+            vec!["CLIENT", "SETNAME", ""],
+            vec!["CLIENT", "SETINFO", "lib-name", ""],
+            vec!["CLIENT", "NO-TOUCH", "OFF"],
+            vec!["SET", "foo", "bar"],
+            vec!["SET", "untouched", "bar"],
+        ] {
+            assert_eq!(memory_request(&mut client, &request), "+OK\r\n");
+        }
+        std::thread::sleep(Duration::from_millis(2200));
+        queue(&mut client, &[
+            vec!["CLIENT", "ID"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["CLIENT", "SETNAME", "inside"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["CLIENT", "SETINFO", "lib-name", "inside"],
+            vec!["CLIENT", "INFO"],
+            vec!["CLIENT", "LIST", "ID", "1"],
+            vec!["CLIENT", "NO-TOUCH", "ON"],
+            vec!["CLIENT", "INFO"],
+            vec!["CLIENT", "LIST", "ID", "1"],
+            vec!["GET", "foo"],
+            vec!["OBJECT", "IDLETIME", "foo"],
+        ]);
+        // A second connection observes the old name and library: the queued
+        // setters have not run. Other-client volatile fields are omitted by
+        // design/firn/reported-facts.md, so do not invent an observer flag.
+        observer.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("inspect queued setters");
+        let line = bulk_reply(&mut observer, "client before EXEC");
+        fields(&line, &["id=1", "name=", "lib-name="]);
+
+        client.write_all(&resp(&["EXEC"])).expect("execute CLIENT commands");
+        // multi.c execCommand emits one array with mstate.count elements.
+        assert_eq!(reply_line(&mut client, "EXEC"), "*12\r\n");
+        // networking.c clientCommand: ID is c->id; absent GETNAME uses
+        // addReplyNull; SETNAME uses clientSetNameOrReply then shared.ok;
+        // GETNAME returns the name just set as a bulk string.
+        assert_eq!(integer_reply(&mut client, "queued CLIENT ID"), 1);
+        assert_eq!(reply_line(&mut client, "unnamed CLIENT GETNAME"), if protocol == "2" { "$-1\r\n" } else { "_\r\n" });
+        assert_eq!(reply_line(&mut client, "queued CLIENT SETNAME"), "+OK\r\n");
+        assert_eq!(bulk_reply(&mut client, "named CLIENT GETNAME"), "inside");
+        // networking.c clientSetinfoCommand stores lib-name, then shared.ok.
+        assert_eq!(reply_line(&mut client, "queued CLIENT SETINFO"), "+OK\r\n");
+        // networking.c catClientInfoString gives x while CLIENT_MULTI,
+        // mstate.count (not remaining commands), and lastcmd. server.c
+        // processCommand set lastcmd to EXEC; execCommand changes cmd only.
+        for what in ["queued CLIENT INFO", "queued CLIENT LIST"] {
+            let line = read_text(&mut client, what);
+            fields(&line, &["id=1", "name=inside", "lib-name=inside", "flags=x", "multi=12", "cmd=exec"]);
+        }
+        // networking.c clientCommand's no-touch branch sets CLIENT_NO_TOUCH
+        // and answers shared.ok; catClientInfoString appends T after x.
+        assert_eq!(reply_line(&mut client, "queued CLIENT NO-TOUCH"), "+OK\r\n");
+        for what in ["queued INFO after NO-TOUCH", "queued LIST after NO-TOUCH"] {
+            let line = read_text(&mut client, what);
+            fields(&line, &["id=1", "name=inside", "lib-name=inside", "flags=xT", "multi=12", "cmd=exec"]);
+        }
+        // db.c lookupKey sees NO-TOUCH set by an earlier EXEC command; GET
+        // must leave the stamp intact. object.c objectCommand's IDLETIME
+        // branch reads that stamp without touching it; t_string.c
+        // getCommand/getGenericCommand gives the stored value as a bulk.
+        assert_eq!(bulk_reply(&mut client, "GET inside no-touch EXEC"), "bar");
+        assert!(integer_reply(&mut client, "IDLETIME inside no-touch EXEC") >= 2, "GET in EXEC touched the key");
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect applied setters");
+        let line = read_text(&mut client, "CLIENT INFO after EXEC");
+        // multi.c discardTransaction clears MULTI, but does not undo the
+        // setters. networking.c catClientInfoString now gives T and -1.
+        fields(&line, &["name=inside", "lib-name=inside", "flags=T", "multi=-1", "cmd=client|info"]);
+        observer.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("inspect published setters");
+        fields(&bulk_reply(&mut observer, "client after EXEC"), &["id=1", "name=inside", "lib-name=inside"]);
+        assert_eq!(memory_request(&mut client, &["GET", "foo"]), "$3\r\nbar\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", "foo") >= 2, "NO-TOUCH did not survive EXEC");
+
+        // db.c lookupKey tests server.current_client->cmd, which remains the
+        // real EVAL caller. script.c scriptCall changes the fake client's cmd;
+        // server.c call switches executing_client, not current_client. Thus
+        // Lua TOUCH counts the key (expire.c touchCommand) without exempting
+        // this NO-TOUCH caller from its access-stamp suppression.
+        assert_eq!(memory_request(&mut client, &["EVAL", "return redis.call('TOUCH','foo')", "0"]), ":1\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", "foo") >= 2, "Lua TOUCH refreshed a NO-TOUCH caller's key");
+
+        queue(&mut client, &[
+            vec!["TOUCH", "foo"],
+            vec!["OBJECT", "IDLETIME", "foo"],
+            vec!["CLIENT", "INFO"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute TOUCH in no-touch mode");
+        // db.c lookupKey exempts touchCommand from CLIENT_NO_TOUCH;
+        // expire.c touchCommand returns the number of existing keys touched.
+        expect_replies(&mut client, b"*3\r\n:1\r\n", "TOUCH inside no-touch EXEC");
+        assert!(integer_reply(&mut client, "IDLETIME after TOUCH in EXEC") <= 1, "TOUCH in EXEC did not refresh the key");
+        fields(&read_text(&mut client, "INFO after TOUCH in EXEC"), &["flags=xT", "multi=3", "cmd=exec"]);
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect mode after TOUCH");
+        fields(&read_text(&mut client, "INFO after TOUCH EXEC"), &["flags=T", "multi=-1"]);
+
+        queue(&mut client, &[
+            vec!["CLIENT", "NO-TOUCH", "OFF"],
+            vec!["GET", "untouched"],
+            vec!["OBJECT", "IDLETIME", "untouched"],
+            vec!["CLIENT", "INFO"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute NO-TOUCH OFF");
+        expect_replies(&mut client, b"*4\r\n+OK\r\n$3\r\nbar\r\n", "NO-TOUCH OFF and GET in EXEC");
+        // clientCommand clears the flag before GET; lookupKey refreshes this
+        // key, untouched since before the sleep (unlike foo after TOUCH).
+        assert!(integer_reply(&mut client, "IDLETIME after OFF in EXEC") <= 1, "GET after OFF did not touch the key");
+        fields(&read_text(&mut client, "INFO after OFF in EXEC"), &["flags=x", "multi=4", "cmd=exec"]);
+
+        // These are handler errors, not lookup/arity errors. processCommand
+        // queues them; execCommand puts their errors in its array and keeps
+        // executing. Sources: clientSetNameOrReply, clientSetinfoCommand,
+        // clientCommand's no-touch/list branches, then its ID branch.
+        queue(&mut client, &[
+            vec!["CLIENT", "SETNAME", "bad name"],
+            vec!["CLIENT", "SETINFO", "lib-name", "bad library"],
+            vec!["CLIENT", "NO-TOUCH", "maybe"],
+            vec!["CLIENT", "LIST", "TYPE", "bogus"],
+            vec!["CLIENT", "ID"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute runtime errors");
+        expect_replies(&mut client, b"*5\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n-ERR lib-name cannot contain spaces, newlines or special characters.\r\n-ERR syntax error\r\n-ERR Unknown client type 'bogus'\r\n:1\r\n", "runtime errors continue the EXEC array");
+
+        // server.c commandCheckArity/commandCheckExistence reject immediately;
+        // rejectCommandSds calls multi.c flagTransaction. execCommand answers
+        // shared.execaborterr and applies none of the queued setters.
+        // KILL specifically tests Firn's documented unsupported-subcommand
+        // boundary. Redis supports KILL (client-kill.json, no NO_MULTI), so
+        // Firn's unknown-subcommand reply here is not a Redis KILL result.
+        for (invalid, error) in [
+            (vec!["CLIENT", "SETINFO", "lib-name"], "-ERR wrong number of arguments for 'client|setinfo' command\r\n"),
+            (vec!["CLIENT", "NOPE"], "-ERR unknown subcommand 'NOPE'. Try CLIENT HELP.\r\n"),
+            (vec!["CLIENT", "KILL", "TYPE", "normal"], "-ERR unknown subcommand 'KILL'. Try CLIENT HELP.\r\n"),
+        ] {
+            let mut batch = resp(&["MULTI"]);
+            batch.extend(resp(&["CLIENT", "SETINFO", "lib-name", "aborted"]));
+            batch.extend(resp(&invalid));
+            batch.extend(resp(&["CLIENT", "NO-TOUCH", "ON"]));
+            batch.extend(resp(&["EXEC"]));
+            client.write_all(&batch).expect("send malformed CLIENT transaction");
+            expect_replies(&mut client, format!("+OK\r\n+QUEUED\r\n{error}+QUEUED\r\n-EXECABORT Transaction discarded because of previous errors.\r\n").as_bytes(), "malformed CLIENT dirties the queue");
+            client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect aborted setters");
+            fields(&read_text(&mut client, "INFO after EXECABORT"), &["name=inside", "lib-name=inside", "flags=N", "multi=-1"]);
+        }
+
+        queue(&mut client, &[
+            vec!["CLIENT", "SETNAME", "discarded"],
+            vec!["CLIENT", "SETINFO", "lib-name", "discarded"],
+            vec!["CLIENT", "NO-TOUCH", "ON"],
+        ]);
+        // multi.c discardCommand discards the queue, then answers shared.ok;
+        // the connection setters never run and NO-TOUCH stays off.
+        assert_eq!(memory_request(&mut client, &["DISCARD"]), "+OK\r\n");
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect discarded setters");
+        fields(&read_text(&mut client, "INFO after DISCARD"), &["name=inside", "lib-name=inside", "flags=N", "multi=-1"]);
+    }
+    drop(client);
+    drop(observer);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// A transaction's published connection metadata and key writes become
+/// visible together. Redis 7.2.16 multi.c execCommand runs clientSetinfoCommand
+/// and t_string.c setCommand without another client running between them.
+/// After GET observes version n, a later CLIENT LIST must report a library
+/// version at least n (networking.c clientCommand/catClientInfoString).
+/// Publishing the client record after releasing the transaction's holds
+/// permits GET(new marker), LIST(old library). This concurrent case can catch
+/// that interleaving; scheduling does not guarantee it on every faulty run.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_publishes_exec_client_metadata_with_its_key_writes() {
+    const VERSIONS: u32 = 32;
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"2"]).with_port(&port_lease);
+    let mut writer = connect_when_ready(port, &child);
+    writer.write_all(&resp(&["CLIENT", "ID"])).expect("read the writer's ID");
+    // networking.c clientCommand's ID branch returns c->id.
+    let writer_id = integer_reply(&mut writer, "writer ID").to_string();
+    writer.write_all(&[
+        resp(&["CLIENT", "SETINFO", "lib-name", "0"]),
+        resp(&["SET", "client-version", "0"]),
+    ].concat()).expect("initialize matching versions");
+    // networking.c clientSetinfoCommand and t_string.c setGenericCommand.
+    expect_replies(&mut writer, b"+OK\r\n+OK\r\n", "initial versions");
+    let mut observer = connect_when_ready(port, &child);
+    let (announced_tx, announced_rx) = std::sync::mpsc::channel();
+    let (sampled_tx, sampled_rx) = std::sync::mpsc::channel();
+    let writer_thread = std::thread::spawn(move || {
+        for version in 1..=VERSIONS {
+            // Announce before sending, so the observer races with every
+            // transaction instead of merely checking the final state.
+            announced_tx.send(version).expect("announce the next transaction");
+            let version_text = version.to_string();
+            let batch = [
+                resp(&["MULTI"]),
+                resp(&["CLIENT", "SETINFO", "lib-name", &version_text]),
+                resp(&["SET", "client-version", &version_text]),
+                resp(&["EXEC"]),
+            ].concat();
+            writer.write_all(&batch).expect("commit matching versions");
+            // multiCommand/processCommand give OK/QUEUED; execCommand emits
+            // *2, then clientSetinfoCommand/setGenericCommand each give OK.
+            expect_replies(&mut writer, b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n", "version transaction");
+            assert_eq!(sampled_rx.recv_timeout(Duration::from_secs(10)).expect("observer samples each committed version"), version);
+        }
+        writer
+    });
+    let sample = |observer: &mut TcpStream| {
+        // Separate commands deliberately allow a newer transaction between
+        // GET and LIST: monotone versions permit >= rather than equality.
+        observer.write_all(&resp(&["GET", "client-version"])).expect("sample committed marker");
+        // t_string.c getGenericCommand returns the stored bulk value.
+        let marker = bulk_reply(observer, "committed marker").parse::<u32>().expect("numeric marker");
+        observer.write_all(&resp(&["CLIENT", "LIST", "ID", &writer_id])).expect("sample published client metadata");
+        // networking.c clientCommand uses addReplyVerbatim (RESP2 bulk);
+        // catClientInfoString reads the connection's stored lib_name.
+        let line = bulk_reply(observer, "published library version");
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+        let library = line.split_ascii_whitespace()
+            .find_map(|field| field.strip_prefix("lib-name="))
+            .expect("library field")
+            .parse::<u32>().expect("numeric library version");
+        assert!(library >= marker, "GET saw version {marker}, but CLIENT LIST saw older version {library}: {line:?}");
+        marker
+    };
+    let mut samples = 0;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    for expected in 1..=VERSIONS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert_eq!(announced_rx.recv_timeout(remaining).expect("writer starts each transaction before the overall deadline"), expected);
+        loop {
+            assert!(Instant::now() < deadline, "writer did not commit version {expected} before the overall deadline");
+            let observed = sample(&mut observer);
+            samples += 1;
+            if observed >= expected {
+                sampled_tx.send(expected).expect("acknowledge sampled progress");
+                break;
+            }
+        }
+    }
+    assert!(samples >= VERSIONS, "every progressing version must be sampled");
+    let writer = writer_thread.join().expect("version writer finishes");
+    assert_eq!(sample(&mut observer), VERSIONS, "final matching versions");
+    drop(writer);
+    drop(observer);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
 }
