@@ -974,3 +974,59 @@ below that would say the merged accept or dispatch path costs it.
 
 Expected time on the 14900K, from the first measurement's runs: about 99
 minutes for Run A, 25 for Run B1 and 45 for Run B2.
+
+#### Run A on the merged head
+
+Run [40033786239](https://github.com/Ming-Research/Firn-wf/actions/runs/40033786239),
+`summary.py ratios` over its `compare.csv`: `base` is 05f7e89, `head` and
+`head-twin` are 5a0a1b9, 18 passes of 5 seconds, depth 1, server CPUs 2 and 4,
+client CPUs 16-31. `base` is the image with SHA-256 540d71af8a4f, `head` and
+`head-twin` one image with SHA-256 4850a10247e4 (first 12 hexadecimal digits).
+No client was limited: the largest mean client busy fraction was 0.892 and no
+sample was marked limited. On the first 12 passes the twin interval contains 1
+in all 20 cells, so the rule judges every cell on those 12 passes; the last
+column gives the interval over all 18 for comparison.
+
+| test | head/base median | head/base 95% interval, 12 passes | twin/head 95% interval | twin half-width | verdict | head/base 95% interval, 18 passes |
+| --- | --- | --- | --- | --- | --- | --- |
+| get | 0.9945 | 0.9886-1.0046 | 0.9879-1.0069 | 0.95% | no detected change | 0.9886-1.0025 |
+| hset | 1.0035 | 0.9967-1.0071 | 0.9931-1.0128 | 0.98% | no detected change | 0.9930-1.0056 |
+| incr | 0.9965 | 0.9871-1.0067 | 0.9957-1.0122 | 0.82% | undecided (wider than twin) | 0.9940-1.0101 |
+| lpop | 1.0075 | 0.9966-1.0223 | 0.9756-1.0035 | 1.40% | no detected change | 0.9932-1.0147 |
+| lpush | 0.9973 | 0.9856-1.0280 | 0.9763-1.0092 | 1.65% | undecided (wider than twin) | 0.9805-1.0153 |
+| lrange_100 | 0.9981 | 0.9944-1.0070 | 0.9890-1.0078 | 0.94% | no detected change | 0.9897-1.0064 |
+| lrange_300 | 0.9989 | 0.9956-1.0038 | 0.9912-1.0119 | 1.04% | no detected change | 0.9947-1.0026 |
+| lrange_500 | 1.0015 | 0.9977-1.0063 | 0.9915-1.0057 | 0.71% | no detected change | 0.9942-1.0030 |
+| lrange_600 | 1.0040 | 1.0015-1.0072 | 0.9880-1.0032 | 0.76% | faster | 1.0018-1.0070 |
+| mset | 0.9906 | 0.9819-0.9947 | 0.9901-1.0083 | 0.91% | rejected (wholly slower) | 0.9857-0.9958 |
+| ping_inline | 0.9988 | 0.9924-1.0105 | 0.9826-1.0094 | 1.34% | no detected change | 0.9940-1.0072 |
+| ping_mbulk | 1.0038 | 0.9927-1.0181 | 0.9953-1.0061 | 0.54% | undecided (wider than twin) | 0.9935-1.0115 |
+| rpop | 0.9983 | 0.9883-1.0086 | 0.9850-1.0089 | 1.19% | no detected change | 0.9901-1.0071 |
+| rpush | 0.9981 | 0.9879-1.0090 | 0.9967-1.0106 | 0.69% | undecided (wider than twin) | 0.9898-1.0042 |
+| sadd | 1.0011 | 0.9918-1.0113 | 0.9899-1.0123 | 1.12% | no detected change | 0.9913-1.0055 |
+| set | 0.9996 | 0.9849-1.0070 | 0.9810-1.0057 | 1.24% | no detected change | 0.9812-1.0029 |
+| spop | 0.9986 | 0.9875-1.0126 | 0.9789-1.0089 | 1.50% | no detected change | 0.9846-1.0103 |
+| xadd | 0.9998 | 0.9811-1.0124 | 0.9860-1.0151 | 1.45% | undecided (wider than twin) | 0.9887-1.0102 |
+| zadd | 1.0030 | 0.9928-1.0192 | 0.9849-1.0045 | 0.98% | undecided (wider than twin) | 0.9929-1.0124 |
+| zpopmin | 1.0053 | 0.9935-1.0313 | 0.9889-1.0125 | 1.18% | undecided (wider than twin) | 0.9930-1.0189 |
+
+Of the 20 cells, 1 is rejected (mset), 1 is faster (lrange_600), 7 are
+undecided by the second clause only and 11 show no detected change. No cell has
+a twin interval that excludes 1, so no cell needed more than 12 passes, unlike
+rpush and zadd in the first measurement.
+
+The rejected cell, mset (ten keys per command): head was slower than base in 17
+of the 18 passes (head/base per pass 0.959 to 1.012, the exception being pass
+16). Median rate over the 18 passes: base 607.1k, head 602.5k and head-twin
+599.9k a second; median server CPU per request: 3.280, 3.307 and 3.295
+microseconds. The twin, the same binary as head, sits as far below base as head
+does, so the difference is between the two binaries, not within a run. It is
+not attributed to a change: the diff of `firn/` between 05f7e89 and 5a0a1b9
+touches nothing that only MSET runs; its per-request additions (a flag test
+after each request, the NO-TOUCH save and restore around a promoted command, a
+larger connection struct and keyspace struct) apply to every cell, and no other
+cell is slower. Read from the diff and the table, not tested. If each cell's
+interval were exact and the cells independent, the chance that at least one of
+20 falls wholly on the slow side with no real difference is about 40%
+(1 - 0.975^20, deduced). A difference in code layout between the two binaries
+is a possibility not examined.
