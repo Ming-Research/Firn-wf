@@ -182,7 +182,7 @@ orders them on the 14900K, one at a time.
 |---|---|---|---|
 | A1 | `compare`, `base`, `head`, `head-twin`, the 22 tests, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16` | question 1, file off | about 70 min (the 38-cell run 39573904480 took 60) |
 | A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove`, the same profile | question 1, file on | about 20 min |
-| B | `workloads` with `workload_images`, `head` and `head-twin` only, `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
+| B | `workloads` with `workload_images`, `head` and `head-twin` (and the `reference` line that `workload_images` adds), `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
 
 The instrument was tried first on GitHub-hosted runners, for function only (no
@@ -215,3 +215,28 @@ that stops handing out elements was run with a client whose stall limit is 1 ms
 depth 16, stopped at depth 1 and was recorded as `skip,valkey-latest,blocking-handoff
 incomplete: ... (connections=20 pipeline=1)`, and firn, next in the order, stopped
 the run with `firn-1 stopped handing out elements in blocking-handoff`.
+
+## Results
+
+Every run is on the 14900K at `da1e2c3`, the PR's head, with the servers on
+CPUs 2 and 4 and the clients on CPUs 16-31.
+
+### B: the floor of the hand-off class
+
+Run 40043320074 (`workloads` with `workload_images`, `head` and `head-twin`,
+`blocking-handoff`, 50 consumers, depths 16 and 1, 6 passes of 10 s). The run
+also carried the `reference` line (Redis 7.2.16), which `workload_images`
+keeps; the figures are `summary.py pubsub` on the run's `pubsub.csv`.
+
+| depth | head (elements/s) | head-twin (elements/s) | twin / head, median | 95% interval | half-width |
+|---|---|---|---|---|---|
+| 16 | 101304 | 100934 | 0.9944 | 0.9898-1.0076 | 0.89% |
+| 1 | 78384 | 78261 | 0.9985 | 0.9875-1.0098 | 1.12% |
+
+The floor of the class is 1.12%, the wider half-width, and the comparison run C
+is summarised with it. The `reference` line, for later comparison with C: Redis
+7.2.16 hands over 286191 elements/s at depth 16 (p99 0.056 ms) and 114052 at
+depth 1 (p99 0.010 ms), against firn's 101304 (p99 0.760 ms) and 78384 (p99
+0.081 ms): firn is 0.354 and 0.687 of Redis, and the cell criteria need 1.4 and
+1.0. The client work fraction is 0.044 and 0.300 for firn, so these cells are
+not client-limited.
