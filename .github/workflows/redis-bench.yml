@@ -506,17 +506,16 @@ jobs:
     runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     timeout-minutes: 150
     env:
-      OUT: ${{ runner.temp }}/reproduce
       FIRN_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - name: Follow the guide in a fresh container
         env:
           GUIDE_THROUGH: ${{ inputs.guide_through }}
-        run: bash research/experiments/redis-bench/reproduce.sh "$OUT" "$GUIDE_THROUGH"
+        run: bash research/experiments/redis-bench/reproduce.sh "$RUNNER_TEMP/reproduce" "$GUIDE_THROUGH"
       - name: Publish the table
         if: always()
-        run: cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+        run: cat "$RUNNER_TEMP/reproduce/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
