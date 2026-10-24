@@ -82,8 +82,9 @@ the reply's raw text.
   the destination of an `LMOVE`), `waiter-survives-a-live-string-and-a-refused-push`
   (`LPUSH`, `LPUSHX` and `RPUSH` refused with WRONGTYPE leave the waiter
   blocked until `DEL` and `LPUSH` create the list) and
-  `pushes-onto-a-live-list-with-a-waiter-elsewhere` (seven list writes onto a
-  live list while a client waits on another key). Used by the scenarios
+  `pushes-onto-a-live-list-with-a-waiter-elsewhere` (seven list writes while a
+  client waits on another key: the first, an `RPUSH`, creates the list and the
+  other six write onto it). Used by the scenarios
   `narrow-expired-string-then-push`, `narrow-expired-string-then-move`,
   `narrow-live-string-refused-pushes` and
   `narrow-live-list-writes-with-waiter-elsewhere` in

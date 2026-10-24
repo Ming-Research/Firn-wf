@@ -81,7 +81,7 @@ on:
         type: boolean
         default: false
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list pubsub-channel pubsub-pattern blocking-handoff; compare also takes linsert and lmove"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list pubsub-channel pubsub-pattern blocking-handoff; compare also takes linsert, lmove and lpush_new"
         type: string
         default: ""
       depths:

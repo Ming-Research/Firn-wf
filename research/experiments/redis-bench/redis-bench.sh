@@ -42,8 +42,8 @@
 #                                 each pass starts every image in turn, the
 #                                 order reversed on even passes, and runs
 #                                 COMPARE_TESTS (default mset set get; any
-#                                 test of the default suite, linsert and
-#                                 lmove, and xadd_maxlen and xrange_10 for
+#                                 test of the default suite, linsert, lmove
+#                                 and lpush_new, and xadd_maxlen and xrange_10 for
 #                                 streams, which compare_client defines) at each
 #                                 depth in COMPARE_DEPTHS (default 16 1) for
 #                                 COMPARE_SECONDS (default 10) each, on
@@ -1397,9 +1397,16 @@ server_ticks() {
 }
 
 # The commands compare_client sends for the linsert and lmove tests, which the
-# timed runs and verify_list_forms both use. linsert_form takes the depth.
+# timed runs and verify_list_forms both use. linsert_form and lpush_new_form take
+# the depth.
 linsert_form() { echo "LINSERT ins$1:__rand_int__ AFTER pivot xxx"; }
 lmove_form() { echo "LMOVE mylist mylist RIGHT LEFT"; }
+lpush_new_form() { echo "LPUSH new$1:__rand_int__ xxx"; }
+# The key range of the lpush_new test. redis-benchmark reads -r as a C int, and
+# a range of two thousand million draws a key the server has not yet seen for
+# all but a fraction of a percent of the requests of a run of some ten million.
+# The other tests draw from 100,000 keys.
+NEW_LIST_RANGE=2000000000
 
 # One redis-benchmark run of <test> at depth <depth> for <requests> against
 # the started server, its client threads on CLIENT_CPUS; prints the rate over
@@ -1412,6 +1419,7 @@ lmove_form() { echo "LMOVE mylist mylist RIGHT LEFT"; }
 # timed interval, for cpu_busy.
 compare_client() {
     what="-t $1"
+    key_range=100000
     case $1 in
         linsert)
             # One of 100,000 short lists, each filled with copies of one pivot
@@ -1430,6 +1438,16 @@ compare_client() {
             redis-cli -p "$PORT" DEL mylist >/dev/null
             redis-cli -p "$PORT" RPUSH mylist a b c d e >/dev/null
             what=$(lmove_form)
+            ;;
+        lpush_new)
+            # Nearly every request pushes onto a key that does not exist, so
+            # that nearly every push creates its list: the list write that the
+            # head runs under the whole-keyspace hold. The lists stay in the
+            # server for the rest of its pass and are named by the depth, so
+            # that no run pushes onto another's; the test is the last of a
+            # pass, so that the larger keyspace changes no other cell.
+            key_range=$NEW_LIST_RANGE
+            what=$(lpush_new_form "$2")
             ;;
         lrange_*)
             # redis-benchmark fills the list an LRANGE test reads inside its own
@@ -1468,7 +1486,7 @@ compare_client() {
     set -f
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
-            -c 50 -n "$3" -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
+            -c 50 -n "$3" -r "$key_range" -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
     else
         # One process per client CPU, three connections each: one process's
         # threads stop near 6.6M requests a second on the 14900K, below what
@@ -1477,7 +1495,7 @@ compare_client() {
         index=0
         for cpu in $(echo "$CLIENT_CPUS" | tr ',' ' '); do
             taskset -c "$cpu" redis-benchmark -p "$PORT" -c 3 -n $(($3 / CLIENT_THREADS)) \
-                -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
+                -r "$key_range" -d 3 -P "$2" --csv $what >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
             pids="$pids $!"
             index=$((index + 1))
         done
@@ -1496,11 +1514,11 @@ compare_client() {
         }' "$OUT/compare-client.csv"
 }
 
-# The linsert and lmove forms change a list as the tests assume: one is sent
-# 100 and the other 101 times by redis-benchmark itself to a server with keys
-# the timed runs never use, and the lists must show it. A form that misses its
-# key, or a command that does not write, would otherwise be measured as a
-# miss and pass for a fast server.
+# The linsert, lmove and lpush_new forms change the keys as the tests assume:
+# the first is sent 100, the second 101 and the third 100 times by
+# redis-benchmark itself to a server with keys the timed runs never use, and
+# the lists must show it. A form that misses its key, or a command that does
+# not write, would otherwise be measured as a miss and pass for a fast server.
 verify_list_forms() {
     start "$1"
     redis-cli -p "$PORT" RPUSH ins0:000000000000 pivot >/dev/null
@@ -1510,11 +1528,18 @@ verify_list_forms() {
     redis-cli -p "$PORT" RPUSH mylist a b c d e >/dev/null
     redis-benchmark -p "$PORT" -c 1 -n 101 -q $(lmove_form) >/dev/null 2>&1
     rotated=$(redis-cli -p "$PORT" LRANGE mylist 0 -1 | tr '\n' ' ')
+    keys=$(redis-cli -p "$PORT" DBSIZE)
+    redis-benchmark -p "$PORT" -c 1 -n 100 -r "$NEW_LIST_RANGE" -q $(lpush_new_form 0) >/dev/null 2>&1
+    created=$(($(redis-cli -p "$PORT" DBSIZE) - keys))
     stop
     # 100 insertions after the one pivot make 101 elements; 101 rotations of
-    # five move the last element to the front.
+    # five move the last element to the front; 100 pushes onto keys drawn from
+    # two thousand million create 100 lists, or 99 if two draws agree.
     if [ "$length" != 101 ] || [ "$rotated" != "e a b c d " ]; then
         fail "$1" "the linsert and lmove forms (LLEN '$length', list '$rotated')"
+    fi
+    if [ "$created" -lt 99 ]; then
+        fail "$1" "the lpush_new form (created $created lists of 100 pushes)"
     fi
 }
 
@@ -1600,7 +1625,7 @@ if [ "$MODE" = compare ]; then
         for name in $names; do
             verify "$(compare_arg "$name")"
             case " $tests " in
-                *" linsert "*|*" lmove "*) verify_list_forms "$(compare_arg "$name")" ;;
+                *" linsert "*|*" lmove "*|*" lpush_new "*) verify_list_forms "$(compare_arg "$name")" ;;
             esac
         done
         sizes="$OUT/compare-sizes-$n.txt"

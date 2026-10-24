@@ -53,22 +53,32 @@ measurement.
   (`SUITE_DEFAULT` in `redis-bench.sh`, 21 rows with the `LRANGE` fill, which
   `compare` sends outside the timed span; `xadd` is one of them, a stream
   command of main that the head image's dispatcher reaches after trying the
-  four blocking commands), plus `linsert` and `lmove`, which `compare_client`
-  defines for this measurement; each at depth 16 and depth 1 on 2 server CPUs:
-  44 cells, with the append-only file off (the redis-bench default). With the
-  file on (`appendfsync everysec`, rewrites off, a fresh
+  four blocking commands), plus `linsert`, `lmove` and `lpush_new`, which
+  `compare_client` defines for this measurement; each at depth 16 and depth 1 on
+  2 server CPUs: 46 cells, with the append-only file off (the redis-bench
+  default). With the file on (`appendfsync everysec`, rewrites off, a fresh
   directory per run, which the instrument checks with INFO) the cells are
-  `set`, `lpush`, `rpush`, `linsert` and `lmove` at both depths: the copy into the file
-  exists only there, `set` is the control that the PR does not touch.
+  `set`, `lpush`, `rpush`, `linsert`, `lmove` and `lpush_new` at both depths: the
+  copy into the file exists only there, `set` is the control that the PR does
+  not touch. Of the list writes, only `lpush_new` runs the head's held path with
+  its staged copy: the other four push or insert onto a list that exists (the
+  first version of the first four cells measured below ran that path too), and
+  the head runs them as main does.
 - **Commands.** `linsert` is `LINSERT ins<depth>:<n> AFTER pivot xxx` on one of
   100,000 short lists filled with copies of the pivot outside the timed span (a
   list grows by a few hundred elements over the run, so the pivot scan stays one
   step); `lmove` is `LMOVE mylist mylist RIGHT LEFT` on a list of five, which
   rotates and keeps its length. Both send the 3-byte payload of the other tests
-  through 50 connections. Before the timed runs, each image's server receives 100
-  `LINSERT`s and 101 `LMOVE`s from redis-benchmark itself, and the run fails
-  unless the lists show the result (`verify_list_forms`: 101 elements, and the
-  last element moved to the front): a form that missed its key or wrote nothing
+  through 50 connections. `lpush_new` is `LPUSH new<depth>:<n> xxx` with `n`
+  drawn from 2,000,000,000 keys (`-r` is a C int in redis-benchmark), so that
+  all but a fraction of a percent of the requests of a run of some ten million
+  push onto a key that does not exist and create its list; the lists stay in the
+  server for the rest of its pass, and the test is the last of the pass, so that
+  the larger keyspace changes no other cell. Before the timed runs, each image's
+  server receives 100 `LINSERT`s, 101 `LMOVE`s and 100 `LPUSH`es of `lpush_new`
+  from redis-benchmark itself, and the run fails unless the keys show the
+  result (`verify_list_forms`: 101 elements, the last element moved to the
+  front, and at least 99 new keys): a form that missed its key or wrote nothing
   would otherwise be measured as a fast miss.
 - **Images.** `base`, `head` and `head-twin` (the head again, as the noise
   control: two builds of one source, measured in the same interleaving), 6
@@ -81,7 +91,7 @@ measurement.
   the limit (the client CPUs busy more than 0.90, as `compare-limited.csv`
   marks) is reported and not judged. A cell that does not decide is repeated
   with more passes before it is called.
-- **Chance.** 44 cells each have about a 2.5% chance of lying wholly below 1
+- **Chance.** 46 cells each have about a 2.5% chance of lying wholly below 1
   with no change in the code, so one cell in a run may. The control for that is
   the twin of the same cell: a cell whose twin/head interval lies wholly off 1
   in the same run, or whose twin half-width is above the floor (Noise), does not
@@ -96,14 +106,16 @@ measurement.
   with more passes; this run's twin half-widths are then proposed to the
   architect as the class floor for the record of the 14900K.
 - **What rejects.** A cell wholly on the slower side, in either AOF setting,
-  rejects the claim its command rests on. For `lpush`, `rpush`, `linsert` and
-  `lmove` it is "the staged copy costs nothing measurable". For every other cell
+  rejects the claim its command rests on. For `lpush_new` it is "creating a list
+  under the whole-keyspace hold, with its effects staged and copied into the
+  file, costs nothing measurable". For `lpush`, `rpush`, `linsert` and `lmove` it
+  is "a write onto an existing list runs as it did before the PR". For every other cell
   it is "an ordinary command's path is unchanged", which the design states for
   `GET` and `SET` (blocking-lists.md: they gain no shared target and no registry
   lookup) and which the other commands that are not list producers rest on
   alike; the cause is then not the copy and the profile below does not apply
   to it. For the list producers, the profile of
-  the first `lpush 16` and `lmove 16` pass of each image (`perf record`, flat,
+  the first `lpush 16`, `lmove 16` and `lpush_new 16` pass of each image (`perf record`, flat,
   no call stacks) separates the hypotheses of question 1: share of cycles in the
   allocator and `memcpy` against share in the shared-acquire function and
   the hub. A share that is near zero in `base` and large in `head` names the
@@ -185,8 +197,8 @@ orders them on the 14900K, one at a time.
 
 | run | mode and inputs | answers | expected duration |
 |---|---|---|---|
-| A1 | `compare`, `base`, `head`, `head-twin`, the 22 tests, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16` | question 1, file off | about 70 min (the 38-cell run 39573904480 took 60) |
-| A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove`, the same profile | question 1, file on | about 20 min |
+| A1 | `compare`, `base`, `head`, `head-twin`, the 23 tests with `lpush_new` last, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16;lpush_new 16` | question 1, file off | about 95 min (the 44-cell first A1 run 40049518328 took 85, builds included) |
+| A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove lpush_new`, the same profile | question 1, file on | about 25 min |
 | B | `workloads` with `workload_images`, `head` and `head-twin` (and the `reference` line that `workload_images` adds), `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
 
@@ -274,8 +286,9 @@ twin interval 0.9942-1.0237):
 | linsert | 1 | 684838 | 587560 | 0.8631 | 0.8407-0.8836 |
 | lmove | 1 | 771334 | 643328 | 0.8321 | 0.8191-0.8418 |
 
-The file is off, so the staged copy into it does not run, and the 64-byte
-buffer is allocated in both images' paths alike. The profile of the first
+The file is off, so the staged copy into it does not run; `head` still
+allocates the 64-byte effects buffer, which `base`, appending in place, does
+not. The profile of the first
 `lpush 16` pass has `wf_cmap_hold` (the runtime function that takes the
 whole-keyspace hold) at 51.16% of the cycles in `head` and `try_entry` (the
 per-key entry hold) at 14.13% in `base`; `lmove 16` has `wf_cmap_hold` at
@@ -283,14 +296,15 @@ per-key entry hold) at 14.13% in `base`; `lmove 16` has `wf_cmap_hold` at
 `memcpy` are each below 1% in `head` (`malloc` 0.57%, `__memmove_avx_unaligned_erms`
 0.36% in `lpush 16`). So the cost of these commands is the whole-keyspace,
 metadata, event-hub and server-state hold that
-[blocking-lists.md](../../../design/firn/blocking-lists.md) gives every list
-producer (`run_list_producer`), which serialises the two server contexts,
+[blocking-lists.md](../../../design/firn/blocking-lists.md) gave every list
+producer in this first version (`run_list_producer`), which serialises the two server contexts,
 and not the staged copy or its buffer: neither of the other two options of
 [firn-q-list-producer-staging](../../../design/firn/append-only-file.md) (restore
 the in-place append, reuse a buffer) would remove it. This is read from one
 profile of one pass per image; the ratio of the cells is the measurement,
-the attribution to the hold is inferred and would be confirmed by a
-`head` variant whose producers take only the key's entry.
+the attribution to the hold is inferred. The head is the variant that would
+confirm it: its list writes onto a live list take only the key's entry, and the
+repeated A1 on it shows whether the 8 cells return to `base`.
 
 The other 35 cells have no interval wholly on the slower side. The 11 faster
 cells are all at depth 16 (0.6% to 5.2% above `base`, `get` 1.0468,
