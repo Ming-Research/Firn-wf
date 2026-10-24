@@ -27,8 +27,9 @@ acceptance rows.
       with the 95% interval of the mean log ratio (Student's t) and its
       verdict; the twin's ratio to head with its half-width, the run's noise;
       and, where competitors ran, head's median rate and p99 against each
-      competitor's, and against the fastest one the depth-1 criteria (the
-      median not below it, the p99 not above its p99). A cell is client-limited
+      competitor's, and against the fastest one the 95% interval of the
+      per-pass ratio and the depth-1 criteria (the median not below it, the
+      p99 not above its p99). A cell is client-limited
       when the median client work fraction in workload-limited.csv of head or
       of the fastest competitor is above 0.90, and then asks only that head is
       not behind: its p99 is reported and not judged. The last line counts the
@@ -234,6 +235,11 @@ def workloads(args):
             rate_ok = multiple >= 1.0
             p99_ok = limited or head_p99 <= best_p99
             failures += (not rate_ok) + (not p99_ok)
+            shared = sorted(set(lines[head]) & set(lines[best]))
+            if len(shared) >= 2:
+                low, high = interval([lines[head][p] / lines[best][p] for p in shared])
+                print(f"{head} / {best} per pass: 95% interval {low:.4f}-{high:.4f} over "
+                      f"{len(shared)} passes ({verdict(low, high)})")
             print(f"{head} / {best} (the fastest competitor): {multiple:.3f}, needs at least 1.0"
                   f"{' (client-limited)' if limited else ''}: {'ok' if rate_ok else 'BELOW'}")
             print(f"p99 {head_p99:.3f} ms against the fastest competitor's {best_p99:.3f} ms: "
@@ -372,6 +378,9 @@ def selftest():
         assert "image-after / garnet (the fastest competitor): 0.947, needs at least 1.0: BELOW" in text, text
         assert "p99 2.000 ms against the fastest competitor's 1.500 ms: HIGHER" in text, text
         assert "image-after / reference: 1.125, p99 2.000 ms against 3.000 ms" in text, text
+        # the per-pass interval against the fastest competitor lies wholly
+        # under 1 here: 90 against 95 in every pass, give or take one
+        assert "image-after / garnet per pass: 95% interval " in text and "over 4 passes (slower)" in text, text
         assert text.rstrip().endswith("2 criteria not met"), text
         # A client-limited cell does not judge the p99: 3 criteria become 1.
         limited = ["line,pass,cpus,workload,connections,client_busy_mean,client_work_fraction,client_limited"]

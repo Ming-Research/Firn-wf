@@ -1189,6 +1189,62 @@ wholly on the slow side with no real difference is about 10% (deduced from
 exact). The size of each rejected cell and the cause, 0.2% of which is the
 NO-TOUCH test, go to the owner on card firn-q-mset-regression.
 
+#### Run B2 on the merged head
+
+Run [40072228392](https://github.com/Ming-Research/Firn-wf/actions/runs/40072228392),
+mode `workloads` with `workload_images`, at ee2dcf4: `head` and `head-twin`
+5a0a1b9, Redis 7.2.16, Valkey 9.1.2, Dragonfly v2.0.2 and Garnet 2.2.3 (the
+newest stable release of each when the run was made), tests `handshake` and
+`client-list`, 50 connections, depth 1, server CPUs 2 and 4, client CPUs 16-31,
+12 passes of 10 seconds, `summary.py workloads` (its per-pass interval against
+the fastest rival is new in this change, so the table's intervals were first
+computed with a short script that gave the same figures). Medians over the 12
+passes:
+
+| handshake | rate per second | p99 (ms) | client work fraction |
+| --- | --- | --- | --- |
+| firn (head) | 23.26k | 5.311 | 0.985 |
+| firn (head-twin) | 23.31k | 5.335 | 0.984 |
+| Redis 7.2.16 | 23.42k | 5.260 | 0.979 |
+| Valkey 9.1.2 | 23.25k | 5.278 | 0.979 |
+| Dragonfly v2.0.2 | 21.97k | 5.361 | 0.962 |
+| Garnet 2.2.3 | 20.87k | 5.258 | 0.971 |
+
+| CLIENT LIST | rate per second | firn / rival | p99 (ms) | client work fraction |
+| --- | --- | --- | --- | --- |
+| firn (head) | 127.6k | | 0.704 | 0.085 |
+| firn (head-twin) | 127.5k | 1.001 | 0.732 | 0.085 |
+| Redis 7.2.16 | 34.6k | 3.693 | 2.455 | 0.036 |
+| Valkey 9.1.2 | 28.3k | 4.522 | 3.008 | 0.034 |
+| Dragonfly v2.0.2 | 23.9k | 5.339 | 4.556 | 0.021 |
+| Garnet 2.2.3 | 219.8k | 0.579 | 0.621 | 0.152 |
+
+Rule 2, the handshake against the fastest rival, which is Redis 7.2.16. The
+cell is client-limited, the median work fraction being 0.985 for firn and 0.979
+for Redis, both above 0.90 (every line stayed between 0.951 and 0.992 over the
+passes), so it asks only that firn is not behind. The head/Redis median is
+0.9945 (firn slower in 9 of the 12 passes) and its 95% interval 0.9849-1.0048
+contains 1, so the interval is not wholly under 1 and the condition holds. The
+shortfall of 0.55% is smaller than the twin's half-width of 1.45% (twin/head
+0.9837-1.0125), so it is reported undecided. Against Valkey the ratio is 1.0010
+(0.9996-1.0054), against Dragonfly 1.0608 (1.0503-1.0711) and against Garnet
+1.1143 (1.1040-1.1301). The p99 is not judged in a client-limited cell: 5.311
+ms for firn against 5.260 ms for Redis.
+
+Rule 3, `CLIENT LIST`. Against the fastest rival other than Garnet, Redis, firn
+is 3.693 times faster (95% interval 3.669-3.720), with a p99 of 0.704 ms
+against 2.455 ms; against Valkey 4.522 (4.484-4.548) with 3.008 ms, against
+Dragonfly 5.339 (5.304-5.377) with 4.556 ms. These are the first measurement's
+3.7, 4.5 and 5.3, so the merged accept and dispatch paths do not cost
+`CLIENT LIST`. Against Garnet firn is 0.579 times as fast (0.573-0.588), its
+p99 0.704 ms against 0.621 ms, reported and not judged, as owner card
+firn-client-merge-perf ruled; the gap is the work of firn-client-list-garnet.
+
+Twin half-widths of this run: handshake 1.45% (1.04% in the first measurement),
+`CLIENT LIST` 0.54% (the same). `summary.py` prints "3 criteria not met": the
+`CLIENT LIST` rate and p99 against Garnet, and the handshake median 0.993
+(its own median-only check, which rule 2 replaces by the interval above).
+
 #### Runs C1 and C2: is the shortfall stable, and is the NO-TOUCH test its cause?
 
 Written before the runs. Run A rejected mset and Run B1 rejected `setmany-tx`,
