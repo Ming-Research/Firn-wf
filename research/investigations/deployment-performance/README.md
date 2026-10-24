@@ -1301,3 +1301,41 @@ and B1 scaled by the square root of 18/36 (deduced): H about 0.35% for mset and
 So unless the shortfall or the test's share is about that size, reading 5 is
 the likely one for V, and it is reported as such.
 
+
+##### Run C1 on `mset`
+
+Run [40089657162](https://github.com/Ming-Research/Firn-wf/actions/runs/40089657162),
+mode `compare` on the 14900K, run at 30de5d8 (the dispatching checkout, which
+differs from 5a0a1b9 only by `main`'s release-packaging files and the record),
+images `base` 05f7e89, `head` and `head-twin` 5a0a1b9, `variant` 0f45bbf; test
+`mset`, depth 1, server CPUs 2 and 4, client CPUs 16-31, 36 passes of 5
+seconds, profile off, `summary.py ratios` once per pair. No sample was
+client-limited (client busy fraction at most 0.33).
+
+| image | rate per second (median) | p99 (ms, median) | slower than `base` in |
+| --- | --- | --- | --- |
+| base | 606.7k | 0.099 | |
+| head | 604.1k | 0.103 | 26 of 36 passes |
+| head-twin | 604.9k | 0.103 | 19 of 36 passes |
+| variant | 605.3k | 0.099 | 21 of 36 passes |
+
+| pair | median | 95% interval | verdict |
+| --- | --- | --- | --- |
+| H, head/base | 0.9950 | 0.9902-0.9978 | wholly under 1 |
+| T, twin/head | 1.0018 | 0.9939-1.0057 | contains 1 |
+| V, variant/head | 1.0044 | 0.9970-1.0069 | contains 1 |
+| W, variant/base | 0.9967 | 0.9911-1.0008 | contains 1 |
+
+Reading. T contains 1 (reading 0 does not apply), H does not, V contains 1:
+reading 5. The `mset` shortfall shows again in a dispatch built for it, 0.50%
+at the median and between 0.22% and 0.98% by the interval, which overlaps
+Run A's 0.9906 (0.9819-0.9947 on 12 passes). Removing the NO-TOUCH test moves
+the rate by +0.44% at the median, with an interval from -0.30% to +0.69%: the
+data cannot tell the test from nothing, and they cannot exclude that it is the
+whole shortfall (the upper end of V, 0.69%, is above the shortfall of 0.50%).
+By the criterion written before the run, reading 5 with H wholly under 1 is one
+of the two results that reject the proposal that the test causes the
+shortfall; what the data support is only that the test accounts for at most
+0.69% of it and the cause is undecided. The half-widths were as predicted for H
+(0.38% against about 0.35%) and wider for T (0.59%). The instruction counts
+of the attribution run (29 more of 14,820 per `MSET`, 0.2%) lie inside V.
