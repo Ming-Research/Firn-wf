@@ -115,33 +115,48 @@ and 4, the clients on the E-cores 16-31 (AGENTS.md), 8 interleaved passes of
 5 seconds each with the image order reversed on even passes, no `reference`
 line, no profile.
 
-**Measure.** For each cell (test and depth) the ratio head/base of the
-requests per second in each pass, and its median over the passes; the 95%
-interval of the mean log ratio over the passes (Student's t), and the same
-for base-twin/base, as `summary.py ratios` prints them.
+**Measure.** For each cell (test and depth) the ratio of the requests per
+second in each pass, its median over the passes, and the 95% interval of the
+mean log ratio over the passes (Student's t), as two invocations of
+`summary.py ratios` on the run's `compare.csv` print them: `--base base --head
+head` gives head/base, and `--base base --head base-twin` gives base-twin/base,
+the same image against itself, whose interval is the cell's noise. The tool's
+`--twin` option is not used: it divides the twin by `head`, which moves when
+the head really differs from the base.
 
 **Verdict per cell, picked from no threshold.** The interval of head/base
 wholly below 1: slower, of any size. Wholly above 1: faster. Across 1: no
-detected change. A cell counts only if the twin's interval holds 1. A cell
-whose client work fraction (`compare-limited.csv`) has a median above 0.90 in
-any image is client-limited: its verdict is reported and not judged. A cell
-that does not count, or whose interval is too wide to say whether the
-head is slower than the twin's noise, is repeated with more passes in one
-follow-up run, or reported unresolved.
+detected change. A cell counts only if its base-twin/base interval holds 1;
+a cell whose twin interval excludes 1 does not count, and no other cell is
+affected. With 46 cells, about 2 twin intervals (46 times 5%, assuming
+independent cells; deduced, not measured) exclude 1 by chance in a quiet run,
+and about 1 head/base interval (46 times 2.5%) lies wholly below 1 by chance
+alone; the run reports how many of each it found, and whether the excluded
+cells cluster in one pass or one image position, which would point at a
+disturbed host. A cell whose client work fraction (`compare-limited.csv`)
+has a median above 0.90 in any image is client-limited: its verdict is
+reported and not judged. The cells that do not count, those whose interval
+is too wide to say whether the head is slower than the twin's noise, and
+those wholly below 1 are repeated together in one follow-up run of the same
+images, those tests at both depths and 16 passes; a cell wholly below 1 is
+listed as a regression only if it is wholly below 1 again there, and a cell
+that still does not count is reported unresolved.
 
 **Noise floor.** No floor is recorded for this class of workload (single-key
 commands in `compare` mode on 2 server CPUs). This run measures it: each
 cell's twin half-width is the usual noise of that cell on this host, and the
-architect is asked to copy the widest per depth to the 14900K record. The
-run counts only if every cell's twin interval holds 1.
+architect is asked to copy the widest of the counting cells per depth to the
+14900K record.
 
 **What each result shows.**
 
 - Every cell across 1 or above: the pin move costs no detected throughput on
   these tests.
-- A cell wholly below 1: a regression of the interval's size. It is listed in
-  the acceptance with its size and goes to its own item or a card; the cause
-  is not named without a profile.
+- A cell wholly below 1 in the run and again in its follow-up: a regression
+  of the follow-up interval's size. It is listed in the acceptance with its
+  size and goes to its own item or a card; the cause is not named without a
+  profile. Wholly below 1 in the run only: not a regression, and reported as
+  such.
 - A cell wholly above 1: an improvement, reported with its size.
 - The comparison cannot say which of the compiler, the Halo sources or the
   edits to firn's own source moved a cell; a regression that needs that goes
