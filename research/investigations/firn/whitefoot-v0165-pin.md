@@ -131,16 +131,16 @@ a cell whose twin interval excludes 1 does not count, and no other cell is
 affected. With 46 cells, about 2 twin intervals (46 times 5%, assuming
 independent cells; deduced, not measured) exclude 1 by chance in a quiet run,
 and about 1 head/base interval (46 times 2.5%) lies wholly below 1 by chance
-alone; the run reports how many of each it found, and whether the excluded
-cells cluster in one pass or one image position, which would point at a
-disturbed host. A cell whose client work fraction (`compare-limited.csv`)
+alone; the run reports how many of each it found, set against those
+expectations, and whether the excluded cells cluster in one pass or one
+image position, which would point at a disturbed host. A cell whose client work fraction (`compare-limited.csv`)
 has a median above 0.90 in any image is client-limited: its verdict is
-reported and not judged. The cells that do not count, those whose interval
-is too wide to say whether the head is slower than the twin's noise, and
-those wholly below 1 are repeated together in one follow-up run of the same
-images, those tests at both depths and 16 passes; a cell wholly below 1 is
-listed as a regression only if it is wholly below 1 again there, and a cell
-that still does not count is reported unresolved.
+reported and not judged. The cells that do not count and those whose
+interval is too wide to say whether the head is slower than the twin's
+noise get more pairs in one follow-up run of the same images, those tests at
+both depths and 16 passes; a cell that still does not count is reported
+unresolved. A cell wholly below 1 is decided, and the follow-up does not
+revisit it.
 
 **Noise floor.** No floor is recorded for this class of workload (single-key
 commands in `compare` mode on 2 server CPUs). This run measures it: each
@@ -152,11 +152,10 @@ architect is asked to copy the widest of the counting cells per depth to the
 
 - Every cell across 1 or above: the pin move costs no detected throughput on
   these tests.
-- A cell wholly below 1 in the run and again in its follow-up: a regression
-  of the follow-up interval's size. It is listed in the acceptance with its
-  size and goes to its own item or a card; the cause is not named without a
-  profile. Wholly below 1 in the run only: not a regression, and reported as
-  such.
+- A cell wholly below 1: a regression of the interval's size, of any size. It
+  is listed in the acceptance with its size, and with the count of such cells
+  against the one expected by chance, and goes to its own item or a card; the
+  cause is not named without a profile.
 - A cell wholly above 1: an improvement, reported with its size.
 - The comparison cannot say which of the compiler, the Halo sources or the
   edits to firn's own source moved a cell; a regression that needs that goes
