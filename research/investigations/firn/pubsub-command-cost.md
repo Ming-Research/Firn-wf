@@ -644,3 +644,13 @@ profile shows; `incr` was not probed and is taken to be the same effect
 two commands of the string type at depth 16, or to ask for further work on the
 placement of the hot functions, which routing by kind (the classify-once
 design above) would change anyway.
+
+The runs above measured the branch over `7f8b4f84658b`. The branch has since
+merged the main line, which brought in the stream commands and the startup
+configuration; the tables of the admission flags carry the stream kinds now
+(142, 146 to 148 as writes, 142 and 148 as denyoom), regenerated from the lists
+of the main line and checked equal for kinds 0 to 999. The merged program was
+not measured: the hot functions are laid out again by the new commands, and
+this record's finding is that a cell's cost of a few percent follows such a
+layout, so `set` and `incr` at depth 16 are to be measured again on the merged
+program before the comparison is taken to describe it.
