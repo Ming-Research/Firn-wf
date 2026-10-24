@@ -1188,3 +1188,60 @@ wholly on the slow side with no real difference is about 10% (deduced from
 `1 - 0.975^22 - 22 * 0.025 * 0.975^21`, each cell independent and its interval
 exact). The size of each rejected cell and the cause, 0.2% of which is the
 NO-TOUCH test, go to the owner on card firn-q-mset-regression.
+
+#### Runs C1 and C2: is the shortfall stable, and is the NO-TOUCH test its cause?
+
+Written before the runs. Run A rejected mset and Run B1 rejected `setmany-tx`,
+each in a dispatch of its own; the attribution dispatch did not detect mset
+slower. Two questions: does each shortfall show again in a dispatch built for
+it, and if it does, does removing the NO-TOUCH test from `update_access` give
+it back? The instruction counts say the test costs about 0.2% of an MSET
+(29 more instructions of 14,820); a rate effect larger than that would mean the
+test costs more than its instructions.
+
+Images, built in one dispatch each: `base` 05f7e89, `head` and `head-twin`
+5a0a1b9, and `variant`, commit 0f45bbf on branch
+`claude/client-handshake-notouch-variant`, which is 5a0a1b9 with the three
+lines of `update_access` in `firn/commands/access.wf` that return early under
+CLIENT NO-TOUCH removed. The variant is for measuring only; it answers wrongly
+for a connection in NO-TOUCH mode, which no measured workload uses, and its
+branch is deleted after the runs.
+
+- Run C1, `redis-bench.yml` mode `compare` on the 14900K: test `mset`, depth 1,
+  server CPUs 2 and 4, client CPUs 16-31, 36 passes of 5 seconds, profile off;
+  `summary.py ratios` for `base`/`head` with the twin, `head`/`variant` and
+  `base`/`variant`. About 20 minutes.
+- Run C2, mode `workloads` with `workload_images`, firn only: tests
+  `setmany-tx` and `limiter-tx`, 50 connections, the same CPUs, 36 passes of 10
+  seconds; `summary.py workloads` for the same three pairs. `limiter-tx`, a
+  transaction of `INCRBY` and `PTTL` that Run B1 did not reject, is the control:
+  reported and not read. About 55 minutes.
+
+Per cell of `mset` and `setmany-tx`, with H the 95% interval of head/base, V of
+variant/head, W of variant/base and T of twin/head (the mean log ratio over the
+passes, Student's t, as in the rules above), read once:
+
+0. T excludes 1: this run's noise did not settle for the cell; it is not read.
+1. H contains 1: the shortfall is not detected in this dispatch; it is at most
+   1 minus the lower end of H in this dispatch (not shown absent). V and W are
+   reported.
+2. H is wholly under 1, V wholly above 1 and W contains 1: the NO-TOUCH test
+   accounts for the shortfall, of the size of V.
+3. H is wholly under 1, V wholly above 1 and W wholly under 1: the test accounts
+   for the part of the size of V, and the shortfall left is the interval W.
+4. H is wholly under 1 and V wholly under 1: the variant is slower than head
+   though it does less work, so a change of three instructions moves the rate by
+   about the size of V and the shortfall is not the test; code placement is
+   the candidate and is not tested.
+5. H is wholly under 1 and V contains 1: the test cannot be told from nothing;
+   it accounts for at most the upper end of V minus 1, and the cause is
+   undecided.
+
+What would reject the proposal that the test causes the shortfall: readings 4
+and 5 with H wholly under 1, or reading 1. No further passes are added whatever
+the result. The half-widths to expect, from the 18-pass half-widths of Run A
+and B1 scaled by the square root of 18/36 (deduced): H about 0.35% for mset and
+0.62% for `setmany-tx`, and T of `setmany-tx` about 1.15% (T was 1.62% in B1).
+So unless the shortfall or the test's share is about that size, reading 5 is
+the likely one for V, and it is reported as such.
+
