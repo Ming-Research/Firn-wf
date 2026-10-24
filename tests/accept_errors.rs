@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 
 const EMFILE_LOG: &[u8] = b"Accepting client connection: Too many open files\n";
 const ACCEPT_LOG_PREFIX: &[u8] = b"Accepting client connection: ";
+const SUPPRESSED_LOG_SUFFIX: &[u8] = b" accept errors)\n";
 const INITIAL_DESCRIPTOR_LIMIT: u64 = 256;
 
 #[repr(C)]
@@ -277,6 +278,61 @@ fn assert_saturated_quiet(child: &ProgramChild, native: bool, port: u16, budget:
         failure_diagnostics(child, native, port));
 }
 
+/// The limiter's second diagnostic carries the number of errors it held back.
+/// A saturated table keeps failing every 100 ms, so that line follows the first
+/// by about a second. Wait for it here, so the check of the final stderr below
+/// always has a suffixed line to read, whatever the quiet phase happened to see.
+fn await_suppressed_log(child: &ProgramChild, native: bool, port: u16, budget: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !matches!(child.stderr_occurrences(SUPPRESSED_LOG_SUFFIX), Some(count) if count > 0) {
+        assert!(Instant::now() < deadline,
+            "no accept diagnostic carried a suppressed-error count within five seconds of \
+            saturation: {budget}{}", failure_diagnostics(child, native, port));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Check what the limiter reported over the whole run. The first diagnostic is
+/// the bare EMFILE line; every later one is that line plus ` (suppressed N
+/// accept errors)`, N a positive decimal without leading zeros. The first N is
+/// at least 2: the limiter holds the second diagnostic back for a second, which
+/// spans many 100 ms retries, and a count stuck at 1 would show a reset on each
+/// error. Together the counts and the lines cannot exceed the errors the pause
+/// permits in the fault window, which fails a count that is never cleared.
+fn assert_limiter_counts(stderr: &[u8], fault_elapsed: Duration, budget: &str) {
+    let text = String::from_utf8_lossy(stderr);
+    let lines = text.lines().filter(|line| line.as_bytes().starts_with(ACCEPT_LOG_PREFIX))
+        .collect::<Vec<_>>();
+    assert!(lines.len() >= 2, "expected the EMFILE line and a suppressed-count line: {budget}; stderr={text}");
+    assert_eq!(lines[0], "Accepting client connection: Too many open files",
+        "the first accept diagnostic carries no suppressed count: {budget}; stderr={text}");
+    let mut errors = lines.len() as u64;
+    let mut counts = Vec::new();
+    for line in &lines[1..] {
+        let count = line
+            .strip_prefix("Accepting client connection: Too many open files (suppressed ")
+            .and_then(|rest| rest.strip_suffix(" accept errors)"))
+            .unwrap_or_else(|| panic!("a later accept diagnostic must end with its suppressed count, \
+                got {line:?}: {budget}; stderr={text}"));
+        assert!(!count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit())
+            && !count.starts_with('0'),
+            "suppressed count must be a positive decimal without leading zeros, got {count:?}: \
+            {budget}; stderr={text}");
+        let count: u64 = count.parse().unwrap_or_else(|error| panic!(
+            "suppressed count {count:?} is not a u64: {error}: {budget}; stderr={text}"));
+        errors += count;
+        counts.push(count);
+    }
+    assert!(counts[0] >= 2, "the first suppressed count covers about a second of 100 ms retries, \
+        got {}: {budget}; stderr={text}", counts[0]);
+    // Every accept error but ConnectionAborted waits 100 ms before the next
+    // attempt, so the fault window holds at most one error per 100 ms plus the first.
+    let possible = (fault_elapsed.as_millis() / 100) as u64 + 2;
+    assert!(errors <= possible,
+        "logged errors plus suppressed counts ({errors}) exceed the {possible} the 100 ms pause \
+        permits in {fault_elapsed:?}: counts={counts:?}; {budget}; stderr={text}");
+}
+
 fn stop_after_emfile(
     mut child: ProgramChild, caller: &mut TcpStream, native: bool, port: u16,
     budget: &str, timeout: Duration, fault_began: Instant,
@@ -311,6 +367,7 @@ fn stop_after_emfile(
     assert!(total_logs as u64 <= allowed_logs,
         "accept diagnostics exceeded one per second plus two boundary lines before exit: \
         logs={total_logs}, allowed={allowed_logs}, elapsed={fault_elapsed:?}; {budget}; stderr={errors}");
+    assert_limiter_counts(&output.stderr, fault_elapsed, budget);
 }
 
 #[test]
@@ -449,6 +506,7 @@ fn accept_emfile_case(native: bool, shutdown_while_saturated: bool) {
     assert_eq!(descriptors(&child, native, port), previous,
         "all saturated descriptors must remain open during the quiet phase: {budget}{}",
         failure_diagnostics(&child, native, port));
+    await_suppressed_log(&child, native, port, &budget);
     if shutdown_while_saturated {
         stop_after_emfile(child, &mut admitted[0], native, port, &budget, Duration::from_secs(1), fault_began);
         return;

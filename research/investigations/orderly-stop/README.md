@@ -539,7 +539,8 @@ specific aborted-connection class and ends orderly cancellation normally.
 
 ### Bounded accept-error diagnostics
 
-Before this change, firn had no operational logger; main discarded stderr
+Before this change, firn had no operational logger; its only stderr output
+was the startup configuration diagnostics, nothing was written while serving,
 and `DEBUG LOG` was a no-op. Accept errors now use a bounded stderr sink,
 Redis's phrase, the host error-description API already used for AOF errors,
 and LF. The first Linux EMFILE diagnostic remains
