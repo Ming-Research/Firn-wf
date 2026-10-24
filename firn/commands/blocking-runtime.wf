@@ -10,6 +10,23 @@ alias ServerState = pkg::store::ServerState;
 alias Span = pkg::protocol::Span;
 alias Time = pkg::store::Time;
 
+fn key_awaited(hub: &Hub, key: &[u8]) -> awaited: Bool reads(hub), reads(key) {
+  doc "Whether a blocked client is registered on the key. A push that would create a list at the key asks it holding the key's entry, Meta and the hub: a registration holds the whole keyspace, which excludes every entry, so none can appear before that push commits, and a client found here is served by the whole-keyspace run. The count of registered keys is read first, so that no key is copied while no client waits on any.";
+  let counts = pkg::connection_events::blocking_counts(hub: hub);
+  if counts.keys == 0_u64 {
+    return False();
+  }
+  let name = pkg::bytes::make_key(input: key, start: 0_u64, length: key^.len);
+  match pkg::connection_events::block_front(hub: hub, key: &name) {
+    Some(value: id) => {
+      return True();
+    }
+    None() => {
+      return False();
+    }
+  }
+}
+
 fn list_signal(client: &Client, key: &[u8]) -> result: unit reads(key), writes(client.list_ready) {
   doc "Stages Redis dbAdd's list-ready notification in the current execution unit, in first-signal order. It is drained only after that unit commits, and abandoned script attempts discard it. No GET/SET path calls this helper.";
   let name = pkg::bytes::make_key(input: key, start: 0_u64, length: key^.len);

@@ -21,7 +21,7 @@ fn blocking_commit(meta: &pkg::store::Meta, sequence: &pkg::store::WriteSequence
 }
 
 fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
-  doc "Runs a list-producing command through the existing held command parts. A command of a connection that is not promoted reaches it from run_list_write once that finds the command would create a list; RENAME, RENAMENX, COPY and a promoted connection's commands come here directly. Dataset changes, AOF publication, the producer's complete reply commitment and FIFO service of newly ready lists occur in that order under one keyspace, metadata, event-hub and server-state hold. Ordinary GET and SET retain their existing dispatch and targets. LPUSH, RPUSH, LPUSHX, RPUSHX and LINSERT change only their one key, so their statement opens the one-key sequence: during a rewrite a key already journaled in the window records only these appended bytes, not a further complete image of the list.";
+  doc "Runs a list-producing command through the existing held command parts. A top-level LPUSH, RPUSH, LMOVE or RPOPLPUSH of a connection that is not promoted reaches it from the dispatcher when run_push or run_lmove finds that it would create a list that a blocked client waits on: a blocked client waits only on a key that holds no live list and only the creation of a list there makes it ready, as Redis's dbAdd does, so every other list write holds only its keys' entries and the metadata, as before blocking lists existed. RENAME, RENAMENX, COPY and a promoted connection's commands come here directly. Dataset changes, AOF publication, the producer's complete reply commitment and FIFO service of newly ready lists occur in that order under one keyspace, metadata, event-hub and server-state hold. Ordinary GET and SET retain their existing dispatch and targets. LPUSH, RPUSH, LPUSHX, RPUSHX and LINSERT change only their one key, so their statement opens the one-key sequence: during a rewrite a key already journaled in the window records only these appended bytes, not a further complete image of the list.";
   let journal = None<pkg::store::AccessJournal>();
   let effects = box_slots_new::<u8>(capacity: 64_u64);
   let stage = pkg::connection_events::stage_new();
@@ -47,42 +47,6 @@ fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots
     blocking_drain(map_shared: &store^.keys, keys: keys, meta: meta, hub: hub, server: server, client: client, clock: clock, wall: &store^.wall, logged: logged);
   }
   return unit;
-}
-
-fn run_list_write(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
-  doc "Runs a top-level LPUSH, RPUSH, LPUSHX, RPUSHX, LINSERT, LMOVE or RPOPLPUSH of a connection that is not promoted. A blocked client waits only on a key that holds no live list and only a command that creates a list there makes it ready, as Redis's dbAdd does, so a command that finds a live list at its destination, and one that never creates a list, cannot make anyone ready: it runs holding only its keys' entries and the metadata, as before blocking lists existed. A command that would create the list runs run_list_producer, which holds the keyspace and the event hub together and serves the clients it makes ready. A promoted connection always runs run_list_producer.";
-  let done = run_list_write_entries(store: store, kind: kind, input: input, args: args, client: client, env: env, time: time);
-  if bnot(done) {
-    run_list_producer(store: store, kind: kind, input: input, args: args, client: client, env: env, time: time, clock: clock);
-  }
-  return unit;
-}
-
-fn run_list_write_entries(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "The entry-holding run of run_list_write: True when the command is complete, False when it would create a list and nothing has been answered.";
-  let head = True();
-  let tail = False();
-  let creating = False();
-  let existing = True();
-  if kind == 60_u64 {
-    return run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: head, existing: creating);
-  }
-  if kind == 61_u64 {
-    return run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: tail, existing: creating);
-  }
-  if kind == 62_u64 {
-    return run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: head, existing: existing);
-  }
-  if kind == 63_u64 {
-    return run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: tail, existing: existing);
-  }
-  if kind == 72_u64 {
-    return run_linsert(store: store, input: input, args: args, client: client, env: env, time: time);
-  }
-  if kind == 74_u64 {
-    return run_lmove_named(store: store, input: input, args: args, client: client, env: env, time: time);
-  }
-  return run_lmove(store: store, input: input, args: args, client: client, env: env, time: time, from_head: tail, to_head: head);
 }
 
 fn run_blocking_list(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(clock) waits {

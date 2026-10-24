@@ -283,34 +283,63 @@ fn push_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
 }
 
 fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, front: Bool, existing: Bool) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "LPUSH key element [element ...] and RPUSH: pushes each element in turn at the list's head (front) or tail, creating the list for an absent key, and answers its length; LPUSHX and RPUSHX (existing) push only onto a list that exists and answer 0 for an absent key. A key whose expiry has been reached is removed first, the removal recorded before the push. Returns False, having answered nothing, when LPUSH or RPUSH finds no live list at the key: an absent or expired key, where the push would create the list, or a key of another kind, which the push refuses. Only a push that creates a list can make a blocked client ready, and run_list_producer, which holds the keyspace and the event hub together, runs the push again and answers the refusal. A push onto a live list, and LPUSHX and RPUSHX, which never create, are complete here and return True.";
+  doc "LPUSH key element [element ...] and RPUSH: pushes each element in turn at the list's head (front) or tail, creating the list for an absent key, and answers its length; LPUSHX and RPUSHX (existing) push only onto a list that exists and answer 0 for an absent key. A key whose expiry has been reached is removed first, the removal recorded before the push. A push onto a live list holds the key's entry and Meta alone. A push that finds no live list at the key, an absent or expired key where it would create the list or a key of another kind that it refuses, takes the event hub as well and asks whether a blocked client waits on the key: a registration holds the whole keyspace, which excludes the entry held here, so none can appear before the push commits, and without a waiter the push is main's in-place push. Returns False, having answered nothing, only when such a client waits, because only the creation of a list can make a blocked client ready; run_list_producer, which holds the keyspace and the event hub together, then runs the push again and serves the client. LPUSHX and RPUSHX never create and always return True.";
   let journal = None<pkg::store::AccessJournal>();
   push_parse(input: input, args: args, client: client, time: time, front: front);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
+  let probing = False();
   atomic slot = &store^.keys[key], m = &store^.meta {
     if bnot(existing) {
       let held = list_kind(slot: slot, now: client^.now);
       if held != entry_wanted {
-        return False();
+        set probing = True();
       }
     }
-    let sequence = if logged {
-      if aof_refuse(meta: m, client: client) {
-        return True();
+    if bnot(probing) {
+      let sequence = if logged {
+        if aof_refuse(meta: m, client: client) {
+          return True();
+        }
+        let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+        give move active;
+      } else {
+        let inert = pkg::store::sequence_inert();
+        give move inert;
       }
-      let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-      give move active;
-    } else {
-      let inert = pkg::store::sequence_inert();
-      give move inert;
+      let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
+      if logged {
+        let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+        let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+        pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      }
     }
-    let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
-    if logged {
-      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
-      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  }
+  if probing {
+    atomic claimed = &store^.keys[key], held_meta = &store^.meta, hub = &store^.pubsub {
+      let current = list_kind(slot: claimed, now: client^.now);
+      if current != entry_wanted {
+        if key_awaited(hub: hub, key: key) {
+          return False();
+        }
+      }
+      let sequence = if logged {
+        if aof_refuse(meta: held_meta, client: client) {
+          return True();
+        }
+        let active = pkg::store::sequence_new_key(meta: held_meta, loading: time^.loading);
+        give move active;
+      } else {
+        let inert = pkg::store::sequence_inert();
+        give move inert;
+      }
+      let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: claimed, client: client, front: front, existing: existing);
+      if logged {
+        let log_budget = pkg::store::log_group_begin(meta: held_meta, loading: time^.loading);
+        let appended = changed_meta(log: &held_meta^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+        pkg::store::log_group_commit(meta: held_meta, sequence: &sequence, budget: &log_budget);
+      }
     }
   }
   push_finish(client: client);
@@ -1383,31 +1412,61 @@ fn run_lmove_named(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
 }
 
 fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_head: Bool, to_head: Bool) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT and RPOPLPUSH source destination, which moves from the tail to the head: removes the element at the source list's head (from_head) or tail, pushes it onto the destination list's head (to_head) or tail, creating the destination for an absent key and removing the source when it is left empty, and answers the element; a source equal to the destination rotates the list. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, an absent source answers the null bulk string without the destination being looked at, a key holding another kind is refused, and a key found expired is removed, its removal recorded before the move. Returns False, having answered nothing, when the source holds a live list and the destination, another key, holds nothing or only an entry whose expiry has been reached, since that move creates the destination and may make a blocked client ready: run_list_producer, which holds the keyspace and the event hub together, runs that one again. Every other move, answer or refusal (a destination of another kind included) is complete here and returns True.";
+  doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT and RPOPLPUSH source destination, which moves from the tail to the head: removes the element at the source list's head (from_head) or tail, pushes it onto the destination list's head (to_head) or tail, creating the destination for an absent key and removing the source when it is left empty, and answers the element; a source equal to the destination rotates the list. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, an absent source answers the null bulk string without the destination being looked at, a key holding another kind is refused, and a key found expired is removed, its removal recorded before the move. A move that does not create its destination holds the two keys' entries and Meta alone. When the source holds a live list and the destination, another key, holds nothing or only an entry whose expiry has been reached, the move creates the destination: it takes the event hub as well and asks whether a blocked client waits on the destination, which a registration, holding the whole keyspace, cannot do while the entries are held, and without a waiter it is main's in-place move. Returns False, having answered nothing, only when such a client waits, since the creation may make it ready: run_list_producer, which holds the keyspace and the event hub together, then runs the move again and serves the client. Every other move, answer or refusal (a destination of another kind included) is complete here and returns True.";
   let journal = None<pkg::store::AccessJournal>();
   let ks = key_set_new(capacity: 2_u64);
   let pair = rename_parse(input: input, args: args, keys: &ks);
   set client^.now = time^.check;
   let logged = store^.logging;
+  let probing = False();
   atomic slots = &store^.keys[ks], m = &store^.meta {
     if lmove_creates(slots: slots, source: pair.source, destination: pair.target, now: client^.now) {
-      return False();
+      set probing = True();
     }
-    let sequence = if logged {
-      if aof_refuse(meta: m, client: client) {
-        return True();
+    if bnot(probing) {
+      let sequence = if logged {
+        if aof_refuse(meta: m, client: client) {
+          return True();
+        }
+        let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
+        give move active;
+      } else {
+        let inert = pkg::store::sequence_inert();
+        give move inert;
       }
-      let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
-      give move active;
-    } else {
-      let inert = pkg::store::sequence_inert();
-      give move inert;
+      let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+      if logged {
+        let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+        let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
+        pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      }
     }
-    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
-    if logged {
-      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
-      let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
-      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  }
+  if probing {
+    let target_place = key_bounds(input: input, args: args, index: 2_u64);
+    let target_key = &input^[target_place.start..target_place.end];
+    atomic claimed = &store^.keys[ks], held_meta = &store^.meta, hub = &store^.pubsub {
+      if lmove_creates(slots: claimed, source: pair.source, destination: pair.target, now: client^.now) {
+        if key_awaited(hub: hub, key: target_key) {
+          return False();
+        }
+      }
+      let sequence = if logged {
+        if aof_refuse(meta: held_meta, client: client) {
+          return True();
+        }
+        let active = pkg::store::sequence_new(meta: held_meta, loading: time^.loading);
+        give move active;
+      } else {
+        let inert = pkg::store::sequence_inert();
+        give move inert;
+      }
+      let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: claimed, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+      if logged {
+        let log_budget = pkg::store::log_group_begin(meta: held_meta, loading: time^.loading);
+        let appended = lmove_meta(log: &held_meta^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
+        pkg::store::log_group_commit(meta: held_meta, sequence: &sequence, budget: &log_budget);
+      }
     }
   }
   lmove_finish(client: client);
