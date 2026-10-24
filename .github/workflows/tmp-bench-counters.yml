@@ -36,3 +36,30 @@ jobs:
               assert done.returncode != 0, "the selftest passed on a broken script"
               assert message in done.stderr, "it failed for another reason"
           PY
+      - name: The summary.py selftest passes, and fails on three broken versions of the new interval line
+        run: |
+          python3 -I research/experiments/redis-bench/summary.py selftest
+          python3 -I - <<'PY'
+          import pathlib, subprocess, tempfile
+          source = pathlib.Path("research/experiments/redis-bench/summary.py").read_text()
+          lines = "low, high = interval([lines[head][p] / lines[best][p] for p in shared])"
+          mutations = [
+              # the line is never printed
+              ("            if len(shared) >= 2:\n                " + lines,
+               "            if len(shared) >= 99:\n                " + lines),
+              # a slowdown is called faster
+              ('f"{len(shared)} passes ({verdict(low, high)})")\n            print(f"{head} / {best} (the fastest',
+               'f"{len(shared)} passes (faster)")\n            print(f"{head} / {best} (the fastest'),
+              # the ratio is taken the wrong way round
+              (lines, "low, high = interval([lines[best][p] / lines[head][p] for p in shared])"),
+          ]
+          for old, new in mutations:
+              assert source.count(old) == 1, old
+              with tempfile.TemporaryDirectory() as tmp:
+                  broken = pathlib.Path(tmp) / "summary_broken.py"
+                  broken.write_text(source.replace(old, new))
+                  done = subprocess.run(["python3", "-I", str(broken), "selftest"], capture_output=True, text=True)
+              print(f"{old[:60]!r}: exit {done.returncode}: {done.stderr.strip().splitlines()[-1][:160]}")
+              assert done.returncode != 0, "the selftest passed on a broken summary.py"
+              assert "per pass" in done.stderr, "it failed for another reason"
+          PY

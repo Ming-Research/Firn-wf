@@ -1339,8 +1339,9 @@ data cannot tell the test from nothing, and they cannot exclude that it is the
 whole shortfall (the upper end of V, 0.69%, is above the shortfall of 0.50%).
 By the criterion written before the run, reading 5 with H wholly under 1 is one
 of the two results that reject the proposal that the test causes the
-shortfall; what the data support is only that the test accounts for at most
-0.69% of it and the cause is undecided. The half-widths were as predicted for H
+shortfall; what the data support is only that removing the test changes the
+rate by at most 0.69 percentage points, more than the whole shortfall of
+0.50%, so the cause is undecided. The half-widths were as predicted for H
 (0.38% against about 0.35%) and wider for T (0.59%). The instruction counts
 of the attribution run (29 more of 14,820 per `MSET`, 0.2%) lie inside V.
 
