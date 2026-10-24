@@ -47,8 +47,15 @@ The image's default command enables AOF and listens on all IPv4 addresses
 inside the container **without a password**. Publish it only on
 `127.0.0.1`, as below, or set a password before exposing it to other hosts.
 Passing `--requirepass` puts the password in firn's command line, visible
-in `ps`; runtime `CONFIG SET requirepass` in an already open client session
-avoids command-line exposure.
+in `ps`. Runtime `CONFIG SET requirepass` in an already open client session
+avoids that exposure, but the password is gone when the container restarts,
+and the server then accepts every client again. To keep a password across
+restarts, write `requirepass` with `port 6379`, `bind 0.0.0.0`, `appendonly yes`
+and `appendfilename appendonly.aof` in a `redis.conf` inside the `/data`
+volume, readable by UID 10001, and give `redis.conf` as the container's
+command in place of the default options; firn reads it from `/data`, its
+working directory. The [redis.conf table](#translate-a-small-redisconf) below
+lists the directives.
 The image runs as UID 10001 with `/data` as its working directory. This
 example keeps data in the named volume `firn-data`; a bind-mounted host
 directory must be writable by UID 10001. Choose an unused container name
@@ -157,7 +164,7 @@ small standalone setup.
 | `maxmemory-policy allkeys-lru` | `maxmemory-policy allkeys-lru` |
 | `maxclients 100` | `maxclients 100`; default 10000. firn does not raise the descriptor limit, so set `ulimit -n` above it |
 | `timeout 60` | `timeout 60`; zero means no idle limit |
-| `requirepass secret` | `requirepass secret`, or runtime `CONFIG SET requirepass secret`, which resets on restart; see the [password guidance](#start-docker-image-path) above |
+| `requirepass secret` | `requirepass secret`; runtime `CONFIG SET requirepass secret` resets on restart, see the [password guidance](#start-docker-image-path) above |
 | `save ""` | Refused: firn has no RDB snapshots; remove the line |
 
 The [operator's guide](operations.md#run-as-a-service) shows a complete
@@ -170,7 +177,8 @@ directive and the common Redis directives that are still refused.
 `packaging/quickstart-check.sh` executes the tagged commands literally and
 checks their replies, lifecycle sequence, free port after stopping, and
 persisted AOF. Readiness polling, assertions, time limits, temporary
-workspaces, and cleanup belong to that harness.
+workspaces, and cleanup belong to that harness. The password guidance and the
+redis.conf table are reference text that the check does not execute.
 
 Before publication, the checker redirects the documented GitHub downloads
 to the local build artifacts and supplies a local Docker tag. After a
