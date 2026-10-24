@@ -23,10 +23,11 @@ whole original command. An unsuccessful retry retains its original deadline
 and generation. Successful moves append newly ready destinations after the
 already queued keys. No connection wakes to compete for the value itself.
 
-Producers that create a list where a client waits, and RENAME, RENAMENX and
-COPY, run the existing held command parts, which stage the ready key and serve
-the waiters before releasing their hold; every other list write holds only its
-keys and stages nothing (see [producer holds](#producer-holds)). Only actual Redis
+Producers that create a list where a client waits, RENAME, RENAMENX and COPY,
+and every list write of a promoted connection, run the existing held command
+parts, which stage the ready key and serve the waiters before releasing their
+hold; every other list write holds only its keys and stages nothing (see
+[producer holds](#producer-holds)). Only actual Redis
 `dbAdd`-equivalent list creation stages a ready key: new LPUSH/RPUSH lists,
 new move destinations and list-valued RENAME/COPY targets. LPUSHX/RPUSHX and
 LINSERT do not create a missing list. SET,
@@ -102,6 +103,12 @@ A list write that cannot make a client ready does not need that hold:
   Taking the hub only in the second step, and not in every push and move,
   leaves a push onto a live list with the hold of the first version of this
   section: entry and Meta.
+- The test is a live list, not an existing entry. A request stays registered
+  on a key that a string with an expiry has taken. Once the expiry has passed,
+  and before anything removed the entry, a push to that key deletes the string
+  and creates a list, which readies the request; an existence test would run
+  it holding the entry only and serve nobody. The same holds for an entry
+  whose list has expired.
 - RENAME, RENAMENX and COPY always create their target and run
   `run_list_producer`; a promoted connection runs every list write there too
   ([ownership](connection-waits.md#ownership-and-delivery)).
@@ -109,9 +116,9 @@ A list write that cannot make a client ready does not need that hold:
 The entry-holding run answers nothing before it decides. When it finds that
 the command would create a list on a key where a client waits it returns,
 having changed no entry; the only state it leaves is the client's prepared
-elements, which the held part prepares again. A run that cannot create a list is the code main ran for
-these commands (`run_push`, `run_linsert`, `run_lmove_named`, `run_lmove` in
-`firn/commands/lists.wf`) with the test added.
+elements, which the held part prepares again. A run that cannot create a list
+is the code main ran for these commands (`run_push`, `run_linsert`,
+`run_lmove_named`, `run_lmove` in `firn/commands/lists.wf`) with the test added.
 
 ## Ownership
 
