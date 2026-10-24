@@ -51,11 +51,11 @@ placement is [measurement-sessions](../../../design/firn/measurement-sessions.md
 on the 14900K the servers on CPUs 2 and 4 (P-cores) and the clients on CPUs
 16-31 (E-cores), for every line and the noise floor alike. Every run is
 dispatched on the head commit of the PR that merges; the base is the revision of
-main that the PR's last merge of main brought in (`05f7e89`, the point where the
-PR and main meet and the tip of main when the PR merged it, with the stream
-commands of main in both images), so the two images differ by the PR alone. A
-later merge of main that leaves the PR's own change as it is does not repeat a
-measurement.
+main that the PR's last merge of main brought in (`7cf12df`, the tip of main when
+the PR last merged it, with the stream commands of main in both images), so the
+two images differ by the PR alone; the first two A1 runs below, made before that
+merge, used `05f7e89`, the tip of the merge before. A later merge of main that
+leaves the PR's own change as it is does not repeat a measurement.
 
 ### Cost on existing commands (question 1)
 
