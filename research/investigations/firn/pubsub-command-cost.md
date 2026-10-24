@@ -498,3 +498,149 @@ Firn-wf#100 merged, the comparison that found the cost (run 39573904480,
   there at 95%) and stands only if it is wholly slower again; it then goes
   to the board as a size and a reason for the owner to accept or to ask for a
   further fix. The proposal is rejected for a cell that stands.
+
+### F results
+
+Run 40023129550 (`compare`, 19 tests at depths 16 and 1, 6 interleaved passes
+of 5 s, servers on CPUs 2 and 4, clients on 16-31, no profile, no `reference`
+line). The images: `before` (`00e2bd1fa230`), `main` (`7f8b4f84658b`), `head`
+(`560c86da024a`, whose firn is that of `47ae0e65022c`: the commits differ in
+this record alone) and `head-twin`; all built with the same pinned compiler
+release (`wf-af7665be672d`). `lrange_500` at depth 16 is flagged
+client-limited (client busy fraction above 0.90) in all 24 samples (0.911 to
+0.929) and `lrange_600` at depth 16 in 23 of 24 (0.913 to 0.953; the one
+sample not flagged, 0.721, is `before`'s); no other sample is flagged and the
+busiest of them is 0.884. These two cells are reported and not judged: 36
+cells are judged. Rate ratios are the median of the 6 per-pass
+ratios of `head` to `before` (above 1 is faster) with the 95% interval of the
+mean log; `cpu` is the median ratio of the server CPU time per request;
+`head/main` is the rate ratio of `head` to `main`. The column "twin/head
+interval" is the 95% interval of `head-twin` over `head`, the run's noise in
+the cell.
+
+| test | depth | head/before | 95% interval | verdict | twin/head interval | cpu head/before | head/main | verdict |
+|---|---|---|---|---|---|---|---|---|
+| get | 16 | 1.0931 | 1.0847-1.1022 | faster | 0.9943-1.0141 | 1.0877 | 1.1640 | faster |
+| get | 1 | 1.0059 | 1.0012-1.0135 | faster | 0.9834-1.0133 | 1.0040 | 1.0161 | no change |
+| hset | 16 | 1.0311 | 1.0046-1.0494 | faster | 0.9695-1.0077 | 1.0318 | 1.0752 | faster |
+| hset | 1 | 0.9898 | 0.9793-1.0043 | no change | 0.9790-1.0133 | 0.9888 | 1.0173 | no change |
+| incr | 16 | 0.9834 | 0.9573-1.0022 | no change | 0.9810-1.0264 | 0.9860 | 1.0104 | no change |
+| incr | 1 | 0.9765 | 0.9639-0.9902 | slower | 1.0076-1.0318 (not 1) | 0.9835 | 0.9808 | slower |
+| lpop | 16 | 1.0684 | 1.0619-1.0784 | faster | 0.9940-1.0057 | 1.0687 | 1.1359 | faster |
+| lpop | 1 | 0.9974 | 0.9810-1.0109 | no change | 0.9992-1.0300 | 0.9914 | 0.9998 | no change |
+| lpush | 16 | 1.0294 | 1.0144-1.0358 | faster | 0.9856-1.0167 | 1.0286 | 1.0483 | faster |
+| lpush | 1 | 1.0070 | 0.9351-1.0425 | no change | 0.9640-1.0695 | 1.0071 | 1.0157 | no change |
+| lrange_100 | 16 | 1.0270 | 1.0114-1.0394 | faster | 0.9293-1.0304 | 1.0199 | 1.0411 | faster |
+| lrange_100 | 1 | 0.9986 | 0.9755-1.0190 | no change | 0.9896-1.0361 | 0.9984 | 0.9893 | no change |
+| lrange_300 | 16 | 1.0191 | 1.0146-1.0245 | faster | 0.9945-1.0088 | 1.0195 | 1.0180 | faster |
+| lrange_300 | 1 | 0.9996 | 0.9941-1.0126 | no change | 0.9948-1.0130 | 0.9965 | 1.0058 | no change |
+| lrange_500 | 16 | 1.0034 | 0.9967-1.0072 | no change (client-limited, not judged) | 0.9965-1.0066 | 1.0081 | 1.0003 | no change |
+| lrange_500 | 1 | 0.9901 | 0.9869-1.0002 | no change | 0.9778-1.0209 | 0.9954 | 1.0165 | no change |
+| lrange_600 | 16 | 1.0253 | 0.9546-1.2068 | no change (client-limited, not judged) | 0.9899-1.0042 | 1.0236 | 1.0314 | faster |
+| lrange_600 | 1 | 0.9922 | 0.9779-1.0003 | no change | 0.9919-1.0117 | 0.9935 | 0.9922 | slower |
+| mset | 16 | 1.0191 | 0.9814-1.0475 | no change | 0.9414-1.0405 | 1.0185 | 1.0265 | faster |
+| mset | 1 | 0.9932 | 0.9796-1.0082 | no change | 0.9928-1.0106 | 0.9843 | 1.0097 | no change |
+| ping_inline | 16 | 1.1103 | 1.1004-1.1279 | faster | 0.9885-1.0210 | 1.1166 | 1.1973 | faster |
+| ping_inline | 1 | 1.0093 | 0.9962-1.0234 | no change | 0.9797-1.0082 | 1.0098 | 1.0158 | no change |
+| ping_mbulk | 16 | 1.1172 | 1.1073-1.1264 | faster | 0.9902-1.0150 | 1.1244 | 1.2021 | faster |
+| ping_mbulk | 1 | 1.0026 | 0.9907-1.0097 | no change | 0.9942-1.0165 | 1.0043 | 1.0168 | faster |
+| rpop | 16 | 1.0903 | 1.0770-1.1108 | faster | 0.9982-1.0105 | 1.0930 | 1.1495 | faster |
+| rpop | 1 | 1.0015 | 0.9820-1.0172 | no change | 0.9984-1.0237 | 1.0049 | 0.9974 | no change |
+| rpush | 16 | 1.0171 | 1.0016-1.0307 | faster | 0.9941-1.0230 | 1.0197 | 1.0488 | faster |
+| rpush | 1 | 0.9977 | 0.9803-1.0184 | no change | 0.9907-1.0124 | 0.9980 | 1.0002 | no change |
+| sadd | 16 | 1.0171 | 0.9930-1.0288 | no change | 0.9916-1.0087 | 1.0152 | 1.0333 | faster |
+| sadd | 1 | 1.0025 | 0.9927-1.0200 | no change | 0.9884-1.0065 | 1.0010 | 1.0191 | no change |
+| set | 16 | 0.9691 | 0.9641-0.9795 | slower | 1.0027-1.0094 (not 1) | 0.9677 | 1.0219 | faster |
+| set | 1 | 0.9880 | 0.9777-1.0024 | no change | 0.9732-1.0094 | 0.9914 | 0.9946 | no change |
+| spop | 16 | 1.1008 | 1.0806-1.1353 | faster | 0.9793-1.0228 | 1.0980 | 1.1505 | faster |
+| spop | 1 | 1.0134 | 0.9858-1.0326 | no change | 0.9894-1.0195 | 1.0057 | 1.0010 | no change |
+| zadd | 16 | 1.0245 | 1.0071-1.0423 | faster | 0.9921-1.0131 | 1.0244 | 1.0246 | faster |
+| zadd | 1 | 0.9876 | 0.9668-1.0102 | no change | 0.9925-1.0416 | 0.9935 | 0.9836 | no change |
+| zpopmin | 16 | 1.0719 | 1.0237-1.0924 | faster | 0.9752-1.0604 | 1.0727 | 1.0860 | faster |
+| zpopmin | 1 | 0.9903 | 0.9859-0.9973 | slower | 1.0049-1.0254 (not 1) | 0.9944 | 1.0008 | no change |
+
+Reading:
+
+- The twin interval holds 1 in 33 of the 36 judged cells; the three where it
+  does not (`set` 16, `incr` 1, `zpopmin` 1) are the three cells where
+  `head`/`before` is wholly on the slower side. For these cells the same image measured twice differs
+  by 0.7% to 2.1% (`head-twin`/`head` wholly above 1), so the run does not
+  settle them, and by the criteria above they are measured again with 12
+  passes (F2).
+- Of the 36 judged cells, `head`/`before` is wholly on the faster side in 14
+  (13 of the 17 judged at depth 16, `get` at depth 1), holds 1 in 19 and is
+  wholly on the slower side in 3 (`set` 16 0.9691, `incr` 1 0.9765, `zpopmin`
+  1 0.9903). `main`/`before` is wholly on the slower side in 16 of the 36
+  (for example `get` 16 0.945, `ping_mbulk` 16 0.933, `set` 16 0.951); the fix
+  is wholly on the faster side of `main` in 17 (16 of the 17 judged cells at
+  depth 16, and `ping_mbulk` at depth 1) and wholly on the slower side in 2
+  (`incr` 1 0.9808, `lrange_600` 1 0.9922). The fix took the cost out of the
+  cells it was meant for.
+- The widest twin intervals are `lpush` at depth 1 (0.9640-1.0695) and `mset`
+  at depth 16 (0.9414-1.0405): with 6 passes a cell with an interval like
+  these cannot show a change of 2%.
+
+### Run F2: the three cells again
+
+As the criteria of F (written before F ran) say, the cells of F
+that are wholly on the slower side (`set` 16, `incr` 1, `zpopmin` 1) are
+measured again, alone, with 12 interleaved passes of 5 s, the same four
+images, the same placement and the same measure. As the depth is a setting of
+the whole run, the tests `set`, `incr` and `zpopmin` run at both depths, so
+`set` 1, `incr` 16 and `zpopmin` 16 are measured too. A cell stands if
+`head`/`before` is wholly on the slower side again with the twin holding 1.
+
+### F2 results
+
+Run 40055691885 (`compare`, `set`, `incr`, `zpopmin` at depths 16 and 1, 12
+passes of 5 s, the same images and placement; no sample was client-limited,
+client busy fraction at most 0.44). `head-twin`/`head` holds 1 in all six
+cells.
+
+| test | depth | head/before | 95% interval | verdict | cpu head/before | 95% interval | head/main | verdict |
+|---|---|---|---|---|---|---|---|---|
+| `set` | 16 | 0.9779 | 0.9641-0.9885 | slower | 0.9804 | 0.9766-0.9870 | 1.0322 | faster |
+| `set` | 1 | 0.9941 | 0.9795-1.0011 | no change | 0.9939 | 0.9866-1.0001 | 0.9911 | no change |
+| `incr` | 16 | 0.9765 | 0.9698-0.9890 | slower | 0.9797 | 0.9744-0.9867 | 1.0176 | faster |
+| `incr` | 1 | 1.0018 | 0.9809-1.0054 | no change | 0.9984 | 0.9910-1.0008 | 1.0024 | no change |
+| `zpopmin` | 16 | 1.0699 | 1.0563-1.0830 | faster | 1.0687 | 1.0632-1.0821 | 1.1038 | faster |
+| `zpopmin` | 1 | 1.0020 | 0.9916-1.0076 | no change | 0.9984 | 0.9930-1.0049 | 1.0123 | faster |
+
+Server CPU time per request at depth 16, mean of the 12 passes, in
+microseconds (`before`, `main`, `head`, `head-twin`): `set` 0.3013, 0.3165,
+0.3069, 0.3077; `incr` 0.3143, 0.3272, 0.3206, 0.3197. In requests a second
+(`before`, `head`): `set` 6.59 million and 6.43 million, `incr` 6.34 million
+and 6.21 million.
+
+- `incr` 1 and `zpopmin` 1 hold 1 with 12 passes, and `head-twin`/`before`
+  holds 1 there (0.9954 and 0.9964): their slower side in F was the noise of
+  that run, and they do not stand.
+- `set` 16 stands: 2.2% slower in rate (0.9779, 0.9641-0.9885), 2.0% in CPU
+  time per request, 0.0056 microseconds, in line with the probes (0.977 in
+  P4) and with `head-twin`/`before` (0.9799, 0.9675-0.9850).
+- `incr` 16, which F did not flag (0.9834, interval 0.9573-1.0022 with 6
+  passes), is wholly on the slower side with 12 passes, 2.4% in rate (0.9765,
+  0.9698-0.9890), 2.0% in CPU time (0.9797); `head-twin`/`before` agrees
+  (0.9845, 0.9781-0.9917). The 6 passes of F could not see it, and a cell of F
+  with a wide interval (for example `sadd` 16, 0.993-1.029, or `mset` 16,
+  0.981-1.048) may hide a change of the same size; only the cells measured
+  again are known to this precision.
+- The fix still recovers 3.2% (`set`) and 1.8% (`incr`) of the 4.7% and 3.9%
+  that `main` is behind `before` at depth 16.
+
+### Conclusion of the comparison
+
+The criterion of the item, no judged cell wholly on the slower side of
+`before`, is not met: two cells stand, `set` and `incr` at depth 16, 2.2% and
+2.4% slower in rate (2.0% each in server CPU time per request), against 13 of
+the 17 judged cells at depth 16 that are 1.7% to 11.7% faster than `before`
+now. Of the 2.2% in `set`, about 1% is the check after every command in `serve`
+(P5), which has to stay, and the rest is in no segment of Firn-wf#100: with
+every segment taken out of `main` the cell was level with `before` (0.998 in
+P2), and `f4s3`, which has no promotion at all, stays 0.8% and 1.3% behind
+(0.992 in P4, 0.987 in P5). The cell is as the code placement leaves it, which no instruction of the
+profile shows; `incr` was not probed and is taken to be the same effect
+(deduced, not tested). What remains for the owner is whether to accept 2% on
+two commands of the string type at depth 16, or to ask for further work on the
+placement of the hot functions, which routing by kind (the classify-once
+design above) would change anyway.
