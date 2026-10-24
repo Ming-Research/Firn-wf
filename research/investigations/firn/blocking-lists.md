@@ -60,9 +60,14 @@ append-only file off ([the record](blocking-lists-performance.md#a1-cost-on-exis
 it ran LPUSH, RPUSH, LINSERT and LMOVE at 0.31 of the rate of main at pipeline
 depth 16 and at 0.83 to 0.88 at depth 1; about half the cycles were in the
 runtime's whole-keyspace hold, and the allocation and copy of the staged
-effects were each under 1%.
+effects were each under 1%. The second version held it only for the writes
+that can create a list, which returned the pushes and moves onto a live list to
+0.94 to 1.00 of main and left a push that creates its list at 0.313 (depth 16)
+and 0.801 (depth 1), with 38.8% of its cycles in the hold ([the second
+run](blocking-lists-performance.md#a1-again-the-narrowed-hold-7a4e4de)). The
+hold is the cost, so a write needs it only when it can make a client ready:
 
-A list write that cannot create a list does not need that hold:
+A list write that cannot make a client ready does not need that hold:
 
 - A request registers under the whole hold only when its failed lookup finds
   no live list at any key it names, and it is served when a list is created at
@@ -77,6 +82,18 @@ A list write that cannot create a list does not need that hold:
   (`list_kind` is `entry_wanted`); LMOVE and RPOPLPUSH unless the source holds a
   live list and the destination, another key, holds none (`lmove_creates`). A
   destination holding another kind is refused and creates nothing.
+- A creation where no client waits readies nobody either, and a registration
+  cannot appear while the creating write holds the entry of its key, so the
+  write only has to ask the registry whether a client waits on that key. It
+  takes the event hub as well, in one statement with its entries and Meta, which
+  lists them in the order of the whole-hold path (keyspace, Meta, hub), and asks `key_awaited` (`firn/commands/blocking-runtime.wf`:
+  the registry's count of waiting keys first, then a lookup of the key). Without
+  a waiter it creates the list and appends in place, as main does, so its
+  effects and bytes are main's. With one it returns, having answered and changed
+  nothing, and the dispatcher runs `run_list_producer`, which holds the whole
+  keyspace and serves the client. Taking the hub only in the second step, and
+  not in every push and move, leaves a push onto a live list with the hold of
+  the first version of this section: entry and Meta.
 - The test is a live list, not an existing entry. A request stays registered
   on a key that a string with an expiry has taken. Once the expiry has passed,
   and before anything removed the entry, a push to that key deletes the string
@@ -88,9 +105,9 @@ A list write that cannot create a list does not need that hold:
   ([ownership](connection-waits.md#ownership-and-delivery)).
 
 The entry-holding run answers nothing before it decides. When it finds that
-the command would create a list it returns, having changed no entry; the only
-state it leaves is the client's prepared elements, which the held part
-prepares again. A run that cannot create a list is the code main ran for
+the command would create a list on a key where a client waits it returns,
+having changed no entry; the only state it leaves is the client's prepared
+elements, which the held part prepares again. A run that cannot create a list is the code main ran for
 these commands (`run_push`, `run_linsert`, `run_lmove_named`, `run_lmove` in
 `firn/commands/lists.wf`) with the test added.
 
@@ -262,10 +279,11 @@ readiness staging or new per-command hub access. Setup adds two owned Client
 fields and a retained WallClock handle to Keyspace; source inspection cannot
 prove these have zero cache/layout cost. Use the existing
 [performance experiment](connection-waits.md#performance-experiment-specified-before-implementation)
-to test the no-measurable-regression requirement. List producers that create a
-list, and RENAME, RENAMENX and COPY, deliberately pay whole-map/Meta/hub/
-server-state exclusion even with zero waiters; the other list writes do not
-([producer holds](#producer-holds)).
+to test the no-measurable-regression requirement. A list producer that creates
+a list on a key where a client waits, and RENAME, RENAMENX and COPY, pay
+whole-map/Meta/hub/server-state exclusion; a push or move that creates a list
+where nobody waits pays one event-hub hold and one registry check beside its
+entries, and the other list writes nothing ([producer holds](#producer-holds)).
 Current per-key FIFOs use the existing growing owned membership arrays; removal
 shifts the tail, so serving N clients on one key can require quadratic array
 movement. The private ready queue also deduplicates linearly. The FIFO-load

@@ -11,17 +11,27 @@
    such command holds the keyspace, metadata, event hub and server state
    together, allocates a 64-byte effects buffer and stages the hub's wake-ups,
    and, with the append-only file on, copies the staged effects into it, where
-   before it appended in place. The head sends there only the writes that can
-   create a list (`run_list_write` in the same file); `LINSERT`, `LPUSHX`,
-   `RPUSHX` and the pushes and moves onto a live list hold only their keys'
-   entries, as on main. Which of these costs time is measured for the first
-   version in the results below; the head's own runs are made before the merge.
+   before it appended in place. The second version (`7a4e4de`) sent there only
+   the writes that can create a list. The third (`12dbbc5`) sends there only a
+   push or move that creates a list on a key where a blocked client waits,
+   `RENAME`, `RENAMENX`, `COPY` and a promoted connection's commands: a push or
+   move that would create a list takes the event hub as well, under its own
+   entry hold, asks the registry (`key_awaited` in
+   `firn/commands/blocking-runtime.wf`) whether a client waits on that key, and
+   leaves for `run_list_producer` only if one does (`run_push` and `run_lmove`
+   in `firn/commands/lists.wf`), and the dispatcher calls them directly, as it
+   called `run_push` in `main`. `LINSERT`, `LPUSHX`, `RPUSHX`, the pushes and
+   moves onto a live list and the creating ones where nobody waits append in
+   place, as on `main`. Which of these costs time is measured for the earlier
+   versions in the results below; the head's own runs are made before the merge.
    The design decision for the staged copy is
    [firn-q-list-producer-staging](../../../design/firn/append-only-file.md),
    ruled A: keep the staged copy, provided this record's measurement shows no
    regression; a regression caused by the copy itself falls back to restoring
    the in-place append, one caused by the allocation to a buffer the connection
-   reuses.
+   reuses. Since the third version no cell below runs the staged copy: it runs
+   only when a client waits or for `RENAME`, `COPY` and promoted connections,
+   and nothing here measures its cost.
 2. How fast does firn hand list elements to blocked clients, against Redis,
    Valkey, Dragonfly and Garnet, and what does the runtime's listening lock cost
    there? Source reading of the design says one write wakes every context
@@ -60,10 +70,12 @@ measurement.
   directory per run, which the instrument checks with INFO) the cells are
   `set`, `lpush`, `rpush`, `linsert`, `lmove` and `lpush_new` at both depths: the
   copy into the file exists only there, `set` is the control that the PR does
-  not touch. Of the list writes, only `lpush_new` runs the head's held path with
-  its staged copy: the other four push or insert onto a list that exists (the
-  first version of the first four cells measured below ran that path too), and
-  the head runs them as main does.
+  not touch. Of the list writes, none runs the held path with its staged copy
+  on the head: `lpush`, `rpush`, `linsert` and `lmove` write onto a list that
+  exists (the first version of these cells measured below ran that path too)
+  and `lpush_new` creates a list where no client waits. Only `lpush_new` takes
+  the event hub and asks the registry, under its entry hold, in addition to
+  what `main` does; the other four run as `main` does.
 - **Commands.** `linsert` is `LINSERT ins<depth>:<n> AFTER pivot xxx` on one of
   100,000 short lists filled with copies of the pivot outside the timed span (a
   list grows by a few hundred elements over the run, so the pivot scan stays one
@@ -107,9 +119,9 @@ measurement.
   architect as the class floor for the record of the 14900K.
 - **What rejects.** A cell wholly on the slower side, in either AOF setting,
   rejects the claim its command rests on. For `lpush_new` it is "creating a list
-  under the whole-keyspace hold, with its effects staged and copied into the
-  file, costs nothing measurable" (with the file off, A1 measures the hold, the
-  abandoned per-key attempt and the buffer; A2 measures the copy). For `lpush`,
+  where no client waits, with one event-hub hold and one registry check added to
+  the entry hold, costs nothing measurable" (A1 measures it with the file off,
+  A2 with the in-place append to the file). For `lpush`,
   `rpush`, `linsert` and `lmove` it is "a write onto an existing list runs as it
   did before the PR". For every other cell it is "an ordinary command's path is
   unchanged", which the design states for `GET` and `SET` (blocking-lists.md:
@@ -198,8 +210,8 @@ orders them on the 14900K, one at a time.
 
 | run | mode and inputs | answers | expected duration |
 |---|---|---|---|
-| A1 | `compare`, `base`, `head`, `head-twin`, the 23 tests with `lpush_new` last, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16;lpush_new 16` | question 1, file off | about 95 min (the 44-cell first A1 run 40049518328 took 85, builds included) |
-| A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove lpush_new`, the same profile | question 1, file on | about 25 min |
+| A1 | `compare`, `base`, `head`, `head-twin`, the 23 tests with `lpush_new` last, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16;lpush_new 16` | question 1, file off; run on `da1e2c3` and `7a4e4de`, repeated on the head that merges | about 95 min (the 44-cell first A1 run 40049518328 took 85, builds included) |
+| A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove lpush_new`, the same profile | question 1, file on: the in-place append of `lpush_new` beside the event-hub check | about 25 min |
 | B | `workloads` with `workload_images`, `head` and `head-twin` (and the `reference` line that `workload_images` adds), `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
 
@@ -236,9 +248,10 @@ the run with `firn-1 stopped handing out elements in blocking-handoff`.
 
 ## Results
 
-Every run below is on the 14900K at `da1e2c3`, the PR's first version, with the
-servers on CPUs 2 and 4 and the clients on CPUs 16-31; the runs of the head that
-merges are added after them.
+Every run below is on the 14900K at the commit it names, with the servers on
+CPUs 2 and 4 and the clients on CPUs 16-31: B and the first A1 at `da1e2c3`, the
+PR's first version, the second A1 at `7a4e4de`; the runs of the head that merges
+are added after them.
 
 ### B: the floor of the hand-off class
 
@@ -420,7 +433,10 @@ through before `run_push` and that `base` does not have; `lmove 16` has
 `run_list_write`, which calls `run_list_write_entries`, which calls `run_push`,
 three suspendable functions in place of one. This is read from one profile of one
 pass per image, so the attribution of the 2% to 6% to these frames is inferred;
-removing them is the test.
+removing them is the test, and the head after this run does so: the dispatcher
+calls `run_push`, `run_linsert` and `run_lmove` directly, `run_list_write` and
+`run_list_write_entries` are deleted, and a creating push takes the hub under its
+entry hold instead of the whole keyspace (the third version, above).
 
 Table, all 46 cells (head/base and twin/head: median, 95% interval):
 
