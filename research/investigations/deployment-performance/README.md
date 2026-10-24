@@ -935,7 +935,8 @@ when an accept call fails, which none of the three groups' workloads does
 connections, the handshake workload closes each connection it opens). The
 architect ruled that the second measurement stands for 9bfc065 and is not made
 again. A later merge of `main` is measured again only if its new code runs in
-a workload of one of the groups.
+a workload of one of the groups. In the headings of this section, "the merged
+head" means 5a0a1b9, the merged head when the second measurement was made.
 
 Revisions: `head` and `head-twin` are 5a0a1b9; `base` is
 05f7e89c62a7b9d10733a43b9a08aaea53fa2090, the `main` that 5a0a1b9 merged, so
