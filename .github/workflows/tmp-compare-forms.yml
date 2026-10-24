@@ -46,9 +46,16 @@ jobs:
           export PATH="$bin:$PATH"
           export OUT="$RUNNER_TEMP/redis-bench"
           mkdir -p "$OUT"
+          # The server on CPU 0 and the client on the first CPU of another
+          # physical core, as the placement requires.
+          nproc
+          lscpu -p=CPU,CORE
+          core=$(lscpu -p=CPU,CORE | awk -F, '$1 == 0 { print $2 }')
+          client=$(lscpu -p=CPU,CORE | awk -F, -v c="$core" '$1 !~ /^#/ && $2 != c { print $1; exit }')
+          [ -n "$client" ] || { echo "no second physical core on this runner"; exit 1; }
           export IMAGES= COMPARE_REFERENCE=true COMPARE_TESTS="linsert lmove lpush_new" \
             COMPARE_DEPTHS="16 1" COMPARE_PASSES=1 COMPARE_SECONDS=1 COMPARE_CPUS=1 \
-            SERVER_CPU_LIST=0 CLIENT_CPU_LIST=1
+            SERVER_CPU_LIST=0 CLIENT_CPU_LIST="$client"
           status=0
           sh research/experiments/redis-bench/redis-bench.sh compare >"$OUT/bench.txt" 2>&1 || status=$?
           cat "$OUT/bench.txt"
