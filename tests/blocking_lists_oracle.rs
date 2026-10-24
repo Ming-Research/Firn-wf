@@ -1237,4 +1237,89 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$1\r\nd\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$1\r\nw\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nd\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\ns\r\n$1\r\nd\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*1\r\n$4\r\nEXEC\r\n"),
         ],
     },
+    Scenario {
+        name: "narrow-expired-string-then-push",
+        clients: &["p", "a"],
+        aof: true,
+        actions: &[
+            Send("a", &["BLPOP", "k", "0"]),
+            WaitBlocked(1),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-an-expired-string-then-push, step 2 replies.
+            Pipeline("p", &[&["SET", "k", "v", "PXAT", "1"], &["LPUSH", "k", "x"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b":1\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-an-expired-string-then-push, step 3, the waiter's reply.
+            Read("a", b"*2\r\n$1\r\nk\r\n$1\r\nx\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-an-expired-string-then-push, step 4, incremental file.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nk\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nk\r\n$1\r\nx\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nk\r\n"),
+        ],
+    },
+    Scenario {
+        name: "narrow-expired-string-then-move",
+        clients: &["p", "a"],
+        aof: true,
+        actions: &[
+            Send("a", &["BLPOP", "d", "0"]),
+            WaitBlocked(1),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-an-expired-string-then-move, step 2 replies.
+            Pipeline("p", &[&["RPUSH", "s", "w"], &["SET", "d", "v", "PXAT", "1"], &["LMOVE", "s", "d", "LEFT", "LEFT"]]),
+            Read("p", b":1\r\n"),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"$1\r\nw\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-an-expired-string-then-move, step 3, the waiter's reply.
+            Read("a", b"*2\r\n$1\r\nd\r\n$1\r\nw\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-an-expired-string-then-move, step 4, incremental file.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$1\r\nw\r\n*5\r\n$3\r\nSET\r\n$1\r\nd\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nd\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\ns\r\n$1\r\nd\r\n$4\r\nLEFT\r\n$4\r\nLEFT\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nd\r\n"),
+        ],
+    },
+    Scenario {
+        name: "narrow-live-string-refused-pushes",
+        clients: &["p", "a"],
+        aof: true,
+        actions: &[
+            Send("a", &["BLPOP", "k", "0"]),
+            WaitBlocked(1),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-a-live-string-and-a-refused-push, step 2 replies.
+            Pipeline("p", &[&["SET", "k", "v"], &["LPUSH", "k", "x"], &["LPUSHX", "k", "x"], &["RPUSH", "k", "x"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
+            Read("p", b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
+            Read("p", b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
+            Quiet("a"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-a-live-string-and-a-refused-push, step 3 replies.
+            Pipeline("p", &[&["DEL", "k"], &["LPUSH", "k", "y"]]),
+            Read("p", b":1\r\n"),
+            Read("p", b":1\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-a-live-string-and-a-refused-push, step 4, the waiter's reply.
+            Read("a", b"*2\r\n$1\r\nk\r\n$1\r\ny\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, waiter-survives-a-live-string-and-a-refused-push, step 5, incremental file.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$1\r\nk\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nk\r\n$1\r\ny\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nk\r\n"),
+        ],
+    },
+    Scenario {
+        name: "narrow-live-list-writes-with-waiter-elsewhere",
+        clients: &["p", "a"],
+        aof: true,
+        actions: &[
+            Send("a", &["BLPOP", "w", "0"]),
+            WaitBlocked(1),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, pushes-onto-a-live-list-with-a-waiter-elsewhere, step 2 replies.
+            Pipeline("p", &[&["RPUSH", "l", "a"], &["LPUSH", "l", "b"], &["LPUSHX", "l", "c"], &["RPUSHX", "l", "d"], &["LINSERT", "l", "BEFORE", "a", "e"], &["LMOVE", "l", "l", "LEFT", "RIGHT"], &["RPOPLPUSH", "l", "l"], &["LRANGE", "l", "0", "-1"]]),
+            Read("p", b":1\r\n"),
+            Read("p", b":2\r\n"),
+            Read("p", b":3\r\n"),
+            Read("p", b":4\r\n"),
+            Read("p", b":5\r\n"),
+            Read("p", b"$1\r\nc\r\n"),
+            Read("p", b"$1\r\nc\r\n"),
+            Read("p", b"*5\r\n$1\r\nc\r\n$1\r\nb\r\n$1\r\ne\r\n$1\r\na\r\n$1\r\nd\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, pushes-onto-a-live-list-with-a-waiter-elsewhere, step 3 replies.
+            Pipeline("p", &[&["LPUSH", "w", "z"]]),
+            Read("p", b":1\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, pushes-onto-a-live-list-with-a-waiter-elsewhere, step 4, the waiter's reply.
+            Read("a", b"*2\r\n$1\r\nw\r\n$1\r\nz\r\n"),
+            // Redis 7.2.16 run 40057972246, blocking-waits-on-strings-recording.json, pushes-onto-a-live-list-with-a-waiter-elsewhere, step 5, incremental file.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$1\r\na\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nl\r\n$1\r\nb\r\n*3\r\n$6\r\nLPUSHX\r\n$1\r\nl\r\n$1\r\nc\r\n*3\r\n$6\r\nRPUSHX\r\n$1\r\nl\r\n$1\r\nd\r\n*5\r\n$7\r\nLINSERT\r\n$1\r\nl\r\n$6\r\nBEFORE\r\n$1\r\na\r\n$1\r\ne\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\nl\r\n$1\r\nl\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*3\r\n$9\r\nRPOPLPUSH\r\n$1\r\nl\r\n$1\r\nl\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nw\r\n$1\r\nz\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nw\r\n"),
+        ],
+    },
 ];

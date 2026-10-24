@@ -292,6 +292,18 @@ fn blocking_lists_aof_groups_immediate_blocking_pops_over_an_expired_key() { run
 fn blocking_lists_aof_groups_a_served_waiter_over_an_expired_destination() { run("aof-expired-served-waiter"); }
 
 #[test]
+fn blocking_lists_push_after_a_string_expired_serves_the_waiter_on_the_key() { run("narrow-expired-string-then-push"); }
+
+#[test]
+fn blocking_lists_move_onto_an_expired_string_serves_the_waiter_on_the_destination() { run("narrow-expired-string-then-move"); }
+
+#[test]
+fn blocking_lists_refused_pushes_leave_the_waiter_until_the_list_is_created() { run("narrow-live-string-refused-pushes"); }
+
+#[test]
+fn blocking_lists_writes_onto_a_live_list_leave_a_waiter_on_another_key() { run("narrow-live-list-writes-with-waiter-elsewhere"); }
+
+#[test]
 fn blocking_lists_resp2_subscribers_refuse_all_four_commands() { run("resp2-subscriber-refusal"); }
 
 #[test]

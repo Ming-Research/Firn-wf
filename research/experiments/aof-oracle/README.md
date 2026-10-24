@@ -71,6 +71,24 @@ the reply's raw text.
   `aof-expired-top-level-producers`, `aof-expired-immediate-blocking-pops` and
   `aof-expired-served-waiter` in `tests/blocking_lists_oracle.rs`.
 
+## `blocking-waits-on-strings-recording.json`
+
+- Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/40057972246
+- Run head commit: `544cacde74c0c4e02df20d62082312527f848c89`
+- Four cases of list writes while a client is blocked on a key that holds a
+  string or on another key, in the step form of the previous file:
+  `waiter-survives-an-expired-string-then-push` (`SET k v PXAT 1` and `LPUSH k`
+  in one write), `waiter-survives-an-expired-string-then-move` (the same for
+  the destination of an `LMOVE`), `waiter-survives-a-live-string-and-a-refused-push`
+  (`LPUSH`, `LPUSHX` and `RPUSH` refused with WRONGTYPE leave the waiter
+  blocked until `DEL` and `LPUSH` create the list) and
+  `pushes-onto-a-live-list-with-a-waiter-elsewhere` (seven list writes onto a
+  live list while a client waits on another key). Used by the scenarios
+  `narrow-expired-string-then-push`, `narrow-expired-string-then-move`,
+  `narrow-live-string-refused-pushes` and
+  `narrow-live-list-writes-with-waiter-elsewhere` in
+  `tests/blocking_lists_oracle.rs`.
+
 ## `lfu-rename-msetnx.json`
 
 - Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583
