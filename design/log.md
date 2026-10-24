@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-24 Date the file-descriptor limit decision's ground
+
+Nodes: firn/startup
+
+Summary: The node said the pinned Whitefoot offers no resource-limit facility. The release the pin moved to, `wf-63b7cbb03820`, adds `open_files_limit` and `raise_open_files_limit` to `std::process` (read from the two releases' `lib/std/process/module.wfm`; see [the pin record](../research/investigations/firn/whitefoot-v0165-pin.md#what-the-source-needed)). The decision, that firn leaves the limit unchanged, stays because the pin move changes nothing firn does; the node now names the release its ground held for and records that its reopening condition is met, so that firn-ops-pin-followup decides whether firn raises the limit as Redis does.
+
 ## 2026-10-24 Keep serving after an accept error
 
 Nodes: firn/orderly-stop, firn/startup

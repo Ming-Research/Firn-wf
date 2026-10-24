@@ -26,7 +26,64 @@ before the run.
 
 ## What the source needed
 
-Filled in as the work lands; see the pull request for the full list.
+The edits change no behavior of firn. The compiler was run only in CI: a
+temporary workflow checked each module of the graph, and a discovery script
+applied the compiler's own repairs round by round in a disposable workspace
+(the compiler reports one redundant condition per function body, so the
+repair needs several rounds) and wrote them as a patch, which was read hunk
+by hunk before it was applied.
+
+- **`held` is a reserved word** (FORM-3, specification v0.147). 376 uses of
+  the five new names in 30 files (the list-ceiling fixture and two doc
+  strings included) replace it by role: `held_bytes` (filled bytes of a read
+  buffer), `held_state`, `held_engine`, `held_call` and `held_value`. None of
+  the new names existed before.
+- **A redundant condition is a hard error** (OP-5, v0.152). The checker now
+  refuses a condition it can decide from the facts at hand, such as an index
+  guard after a loop bound that already proves the index in range. 80 such
+  guards in 27 files of `firn/` and 17 in `tests/list_ceiling.wf` (the
+  discovery script's tally) are deleted; each is a branch that could not run.
+  Two follow-on errors needed hand edits: a `return` made unreachable by a
+  deleted guard (`eviction_pool_take`, `rightmost`) and two `glyph`
+  declarations that collided once the guard between them was gone
+  (`aof_hex`, now `high_glyph` and `low_glyph`).
+- **`Inputs` destructuring names every field** (GRAM-10). The two fields the
+  host API added, `host_paths` and `process_id`, are bound and unused in
+  `server.wf`.
+- **The list-ceiling fixture** (`tests/list_ceiling.py`) builds a copy of
+  firn's graph with the ceiling constant replaced textually by 8. With that
+  constant one growth guard in the copy of `lists.wf` is decided by the
+  checker (OP-5), so the assembler removes that exact block from the copy
+  and fails if it does not find it exactly once. Production `lists.wf` keeps
+  the guard. Whitefoot has no source overlay, so the fixture cannot carry the
+  constant any other way; this is recorded for the architect.
+- **Halo-wf** needed no edit in firn: its sources, at the commit named
+  above, already follow the new rules.
+- **`redis-bench.sh`** gained the `sismember`, `srem`, `hget` and `hdel` cases
+  the comparison below uses.
+
+The gate was green on the pushed head before this record's last edits: the
+Redis 7.2.16 suite ratchet, firn's network tests, the AOF sync-fault job, the
+paired safety witnesses, the design lint and the release workflow.
+
+**Statements the pin move made false or left unchecked.**
+
+- `design/firn/startup.md` and `firn/README.md` said the pinned Whitefoot has
+  no resource-limit facility. The new `std::process` has `open_files_limit`
+  and `raise_open_files_limit`, so both now name the release they held for,
+  and the node records that its reopening condition is met. Whether firn
+  raises `RLIMIT_NOFILE` at startup as Redis does is a behavior change,
+  left to firn-ops-pin-followup, not part of this item.
+- `docs/safety.md` and the safety-witnesses README cite specification
+  passages, source lines and a C-source census read at `wf-af7665be672d`.
+  Many line anchors differ at the new commit. Both documents now say they
+  were audited at the older release and not read again; the re-audit is a
+  separate piece of work.
+- `design/firn/command-parts.md` rests on the old compiler's behavior of
+  acquiring a named target at its first use on a path. The comparison below
+  covers `SET` and the other commands but does not observe that behavior.
+- Whitefoot#460 is in no release yet, so `firn-group-commit`'s measurement
+  cannot use it with this pin.
 
 ## Performance comparison, stated before measuring
 

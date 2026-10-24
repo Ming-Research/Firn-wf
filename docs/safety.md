@@ -1,10 +1,16 @@
 # Firn's safety guarantees
 
-These claims describe Firn built with [its Whitefoot pin](../whitefoot.pin),
-`wf-af7665be672d`: [specification v0.146 at the pinned commit][spec]. They are
-conditional on a correct compiler, checker, linked definitions, runtime,
-allocator and OS ([SCOPE-3][scope]). They do not establish Redis compatibility,
-durability of every acknowledged write, or continuous availability.
+These claims describe Firn built with Whitefoot release `wf-af7665be672d`:
+[specification v0.146 at its commit][spec]. They are conditional on a correct
+compiler, checker, linked definitions, runtime, allocator and OS
+([SCOPE-3][scope]). They do not establish Redis compatibility, durability of
+every acknowledged write, or continuous availability.
+
+[`whitefoot.pin`](../whitefoot.pin) now names `wf-63b7cbb03820` (specification
+v0.165). The specification passages, source-line anchors and runtime census
+below were read at `wf-af7665be672d` and have not been read again at the
+newer release; "pinned" below means that audited release. Firn builds, passes
+its gate and compiles the safety witnesses under the newer release.
 
 ## Guarantees and their boundaries
 
@@ -54,8 +60,8 @@ only a comment in one accepted witness and the experiment README, and gate run
 38424251158 passed on `a3253ee`. That run used Whitefoot `d75f318d5631`, an
 earlier pin; accepted executables were **not run**.
 These are specific source-admission examples, not a complete proof of Firn or
-of the current compiler/runtime. The rules above are cited at Firn's current
-pin.
+of the current compiler/runtime. The rules above are cited at the audited
+release, not at the current pin.
 
 The audit also found an accept error that stopped service with status zero;
 firn now logs it and keeps listening ([correction in PR #104][accept-pr]).
