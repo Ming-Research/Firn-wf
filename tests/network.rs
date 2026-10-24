@@ -17,6 +17,7 @@ mod pubsub;
 mod blocking_lists;
 mod durability;
 mod streams;
+mod accept_errors;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};

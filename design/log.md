@@ -5,11 +5,23 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
-## 2026-10-23 Add blocking list commands
+## 2026-10-24 Add blocking list commands
 
 Nodes: firn, firn/aof-rewrite/capture, firn/append-only-file, firn/blocking-lists, firn/connection-ownership, firn/script-attempt-external-effects
 
 Summary: A new node records that a failed list lookup and FIFO waiter registration share one whole-keyspace, Meta and event-hub hold, and that a producer services ready waiters after committing its whole command, EXEC or script and before releasing the hold. Pending requests extend the event hub and promote a connection on its first actual suspension; they keep owned arguments, a never-reused generation and a scalar continuation, and each resumed command repeats memory and persistence admission. Timeout conversion stays an explicit incomplete boundary pending firn-req-extended-float, with only the literal 0 (infinite wait) implemented. Inside a script, blocking commands never register a waiter, and list readiness is drained after the script commits. The AOF capture rule lets list producers and blocking pops journal their own bytes when they change exactly one key. Top-level list producers that create a list on a key where a blocked client waits, with RENAME, RENAMENX, COPY and a promoted connection's list writes, stage their effects and copy them into the log, an exception to the append-only file's in-place rule; every other list write holds only its keys' entries as before, and a push or move that creates its list also takes the event hub to ask whether a client waits on that key, leaving for the whole-keyspace hold only if one does, because a client waits only on a key with no live list, a registration excludes every entry hold, and only the creation of a list makes a client ready. A first version that held the whole keyspace for every list producer ran LPUSH, RPUSH, LINSERT and LMOVE at 0.31 of their previous rate at pipeline depth 16 ([first measurement](../research/investigations/firn/blocking-lists-performance.md#a1-cost-on-existing-commands-append-only-file-off)), and a second that held it for every write that creates a list ran a push that creates its list at 0.313, with 38.8% of its cycles in the hold ([second measurement](../research/investigations/firn/blocking-lists-performance.md#a1-again-the-narrowed-hold-7a4e4de)); the third is measured before the merge. The reference suite's two BRPOPLPUSH/WATCH fixtures are patched to close their clients on failure.
+
+## 2026-10-24 Keep serving after an accept error
+
+Nodes: firn/orderly-stop, firn/startup
+
+Summary: Before, one accept error (such as running out of file descriptors) closed the listener and firn exited with status 0 once clients left, silently ending service. Now only shutdown, SHUTDOWN or the client limit ends accepting. The 100 ms wait stops a persistent error from spinning the CPU, which differs from Redis only because Redis calls accept after readiness; the cost is that a new connection may wait up to 100 ms after the error clears. Rejected: stopping and returning 0, retrying at once on descriptor exhaustion, and waiting only for resource exhaustion. The startup node's closing clause that firn keeps its existing handling of host accept errors no longer holds and now points here.
+
+## 2026-10-14 Add the distribution node
+
+Nodes: firn/distribution
+
+Summary: A new node records how firn is shipped: the full-LTO build as a dynamic glibc binary at the Ubuntu 24.04 baseline, a container on Debian trixie-slim running as UID 10001 with its AOF in a named volume at /data and binding every IPv4 address internally, and the quickstart checker executing the document's marked shell blocks literally. GitHub Releases and GHCR are the only channels; only tags matching ^v[0-9]+\.[0-9]+\.[0-9]+$ are stable and move latest; only pushed v* tags publish; publication refuses an existing release or image version tag and pushes the image tags before creating the release.
 
 ## 2026-10-23 Store streams in Redis's nodes
 
@@ -142,6 +154,7 @@ Nodes: firn/memory-limit
 Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-admit-tree, which asked to approve PR #67's design change at head bc2425d: while firn keeps no append-only file, a command's maxmemory admission check reads the heap and compares it with the limit without a Meta statement and takes Meta only once the reading is over the limit; with a file it keeps the Meta statement; the decision cites the 14900K measurement instead of being provisional.
 
 Summary: Every command's admission check took the exclusive Meta statement whenever a limit was set, so with an 8 GiB limit far above use main ran depth-16 GET at 0.117 and SET at 0.145 of its unlimited throughput on 8 P-cores of the i9-14900K. Without an append-only file nothing is excluded and no rewrite can start, so the Meta-held check reduces to a heap comparison; with it the change ran at 0.941 and 0.948, and without a limit within the twin's range of main ([admission without Meta](../research/investigations/memory-limit/README.md#admission-without-meta-while-no-aof-is-kept)). Admission still raises the peak when its reading exceeds the peak the connection last saw recorded.
+
 ## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture

@@ -136,8 +136,8 @@ clients send on their own:
   succeeds as Redis does with no function loaded, firn having none, and is
   appended to the file as Redis appends it; every other `FUNCTION`
   subcommand is answered as an unknown one. `DEBUG LOG` with a message
-  answers OK, as Redis does with its debug command enabled, firn keeping no
-  log to write it to; every other `DEBUG` subcommand is answered as an
+  answers OK, as Redis does with its debug command enabled; firn discards
+  the message. Every other `DEBUG` subcommand is answered as an
   unknown one.
 
 Channels and patterns are binary and independent of the selected database.
@@ -447,6 +447,30 @@ What is not there yet is listed on the [shared status board](https://claude.ai/a
 measurements and the design are in
 [research/investigations/firn](../research/investigations/firn/DESIGN.md).
 
+## Accept-error diagnostics
+
+An operational accept failure leaves firn's listener open. Cancellation
+from orderly stop ends accepting. An aborted connection retries
+immediately; every other surfaced accept error waits 100 ms before
+retrying, including resource exhaustion and errors for which the runtime
+has no more specific class. The delay uses the orderly-stop cancellation
+watch, so shutdown does not wait for the timer to expire. Recovery after a
+paced error can take up to that retry interval, apart from scheduling and
+bounded diagnostic writes.
+
+Firn writes accept-error diagnostics to stderr, beginning with
+`Accepting client connection: ` and the host's error description. The
+first error is eligible immediately; all error classes then share a limit
+of one diagnostic attempt per second, including across successful accepts.
+A later diagnostic appends ` (suppressed N accept errors)` when failures
+were suppressed since the previous attempt. The count saturates at the
+unsigned 64-bit maximum; success alone does not flush it. A fixed 512-byte
+buffer uses a generic description when the host description does not fit
+or is unavailable. Writes are best-effort, share one absolute 100 ms
+deadline and stop on shutdown, write failure or no progress. This is an
+operational diagnostic sink; `DEBUG LOG` still returns OK and discards its
+message.
+
 ## Build and run
 
 From the repository root, on Linux x86-64 or macOS arm64 with `/usr/bin/clang`
@@ -536,10 +560,10 @@ leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
 `maxclients` at startup or refuse `CONFIG SET` solely because the operating
 system cannot supply enough descriptors; Redis can also refuse its event
 loop's capacity adjustment. The configured application limit does not
-promise descriptor availability. Host accept errors retain their existing
-handling: any `accept` error, descriptor exhaustion included, ends the accept
-loop and stops firn with exit status 0 (see the
-[safety boundaries](../docs/safety.md)).
+promise descriptor availability. An `accept` error, descriptor exhaustion
+included, leaves firn listening and is logged (see
+[Accept-error diagnostics](#accept-error-diagnostics)); the
+[safety boundaries](../docs/safety.md) list what remains.
 
 The interim path rules follow owner card `firn-q-ops-paths-interim` while
 Whitefoot's path support is tracked by `firn-req-host-paths`. Configuration
