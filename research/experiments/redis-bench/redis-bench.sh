@@ -14,7 +14,9 @@
 #                                 and the per-CPU busy reading against a fake
 #                                 /proc/stat, plus compare selection, client
 #                                 allocation/CSV, version and competitor pure
-#                                 logic, without building or starting a server
+#                                 logic, and the step markers of
+#                                 docs/benchmarking.md, without building or
+#                                 starting a server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
 #                                 Redis 7.0's redis-benchmark default suite
 #                                 (SUITE_DEFAULT) on every line
@@ -796,7 +798,9 @@ compare_rows_selftest() (
     echo 'compare-rows-selftest: passed'
 )
 
-# Keep pure competitor/client checks on the gate's existing selftest path.
+# Keep pure competitor/client checks on the gate's existing selftest path;
+# the guide's markers (guide-blocks.py) and the reproduce table check
+# (reproduce-table.py) are checked on it too.
 # These helpers are sourced before ROOT/build initialization and start nothing.
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$BENCH_DIR/competitors.sh"
@@ -808,6 +812,9 @@ if [ "${1:-}" = placement-selftest ]; then
     competitors_selftest
     versions_selftest
     python3 "$BENCH_DIR/compare-client.py" selftest
+    python3 -I "$BENCH_DIR/guide-blocks.py" selftest
+    python3 -I "$BENCH_DIR/reproduce-table.py" selftest
+    python3 -I "$BENCH_DIR/guide-blocks.py" check "$BENCH_DIR/../../../docs/benchmarking.md"
     exit 0
 fi
 

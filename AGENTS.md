@@ -60,7 +60,8 @@ When priorities conflict, first:
   slowest: it downloads the pinned compiler (`make compiler`), builds firn
   and runs the Redis 7.2.16 suite ratchet (`tests/redis-suite/`, without
   `--tolerant`); builds firn and runs its network cases (`tests/`); and runs
-  the design lint and the measurement instrument's pure `placement-selftest`.
+  the design lint and the measurement instrument's pure `placement-selftest`,
+  which also checks the step markers of `docs/benchmarking.md`.
   `make gate-sync` fails when the targets `check.yml` runs
   and those of `make check` differ, so a target added to one is added to the
   other. The suite runs as two shards side by side

@@ -12,8 +12,10 @@ and absolute throughput can change with the machine.
 
 CI runs this method on ubuntu-24.04 hosted runners and on the i9-14900K
 (Ubuntu, kernel 7.0). The package list below is checked against Ubuntu 24.04
-package names. Install these packages:
+package names. The commands assume Ubuntu 24.04 and a user who can run
+`sudo`. Install these packages:
 
+<!-- reproduce: packages -->
 ```bash
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
@@ -36,6 +38,7 @@ provides `shasum` for the compiler download's checksum. Optional `perf` profilin
 Set `FIRN_REVISION` to the published comparison's Firn-wf commit before this
 block. Run the rest of this guide in Bash from the checkout root:
 
+<!-- reproduce: build -->
 ```bash
 : "${FIRN_REVISION:?Set FIRN_REVISION to the published comparison commit}"
 git clone https://github.com/Ming-Research/Firn-wf.git
@@ -89,6 +92,7 @@ Keep the host idle apart from the benchmark. Arrange exclusive access for the
 whole invocation; the standalone script does not acquire a host-wide lock.
 Record the CPU topology before choosing lists:
 
+<!-- reproduce: topology -->
 ```bash
 lscpu
 lscpu -e=CPU,SOCKET,CORE,ONLINE
@@ -154,6 +158,7 @@ call: measurement CSVs are overwritten on another invocation with the same
 `OUT`. Paths in `IMAGES` must not contain whitespace because image pairs are
 space-separated.
 
+<!-- reproduce: probe -->
 ```bash
 # Edit these lists for your host; these defaults belong to the reference 14900K.
 SERVER_1=2
@@ -205,6 +210,7 @@ or line spread above 5% but at most 10%, use five passes of ten seconds.
 Above those bounds, investigate the noise before a full run. Then run each
 server-count cell separately:
 
+<!-- reproduce: skip: the full grid takes hours; its run_cell is the probe's -->
 ```bash
 # Choose this pair from the probe evidence:
 GRID_PASSES=3
@@ -297,6 +303,21 @@ host does not need it. The script traps normal exit, INT and TERM to stop its
 current server. SIGKILL or host failure can bypass those traps: inspect and
 stop leftovers from your own run before another measurement. Do not set
 `FIRN_REDIS_BENCH_RECORD` to a runner record when running independently.
+
+## Checking this guide
+
+Every `bash` block of this guide sits under a marker comment: a step CI runs
+(`<!-- reproduce: NAME -->`, the steps being `packages`, `build`, `topology`
+and `probe`) or a block it does not (`<!-- reproduce: skip: WHY -->`, here the
+hours-long grid, whose `run_cell` is the probe's). The `reproduce` mode of the
+`redis-bench.yml` workflow starts a fresh Ubuntu 24.04 container (docker) with
+an administrator user, runs the marked blocks in order as one Bash script that
+stops at the first failure, with `FIRN_REVISION` set to the dispatched commit,
+and fails unless both probe cells have a measured rate for firn, its twin,
+Redis, Valkey, Dragonfly and Garnet, with their I/O-thread lines. The
+commands are those above, extracted by `research/experiments/redis-bench/guide-blocks.py`,
+so a change to a block is checked as it stands and a block without a marker
+fails `make guide-check`.
 
 ## Reference machine
 

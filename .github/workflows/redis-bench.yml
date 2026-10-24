@@ -18,6 +18,12 @@
 #                   workload_servers selects competitors alongside all firn images
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
+#   mode install-competitors  the pinned competitors installed under the
+#                 runner user's home (install-competitors.sh), measuring nothing
+#   mode reproduce  docs/benchmarking.md followed in a fresh Ubuntu 24.04
+#                 container (reproduce.sh): its marked commands run as
+#                 written, up to the step guide_through, and the probe cells'
+#                 tables are checked; needs docker for the runner's user
 #
 # `images_run` names a run of mode build whose kept images stand in for the
 # revisions of the same names, which are then not built. A compiler built
@@ -40,8 +46,12 @@ on:
       mode:
         description: Compare images, scale against competitors, or measure consumer workloads
         type: choice
-        options: [compare, scale, workloads, build, install-competitors]
+        options: [compare, scale, workloads, build, install-competitors, reproduce]
         default: compare
+      guide_through:
+        description: "Reproduce only: the last step of docs/benchmarking.md to run (packages, build, topology, probe); empty runs every step and checks the tables"
+        type: string
+        default: ""
       revisions:
         description: "name=revision pairs; a name ending in -twin measures its stem's image again; scale uses base"
         type: string
@@ -146,7 +156,7 @@ permissions:
 jobs:
   bench:
     name: redis-bench ${{ inputs.mode }} (${{ inputs.runner }})
-    if: ${{ inputs.mode != 'install-competitors' }}
+    if: ${{ inputs.mode != 'install-competitors' && inputs.mode != 'reproduce' }}
     runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     timeout-minutes: 150
     env:
@@ -487,3 +497,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify pinned archives, stage releases and write receipts
         run: bash research/experiments/redis-bench/install-competitors.sh
+
+  # The public guide followed from nothing: docs/benchmarking.md's marked
+  # commands in a fresh Ubuntu 24.04 container, on this checkout's commit.
+  reproduce:
+    name: follow the benchmarking guide in a fresh container (${{ inputs.runner }})
+    if: ${{ inputs.mode == 'reproduce' }}
+    runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 150
+    env:
+      OUT: ${{ runner.temp }}/reproduce
+      FIRN_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Follow the guide in a fresh container
+        env:
+          GUIDE_THROUGH: ${{ inputs.guide_through }}
+        run: bash research/experiments/redis-bench/reproduce.sh "$OUT" "$GUIDE_THROUGH"
+      - name: Publish the table
+        if: always()
+        run: cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redis-bench-reproduce-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/reproduce/guide.sh
+            ${{ runner.temp }}/reproduce/guide.log
+            ${{ runner.temp }}/reproduce/summary.md
+            ${{ runner.temp }}/reproduce/results/**/*.csv
+            ${{ runner.temp }}/reproduce/results/**/*.txt

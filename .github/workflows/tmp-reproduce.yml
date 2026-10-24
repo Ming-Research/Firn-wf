@@ -1,0 +1,31 @@
+# Temporary quick check of firn-perf-reproduce; deleted before the branch is
+# ready. The selftests need no server; the container job follows the guide
+# through its build step on a hosted runner (the probe cells need the 14900K).
+name: tmp-reproduce
+on:
+  push:
+    branches: [claude/perf-reproduce]
+
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh research/experiments/redis-bench/redis-bench.sh placement-selftest
+
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      FIRN_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash research/experiments/redis-bench/reproduce.sh "$RUNNER_TEMP/reproduce" build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tmp-reproduce-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/reproduce/guide.sh
+            ${{ runner.temp }}/reproduce/guide.log
