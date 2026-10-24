@@ -58,7 +58,7 @@ fn run_list_write(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Sp
   return unit;
 }
 
-fn run_list_write_entries(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> done: Bool reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
+fn run_list_write_entries(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "The entry-holding run of run_list_write: True when the command is complete, False when it would create a list and nothing has been answered.";
   let head = True();
   let tail = False();
