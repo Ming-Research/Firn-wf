@@ -22,7 +22,7 @@
 #                 runner user's home (install-competitors.sh), measuring nothing
 #   mode reproduce  docs/benchmarking.md followed in a fresh Ubuntu 24.04
 #                 container (reproduce.sh): its marked commands run as
-#                 written, up to the step guide_through, and the probe cells'
+#                 written, up to the step `tests` names, and the probe cells'
 #                 tables are checked; needs docker for the runner's user
 #
 # `images_run` names a run of mode build whose kept images stand in for the
@@ -48,10 +48,6 @@ on:
         type: choice
         options: [compare, scale, workloads, build, install-competitors, reproduce]
         default: compare
-      guide_through:
-        description: "Reproduce only: the last step of docs/benchmarking.md to run (packages, build, topology, probe); empty runs every step and checks the tables"
-        type: string
-        default: ""
       revisions:
         description: "name=revision pairs; a name ending in -twin measures its stem's image again; scale uses base"
         type: string
@@ -85,7 +81,7 @@ on:
         type: boolean
         default: false
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Compare also accepts SUITE_DEFAULT for all 19 tests. Also: evict-zipf session-set-limits session-get-limits handshake client-list"
+        description: "Reproduce: the last step of docs/benchmarking.md to run (packages, build, topology, probe), empty runs every step and checks the tables. Otherwise tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Compare also accepts SUITE_DEFAULT for all 19 tests. Also: evict-zipf session-set-limits session-get-limits handshake client-list"
         type: string
         default: ""
       depths:
@@ -511,7 +507,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Follow the guide in a fresh container
         env:
-          GUIDE_THROUGH: ${{ inputs.guide_through }}
+          GUIDE_THROUGH: ${{ inputs.tests }}
         run: bash research/experiments/redis-bench/reproduce.sh "$RUNNER_TEMP/reproduce" "$GUIDE_THROUGH"
       - name: Publish the table
         if: always()
