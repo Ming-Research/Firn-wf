@@ -147,11 +147,18 @@ run counts only if every cell's twin interval holds 1.
   edits to firn's own source moved a cell; a regression that needs that goes
   to its own item.
 
-**Cost.** Estimated from the cell count: 23 tests, 2 depths, 3 images, 8
-passes, 5 seconds, about 92 minutes of timed samples plus pilots and server
-starts, about 110 minutes in all, under the workflow's 150-minute limit. A
-functional probe on a GitHub-hosted runner (2 passes of 2 seconds) runs first
-to check the four new tests and time one pass.
+**Cost.** 23 tests, 2 depths, 3 images, 8 passes of 5 seconds are 92 minutes
+of timed samples. A functional probe on a GitHub-hosted runner (run
+40098317675: both images, all 23 tests at both depths, 2 passes of 2 seconds)
+measured every cell of both images and took 19 minutes in the measuring step
+for 6.1 minutes of timed samples; its pilots (the runs that size each cell's
+request count) and per-run fills are the rest. Scaled to the real run that
+puts the measuring step at about 100 to 125 minutes, above the 110-minute
+limit the workflow had on that step, so this pull request raises the step's
+limit to 150 minutes and the job's to 180. The probe's first dispatch (run
+40097124162) passed without measuring anything: with 1 server CPU the
+hosted runner's 4 vCPUs left no client core, and the script skipped the
+count; the second dispatch names the CPUs.
 
 ## Results
 
