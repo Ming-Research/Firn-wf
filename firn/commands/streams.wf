@@ -611,12 +611,10 @@ fn same_fields(fields: &Box<Slots<Bytes>>, pairs: &Box<Slots<Bytes>>) -> same: B
   }
   for @fields (index in 0_u64..count) {
     let at = index +wrap index;
-    if index < fields^.inner.len {
-      if at < pairs^.inner.len {
-        let equal = bytes_same(left: &fields^.inner[index], right: &pairs^.inner[at]);
-        if bnot(equal) {
-          return False();
-        }
+    if at < pairs^.inner.len {
+      let equal = bytes_same(left: &fields^.inner[index], right: &pairs^.inner[at]);
+      if bnot(equal) {
+        return False();
       }
     }
   }
@@ -695,11 +693,7 @@ fn stream_node_new(id: StreamId, pairs: Box<Slots<Bytes>>) -> node: StreamNode p
   let false_30 = False();
   let item = StreamItem(id: id, deleted: false_30, same: same, pairs: move pairs, size: size);
   let items = box_slots_new::<StreamItem>(capacity: 4_u64);
-  if items.inner.len < items.inner.cap {
-    place_back(window: &items.inner, value: move item);
-  } else {
-    let dropped = move item;
-  }
+  place_back(window: &items.inner, value: move item);
   return StreamNode(fields: move fields, items: move items, live: 1_u64, deleted: 0_u64, master: master, body: size);
 }
 
@@ -719,11 +713,9 @@ fn floor_node(node: &OrderedNode<StreamId, StreamNode>, find: &StreamFind) -> re
     if below >= count {
       break @seek;
     }
-    if below < node^.entries.len {
-      let order = id_order(left: node^.entries[below].pair.key, right: find^.target);
-      if order > 0_i32 {
-        break @seek;
-      }
+    let order = id_order(left: node^.entries[below].pair.key, right: find^.target);
+    if order > 0_i32 {
+      break @seek;
     }
     set below = below +wrap 1_u64;
   }
@@ -790,9 +782,7 @@ fn walk_take(walk: &StreamWalk, item: &StreamItem, client: &Client) -> result: u
     let count = item^.pairs.inner.len;
     reply_array(client: client, count: count);
     for @pairs (index in 0_u64..count) {
-      if index < item^.pairs.inner.len {
-        reply_text(client: client, text: &item^.pairs.inner[index]);
-      }
+      reply_text(client: client, text: &item^.pairs.inner[index]);
     }
   }
   if walk^.limit != 0_u64 {
@@ -869,11 +859,9 @@ fn walk_stream_node(node: &OrderedNode<StreamId, StreamNode>, walk: &StreamWalk,
         if position >= count {
           break @seek;
         }
-        if position < node^.entries.len {
-          let order = id_order(left: node^.entries[position].pair.key, right: walk^.bound);
-          if order > 0_i32 {
-            break @seek;
-          }
+        let order = id_order(left: node^.entries[position].pair.key, right: walk^.bound);
+        if order > 0_i32 {
+          break @seek;
         }
         set position = position +wrap 1_u64;
       }
@@ -901,11 +889,9 @@ fn walk_stream_node(node: &OrderedNode<StreamId, StreamNode>, walk: &StreamWalk,
       if first >= count {
         break @seek;
       }
-      if first < node^.entries.len {
-        let order = id_order(left: node^.entries[first].pair.key, right: walk^.bound);
-        if order >= 0_i32 {
-          break @seek;
-        }
+      let order = id_order(left: node^.entries[first].pair.key, right: walk^.bound);
+      if order >= 0_i32 {
+        break @seek;
       }
       set first = first +wrap 1_u64;
     }
@@ -922,10 +908,8 @@ fn walk_stream_node(node: &OrderedNode<StreamId, StreamNode>, walk: &StreamWalk,
     if walk^.ended {
       return unit;
     }
-    if index < node^.entries.len {
-      walk_items(walk: walk, node: &node^.entries[index].pair.value, client: client);
-      walk_stream_link(link: &node^.entries[index].after, walk: walk, client: client);
-    }
+    walk_items(walk: walk, node: &node^.entries[index].pair.value, client: client);
+    walk_stream_link(link: &node^.entries[index].after, walk: walk, client: client);
   }
   return unit;
 }
@@ -1084,9 +1068,7 @@ fn node_info(env: &StreamNodeInfo, key: &StreamId, value: &StreamNode) -> result
   let count = value^.items.inner.len;
   if count > 0_u64 {
     let index = count -wrap 1_u64;
-    if index < value^.items.inner.len {
-      set env^.last = value^.items.inner[index].id;
-    }
+    set env^.last = value^.items.inner[index].id;
   }
   return unit;
 }
@@ -1096,24 +1078,22 @@ fn mark_entries(env: &StreamMark, key: &StreamId, value: &StreamNode) -> result:
   let unused_master = key^;
   let count = value^.items.inner.len;
   for @items (index in 0_u64..count) {
-    if index < value^.items.inner.len {
-      let stop = False();
-      if env^.trim == 1_u64 {
-        set stop = env^.length <= env^.maxlen;
-      } else {
-        let order = id_order(left: value^.items.inner[index].id, right: env^.minid);
-        set stop = order >= 0_i32;
-      }
-      if stop {
-        return unit;
-      }
-      if bnot(value^.items.inner[index].deleted) {
-        set value^.items.inner[index].deleted = True();
-        set value^.live = value^.live -wrap 1_u64;
-        set value^.deleted = value^.deleted +wrap 1_u64;
-        set env^.length = env^.length -wrap 1_u64;
-        set env^.marked = env^.marked +wrap 1_u64;
-      }
+    let stop = False();
+    if env^.trim == 1_u64 {
+      set stop = env^.length <= env^.maxlen;
+    } else {
+      let order = id_order(left: value^.items.inner[index].id, right: env^.minid);
+      set stop = order >= 0_i32;
+    }
+    if stop {
+      return unit;
+    }
+    if bnot(value^.items.inner[index].deleted) {
+      set value^.items.inner[index].deleted = True();
+      set value^.live = value^.live -wrap 1_u64;
+      set value^.deleted = value^.deleted +wrap 1_u64;
+      set env^.length = env^.length -wrap 1_u64;
+      set env^.marked = env^.marked +wrap 1_u64;
     }
   }
   return unit;
@@ -1200,18 +1180,16 @@ fn delete_entry(env: &StreamDelete, key: &StreamId, value: &StreamNode) -> resul
   let unused_master = key^;
   let count = value^.items.inner.len;
   for @items (index in 0_u64..count) {
-    if index < value^.items.inner.len {
-      let order = id_order(left: value^.items.inner[index].id, right: env^.target);
-      if order == 0_i32 {
-        if bnot(value^.items.inner[index].deleted) {
-          set value^.items.inner[index].deleted = True();
-          set value^.live = value^.live -wrap 1_u64;
-          set value^.deleted = value^.deleted +wrap 1_u64;
-          set env^.hit = True();
-          set env^.emptied = value^.live == 0_u64;
-        }
-        return unit;
+    let order = id_order(left: value^.items.inner[index].id, right: env^.target);
+    if order == 0_i32 {
+      if bnot(value^.items.inner[index].deleted) {
+        set value^.items.inner[index].deleted = True();
+        set value^.live = value^.live -wrap 1_u64;
+        set value^.deleted = value^.deleted +wrap 1_u64;
+        set env^.hit = True();
+        set env^.emptied = value^.live == 0_u64;
       }
+      return unit;
     }
   }
   return unit;
@@ -1228,29 +1206,27 @@ fn stream_delete(log: &StreamLog, op: &StreamOp, client: &Client) -> result: uni
   let deleted = 0_u64;
   let count = op^.ids.inner.len;
   for @ids (index in 0_u64..count) {
-    if index < op^.ids.inner.len {
-      let target = op^.ids.inner[index];
-      let find = stream_floor(log: log, target: target);
-      if find.found {
-        let false_35 = False();
-        let false_36 = False();
-        let mark = StreamDelete(target: target, hit: false_35, emptied: false_36);
-        let edited = ordered_map_edit::<StreamIdOrder, StreamNode, StreamDelete, unit, fn delete_entry, ceiling>(map: &log^.nodes, key: &find.key, key_env: &keys, edit_env: &mark);
-        if mark.hit {
-          if mark.emptied {
-            let gone = ordered_map_remove::<StreamIdOrder, StreamNode, ceiling>(map: &log^.nodes, key: &find.key, env: &keys);
-          }
-          set log^.length = log^.length -wrap 1_u64;
-          let at_first = id_order(left: target, right: first);
-          if at_first == 0_i32 {
-            set first_entry = True();
-          }
-          let above = id_order(left: target, right: log^.max_deleted_id);
-          if above > 0_i32 {
-            set log^.max_deleted_id = target;
-          }
-          set deleted = deleted +wrap 1_u64;
+    let target = op^.ids.inner[index];
+    let find = stream_floor(log: log, target: target);
+    if find.found {
+      let false_35 = False();
+      let false_36 = False();
+      let mark = StreamDelete(target: target, hit: false_35, emptied: false_36);
+      let edited = ordered_map_edit::<StreamIdOrder, StreamNode, StreamDelete, unit, fn delete_entry, ceiling>(map: &log^.nodes, key: &find.key, key_env: &keys, edit_env: &mark);
+      if mark.hit {
+        if mark.emptied {
+          let gone = ordered_map_remove::<StreamIdOrder, StreamNode, ceiling>(map: &log^.nodes, key: &find.key, env: &keys);
         }
+        set log^.length = log^.length -wrap 1_u64;
+        let at_first = id_order(left: target, right: first);
+        if at_first == 0_i32 {
+          set first_entry = True();
+        }
+        let above = id_order(left: target, right: log^.max_deleted_id);
+        if above > 0_i32 {
+          set log^.max_deleted_id = target;
+        }
+        set deleted = deleted +wrap 1_u64;
       }
     }
   }
@@ -2428,11 +2404,9 @@ fn stream_held(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
     xread_ranks(input: input, args: args, op: &op, keys: declared);
     let ranks_count = op.ranks.inner.len;
     for @ranks (index in 0_u64..ranks_count) {
-      if index < op.ranks.inner.len {
-        if op.ranks.inner[index] >= keys^.len {
-          set fallback^ = True();
-          return 0_u64;
-        }
+      if op.ranks.inner[index] >= keys^.len {
+        set fallback^ = True();
+        return 0_u64;
       }
     }
     let appended = xread_held(sequence: sequence, journal: journal, slots: keys, op: &op, input: input, args: args, client: client, log: effects, logged: logged, budget: &unlimited_log_budget);

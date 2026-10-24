@@ -1029,9 +1029,7 @@ fn run_incr(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let removed = incr_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, counted: &counted);
     if store^.logging {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
-      if store^.logging {
-        let appended = incr_log(log: &m^.log, removed: removed, counted: &counted, input: input, args: args, key: key, budget: &log_budget);
-      }
+      let appended = incr_log(log: &m^.log, removed: removed, counted: &counted, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -1201,9 +1199,7 @@ fn long_write(long: &Box<Slots<u8>>, input: &[u8], span: Span, offset: u64) -> r
     let target = imax(doubled, end);
     let fits = target <= 4611686018427387904_u64;
     if fits {
-      if target >= long^.inner.cap {
-        grow(cell: long, capacity: target);
-      }
+      grow(cell: long, capacity: target);
     }
   }
   loop @zeros {
@@ -1646,23 +1642,21 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       invariant aligned: slots^.len == keys.len,
       invariant group_offset: log_budget.group_start <= m^.log.inner.len
     ) {
-      if rank < slots^.len {
-        refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
-        let kind = entry_kind_at(sequence: &sequence, capture_keys: &keys, capture_index: rank, slot: &slots^[rank], client: client);
-        if client^.state == state_expired {
-          if logged {
-            let position = key_position(positions: &client^.key_metadata, index: rank);
-            let index = position -wrap 1_u64;
-            let place = key_bounds(input: input, args: args, index: index);
-            let key = &input^[place.start..place.end];
-            let lapsed = True();
-            let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
-          }
+      refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
+      let kind = entry_kind_at(sequence: &sequence, capture_keys: &keys, capture_index: rank, slot: &slots^[rank], client: client);
+      if client^.state == state_expired {
+        if logged {
+          let position = key_position(positions: &client^.key_metadata, index: rank);
+          let index = position -wrap 1_u64;
+          let place = key_bounds(input: input, args: args, index: index);
+          let key = &input^[place.start..place.end];
+          let lapsed = True();
+          let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
         }
-        if kind != 0_u64 {
-          set blocked = True();
-          break @checked;
-        }
+      }
+      if kind != 0_u64 {
+        set blocked = True();
+        break @checked;
       }
     }
     if blocked {
