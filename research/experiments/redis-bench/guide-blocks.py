@@ -9,8 +9,11 @@ Every ```bash block of the guide stands directly under a marker comment:
 so that a command added to the guide cannot go unchecked. Usage:
 
     guide-blocks.py check DOC              fail unless every block is marked
-    guide-blocks.py extract DOC [THROUGH]  print the run steps in order, up to
-                                           and including the step THROUGH
+    guide-blocks.py extract DOC [THROUGH [WITHOUT]]
+                                           print the run steps in order, up to
+                                           and including the step THROUGH ("-"
+                                           for all), leaving out the step
+                                           WITHOUT
     guide-blocks.py selftest               check the checks on small documents
 """
 import re
@@ -56,14 +59,18 @@ def steps(text):
     return found
 
 
-def script(text, through=None):
-    """The run steps of text as one Bash script, ending with the step through."""
+def script(text, through=None, without=None):
+    """The run steps of text as one Bash script, ending with the step through
+    and leaving out the step without."""
     run = [(n, b) for n, b in steps(text) if n]
+    names = [n for n, _ in run]
+    for name in (through, without):
+        if name and name not in names:
+            raise ValueError(f'no step {name}; the steps are {" ".join(names)}')
     if through:
-        names = [n for n, _ in run]
-        if through not in names:
-            raise ValueError(f'no step {through}; the steps are {" ".join(names)}')
         run = run[:names.index(through) + 1]
+    if without:
+        run = [(n, b) for n, b in run if n != without]
     return ''.join(f'# step {n}\n{b}\n' for n, b in run)
 
 
@@ -73,10 +80,12 @@ def selftest():
             '<!-- reproduce: two -->\n\n```bash\necho 2\n```\n```text\nout\n```\n')
     assert script(good) == '# step one\necho 1\n# step two\necho 2\n', script(good)
     assert script(good, 'one') == '# step one\necho 1\n'
+    assert script(good, None, 'one') == '# step two\necho 2\n'
+    assert script(good, 'two', 'two') == '# step one\necho 1\n'
 
-    def refused(text, through=None):
+    def refused(text, through=None, without=None):
         try:
-            script(text, through)
+            script(text, through, without)
         except ValueError:
             return True
         return False
@@ -84,6 +93,7 @@ def selftest():
     one = '<!-- reproduce: one -->\n```bash\ntrue\n```\n'
     assert not refused(one)
     assert refused(good, 'three'), 'a step the guide lacks'
+    assert refused(good, None, 'three'), 'a left-out step the guide lacks'
     assert refused(one + '```bash\nrm -rf /\n```\n'), 'a block without a marker'
     assert refused(one + '<!-- reproduce: one -->\n```bash\ntrue\n```\n'), 'a repeated name'
     assert refused(one + '<!-- reproduce: two -->\nText.\n```bash\ntrue\n```\n'), 'text after a marker'
@@ -104,9 +114,10 @@ def main(argv):
                 found = steps(doc.read())
             print(f'{argv[2]}: {len([n for n, _ in found if n])} steps run, '
                   f'{len([n for n, _ in found if not n])} skipped')
-        elif argv[1:2] == ['extract'] and len(argv) in (3, 4):
+        elif argv[1:2] == ['extract'] and len(argv) in (3, 4, 5):
+            through, without = (argv[3:] + [None, None])[:2]
             with open(argv[2], encoding='utf-8') as doc:
-                sys.stdout.write(script(doc.read(), argv[3] if len(argv) == 4 else None))
+                sys.stdout.write(script(doc.read(), None if through == '-' else through, without))
         else:
             print(__doc__, file=sys.stderr)
             return 2

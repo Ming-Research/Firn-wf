@@ -11,9 +11,11 @@ and absolute throughput can change with the machine.
 ## Prerequisites and builds
 
 CI runs this method on ubuntu-24.04 hosted runners and on the i9-14900K
-(Ubuntu, kernel 7.0). The package list below is checked against Ubuntu 24.04
-package names. The commands assume Ubuntu 24.04 and a user who can run
-`sudo`. Install these packages:
+(Ubuntu 26.04.1, kernel 7.0; the [reference machine](#reference-machine)
+table has its settings). The package list below is checked against Ubuntu
+24.04 package names. The commands assume Ubuntu 24.04 and a user who can run
+`sudo`; another release or kernel is a host difference to report, like the
+settings in that table. Install these packages:
 
 <!-- reproduce: packages -->
 ```bash
@@ -51,9 +53,9 @@ cat whitefoot.pin
 
 # Fetch the pinned Whitefoot compiler.
 make compiler
-# Install the LLVM major this pin's compiler was built with (clang and LLD).
-# On a host that keeps its own LLVM, run `make toolchain-check` instead.
-make toolchain
+# Use the host's clang and LLD when they are the LLVM major this pin's
+# compiler was built with; otherwise install that major (this needs sudo).
+make toolchain-check || make toolchain
 # Build the full-LTO server.
 make firn-lto
 
@@ -70,7 +72,8 @@ export PATH="$REFERENCE_REDIS_BIN:$COMPETITOR_PREFIX/bin:$PATH"
 `make toolchain` downloads apt.llvm.org's installer and, with sudo, installs
 the LLVM major the pin's release names and points `/usr/bin/clang` and
 `/usr/bin/ld.lld` at it. `make toolchain-check` only verifies the host's
-clang major and fails on a mismatch. `make compiler` obtains the release named by `whitefoot.pin` through
+clang major and fails on a mismatch, so a host that already has the right
+major needs no sudo for the build. `make compiler` obtains the release named by `whitefoot.pin` through
 Whitefoot-kit. `make firn-lto` produces `build/firn-lto`.
 
 `reference.sh` builds Redis once into
@@ -132,8 +135,8 @@ transparent_hugepage, hugepages, default_hugepagesz, threadirqs, preempt,
 nmi_watchdog, skew_tick), or `none`; the raw command line, which can hold disk
 identifiers or secrets, and the host name are never recorded.
 
-The reference i9-14900K's lists below are **not portable CPU numbers**. Edit
-the server-list variables and the client list for your topology before
+The reference i9-14900K's lists below are **not portable CPU numbers**. Export
+or edit the server-list variables and the client list for your topology before
 running them. Smaller reference cells leave core 0 to the OS; the largest
 two use every performance core.
 
@@ -160,13 +163,16 @@ space-separated.
 
 <!-- reproduce: probe -->
 ```bash
-# Edit these lists for your host; these defaults belong to the reference 14900K.
-SERVER_1=2
-SERVER_2=2,4
-SERVER_4=2,4,6,8
-SERVER_8=0,2,4,6,8,10,12,14
-SERVER_16=0-15
-export CLIENT_CPU_LIST=16-31
+# The defaults belong to the reference 14900K. Export these variables with
+# the lists of your host before this block, or edit the defaults.
+SERVER_1=${SERVER_1:-2}
+SERVER_2=${SERVER_2:-2,4}
+SERVER_4=${SERVER_4:-2,4,6,8}
+SERVER_8=${SERVER_8:-0,2,4,6,8,10,12,14}
+SERVER_16=${SERVER_16:-0-15}
+export CLIENT_CPU_LIST=${CLIENT_CPU_LIST:-16-31}
+# The probe's server-count cells; leave out a cell your host cannot place.
+PROBE_CELLS=${PROBE_CELLS:-"2 8"}
 export IMAGES="firn=$PWD/build/firn-lto firn-twin=$PWD/build/firn-lto"
 export COMPARE_CLIENT=procs
 export COMPARE_DEPTHS="1 16"
@@ -175,7 +181,7 @@ export COMPARE_REFERENCE=false
 export COMPARE_MAXMEMORY=
 export IMAGE_DRIVERS=
 export PERF=
-unset BASELINE_ROOT WF_SCHED_REPORT FIRN_REDIS_BENCH_RECORD
+unset BASELINE_ROOT WF_SCHED_REPORT
 BASELINE_LINES="reference reference-io valkey valkey-io dragonfly garnet"
 
 run_cell() {
@@ -191,8 +197,10 @@ run_cell() {
 }
 
 # Two server-count probes, two depths, two numbered passes of about five seconds.
-run_cell probe 2 "$SERVER_2" "set get mset" 2 5 "$BASELINE_LINES probe"
-run_cell probe 8 "$SERVER_8" "set get mset" 2 5 "$BASELINE_LINES probe"
+for count in $PROBE_CELLS; do
+  servers=SERVER_$count
+  run_cell probe "$count" "${!servers}" "set get mset" 2 5 "$BASELINE_LINES probe"
+done
 ```
 
 The `probe` token permits recording unverified versions and missing Dragonfly
@@ -309,40 +317,58 @@ stop leftovers from your own run before another measurement. Do not set
 Every `bash` block of this guide sits under a marker comment: a step CI runs
 (`<!-- reproduce: NAME -->`, the steps being `packages`, `build`, `topology`
 and `probe`) or a block it does not (`<!-- reproduce: skip: WHY -->`, here the
-hours-long grid, whose `run_cell` is the probe's). The `reproduce` mode of the
-`redis-bench.yml` workflow starts a fresh Ubuntu 24.04 container (docker) with
-an administrator user, runs the marked blocks in order as one Bash script that
-stops at the first failure, with `FIRN_REVISION` set to the dispatched commit,
-and fails unless both probe cells have a measured rate for firn, its twin,
-Redis, Valkey, Dragonfly and Garnet, with their I/O-thread lines. The
-commands are those above, extracted by `research/experiments/redis-bench/guide-blocks.py`,
-so a change to a block is checked as it stands and a block without a marker
-fails `make guide-check`.
+hours-long grid, whose `run_cell` is the probe's). The commands CI runs are
+those above, extracted by `research/experiments/redis-bench/guide-blocks.py`
+and run in order as one Bash script that stops at the first failure, with
+`FIRN_REVISION` set to the dispatched commit, so a change to a block is
+checked as it stands and a block without a marker fails `make
+placement-selftest`. The `reproduce` mode of the `redis-bench.yml` workflow
+runs them in two places, and fails unless every probe cell it ran has a
+measured rate for firn, its twin, Redis, Valkey, Dragonfly and Garnet, with
+their I/O-thread lines:
+
+- On a GitHub-hosted runner, in a fresh Ubuntu 24.04 container (docker) with
+  an administrator user, every step from `packages` on. The runner has four
+  vCPUs, too few for the reference lists, so the run exports lists of its own
+  and `PROBE_CELLS=2`: the probe's one cell of two server CPUs, on the first
+  physical core, with the clients on the others.
+- On the i9-14900K, natively and without the `packages` step, in a fresh home
+  directory and a fresh checkout. The runner's account has no `sudo`, and the
+  host keeps the packages and the LLVM major the pin names, so `make
+  toolchain-check` passes and the build needs none. The probe uses the guide's
+  own lists and both its cells.
+
+The 14900K's own `packages` and `make toolchain` steps are checked only in the
+container on the hosted runner.
 
 ## Reference machine
 
-Fill this table from the next native i9-14900K run's `host.txt`, keeping its
-complete per-CPU records alongside the published results. No setting values
-are assumed here.
+These values are what the instrument recorded in `host.txt` on the native
+i9-14900K (a `compare` run of Firn-wf commit `2659ab6f`,
+[run 40095986617](https://github.com/Ming-Research/Firn-wf/actions/runs/40095986617));
+[`reference-host.txt`](../research/investigations/perf-baseline/reference-host.txt)
+keeps its complete system record, every CPU's policy line included, because
+CI artifacts expire. A setting the instrument cannot read is `unknown`; the
+table adds none.
 
 | Recorded setting | Reference value |
 |---|---|
-| CPU model | TO-FILL |
-| Microcode revision(s) | TO-FILL |
-| Sockets, physical cores and logical threads | TO-FILL |
-| Per-CPU topology and performance/efficiency core class | TO-FILL |
-| Total memory | TO-FILL |
-| Scaling governor per CPU class, including any per-CPU differences | TO-FILL |
-| Energy-performance preference per CPU class, including any differences | TO-FILL |
-| `intel_pstate` status and `no_turbo` | TO-FILL |
-| `cpufreq` boost, when available | TO-FILL |
-| SMT active/control | TO-FILL |
-| Transparent hugepages enabled/defrag | TO-FILL |
-| `vm.overcommit_memory` | TO-FILL |
-| `vm.swappiness` | TO-FILL |
-| Kernel command line, including `isolcpus`, `nohz_full` and mitigations | TO-FILL |
-| irqbalance service active state | TO-FILL |
-| `perf_event_paranoid` | TO-FILL |
-| Kernel release | TO-FILL |
-| Distribution release | TO-FILL |
-| Loopback MTU | TO-FILL |
+| CPU model | Intel(R) Core(TM) i9-14900K |
+| Microcode revision(s) | `0x133` on all 32 CPUs |
+| Sockets, physical cores and logical threads | 1 socket, 24 physical cores, 32 logical threads |
+| Per-CPU topology and performance/efficiency core class | Performance class: CPUs 0-15, eight cores of two threads each, in the pairs (0,1), (2,3) … (14,15) of core ids 0-7. Efficiency class: CPUs 16-31, one thread on each of core ids 8-23. One NUMA node |
+| Total memory | 129298704 kB (`MemTotal`) |
+| Scaling governor per CPU class, including any per-CPU differences | `performance` on all 32 CPUs, no difference between the classes |
+| Energy-performance preference per CPU class, including any differences | `performance` on all 32 CPUs, no difference between the classes |
+| `intel_pstate` status and `no_turbo` | `active`, `no_turbo` 0 |
+| `cpufreq` boost, when available | `unknown` (not exposed) |
+| SMT active/control | active 1, control `on` |
+| Transparent hugepages enabled/defrag | `madvise` / `madvise` |
+| `vm.overcommit_memory` | 0 |
+| `vm.swappiness` | 60 |
+| Kernel command line, including `isolcpus`, `nohz_full` and mitigations | none of the allow-listed parameters is set |
+| irqbalance service active state | `inactive` |
+| `perf_event_paranoid` | -1 |
+| Kernel release | Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep 4 09:10:14 UTC 2026 |
+| Distribution release | Ubuntu 26.04.1 LTS (Resolute Raccoon) |
+| Loopback MTU | 65536 |

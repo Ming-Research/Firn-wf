@@ -20,10 +20,13 @@
 #                 redis-bench-images, measuring nothing
 #   mode install-competitors  the pinned competitors installed under the
 #                 runner user's home (install-competitors.sh), measuring nothing
-#   mode reproduce  docs/benchmarking.md followed in a fresh Ubuntu 24.04
-#                 container (reproduce.sh): its marked commands run as
-#                 written, up to the step `tests` names, and the probe cells'
-#                 tables are checked; needs docker for the runner's user
+#   mode reproduce  docs/benchmarking.md followed from nothing
+#                 (reproduce.sh): its marked commands run as written, up to the
+#                 step `tests` names, and the probe cells' tables are checked.
+#                 On a GitHub runner, in a fresh Ubuntu 24.04 container (needs
+#                 docker) with lists for the runner's four vCPUs; on the
+#                 14900K, natively in a fresh home directory and checkout,
+#                 without the packages step
 #
 # `images_run` names a run of mode build whose kept images stand in for the
 # revisions of the same names, which are then not built. A compiler built
@@ -495,17 +498,22 @@ jobs:
         run: bash research/experiments/redis-bench/install-competitors.sh
 
   # The public guide followed from nothing: docs/benchmarking.md's marked
-  # commands in a fresh Ubuntu 24.04 container, on this checkout's commit.
+  # commands on this checkout's commit, in a fresh Ubuntu 24.04 container on a
+  # GitHub runner, natively in a fresh home directory on the 14900K.
   reproduce:
-    name: follow the benchmarking guide in a fresh container (${{ inputs.runner }})
+    name: follow the benchmarking guide from nothing (${{ inputs.runner }})
     if: ${{ inputs.mode == 'reproduce' }}
     runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     timeout-minutes: 150
     env:
       FIRN_REVISION: ${{ github.sha }}
+      REPRODUCE_WHERE: ${{ inputs.runner == '14900k' && 'native' || 'container' }}
+      REPRODUCE_PLACEMENT: ${{ inputs.runner == '14900k' && 'guide' || 'host' }}
+      # The 14900K run is a session of its own, as the measurement job's is.
+      SESSION_FILE: ${{ inputs.runner == '14900k' && '~/.cache/firn-redis-bench/session' || '' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Follow the guide in a fresh container
+      - name: Follow the guide from nothing
         env:
           GUIDE_THROUGH: ${{ inputs.tests }}
         run: bash research/experiments/redis-bench/reproduce.sh "$RUNNER_TEMP/reproduce" "$GUIDE_THROUGH"
