@@ -1202,13 +1202,16 @@ fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if rewrite {
     return 184_u64;
   }
-  return 0_u64;
+  return blocking_kind(input: input, name: name);
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   doc "The command identity with dataset parts or hub-aware dispatch usable under EXEC or a script's atomic statement; zero otherwise.";
   let kind = command_kind(input: input, name: name);
   if pubsub_command(kind: kind) {
+    return kind;
+  }
+  if blocking_command(kind: kind) {
     return kind;
   }
   if kind <= 171_u64 {
@@ -1219,6 +1222,18 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
 
 fn held_arity(kind: u64) -> arity: i64 pure {
   doc "The arity Redis 7.0.15's command table gives a command held_kind names, positive for exactly that many arguments with its name and negative for at least its magnitude.";
+  if kind == 201_u64 {
+    return -3_i64;
+  }
+  if kind == 202_u64 {
+    return -3_i64;
+  }
+  if kind == 203_u64 {
+    return 4_i64;
+  }
+  if kind == 204_u64 {
+    return 6_i64;
+  }
   if pubsub_command(kind: kind) {
     let publish = kind == 192_u64;
     let spublish = kind == 198_u64;
@@ -1587,6 +1602,9 @@ fn held_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::A
   ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
 } {
   doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. journal is the attempt environment's first-refresh undo log, or None for EXEC; the client carries the read's memory settings, refreshed after its own CONFIG SET. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
+  if blocking_command(kind: kind) {
+    return held_blocking_list(sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+  }
   let unlimited_log_budget = pkg::store::log_budget_new();
   if kind == 164_u64 {
     return held_flush(sequence: sequence, keys: keys, due: &meta^.due, log: effects, logged: logged, input: input, args: args, client: client, budget: &unlimited_log_budget);
@@ -2287,6 +2305,11 @@ fn script_command_entries(sequence: &pkg::store::WriteSequence, memory: &pkg::sc
   if kind == 0_u64 {
     return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
   }
+  let producer = list_producer(kind: kind);
+  let blocking = blocking_command(kind: kind);
+  if bor(producer, blocking) {
+    return pkg::scripting::ScriptCommandResult::NeedWholeMap();
+  }
   let publishing = kind == 192_u64;
   let shard_publishing = kind == 198_u64;
   let querying = kind == 193_u64;
@@ -2331,6 +2354,8 @@ binding FirnCommands : ScriptCommands {
   doc "The commands a script calls are firn's commands written as parts, run by script_command.";
   call = script_command;
   call_entries = script_command_entries;
+  ready = blocking_hold_ready;
+  serve = blocking_drain;
 }
 
 fn script_type(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
@@ -3252,7 +3277,8 @@ fn script_push(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
     return 0_u64;
   }
   let slot = &keys^[rank];
-  let work = push_body(sequence: sequence, journal: journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
+  let staged = True();
+  let work = push_body(sequence: sequence, journal: journal, access_key: key, slot: slot, client: client, front: front, existing: existing, stage_ready: staged);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &unlimited_log_budget);
   push_finish(client: client);
   return appended;
@@ -3556,7 +3582,8 @@ fn script_lmove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   let ranks = script_key_ranks(keys: &ks, declared: declared);
   let source = key_position(positions: &ranks, index: pair.source);
   let target = key_position(positions: &ranks, index: pair.target);
-  let work = lmove_body(sequence: sequence, journal: journal, access_keys: declared, slots: keys, source: source, destination: target, client: client, from_head: from_head, to_head: to_head);
+  let staged = True();
+  let work = lmove_body(sequence: sequence, journal: journal, access_keys: declared, slots: keys, source: source, destination: target, client: client, from_head: from_head, to_head: to_head, stage_ready: staged);
   let appended = lmove_meta(log: effects, logged: logged, work: &work, input: input, args: args, budget: &unlimited_log_budget);
   lmove_finish(client: client);
   return appended;

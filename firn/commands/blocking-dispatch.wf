@@ -1,0 +1,110 @@
+alias Client = pkg::protocol::Client;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+
+fn blocking_commit(meta: &pkg::store::Meta, sequence: &pkg::store::WriteSequence, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> result: unit reads(effects), reads(sequence), writes(meta), writes(budget) {
+  doc "Appends one execution unit's effect records to the file's pending bytes and commits its sequence. Several records, the lazy-expiry removals and the command's own record, are wrapped in MULTI and EXEC as Redis 7.2.16 propagatePendingCommands groups an execution unit that propagated more than one command, each served waiter's command being its own unit; one record stays bare and none writes nothing.";
+  if appended > 1_u64 {
+    pkg::store::log_count(log: &meta^.log, count: 1_u64, room: 16_u64, budget: budget);
+    pkg::store::log_word(log: &meta^.log, word: &word_multi_log[0_u64..5_u64], budget: budget);
+  }
+  let length = effects^.inner.len;
+  pkg::store::log_append(log: &meta^.log, bytes: &effects^.inner[0_u64..length], budget: budget);
+  if appended > 1_u64 {
+    pkg::store::log_count(log: &meta^.log, count: 1_u64, room: 16_u64, budget: budget);
+    pkg::store::log_word(log: &meta^.log, word: &word_exec_log[0_u64..4_u64], budget: budget);
+  }
+  pkg::store::sequence_commit(meta: meta, sequence: sequence, budget: budget);
+  return unit;
+}
+
+fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
+  doc "Runs a list-producing command through the existing held command parts. A top-level LPUSH, RPUSH, LMOVE or RPOPLPUSH of a connection that is not promoted reaches it from the dispatcher when run_push or run_lmove finds that it would create a list that a blocked client waits on: a blocked client waits only on a key that holds no live list and only the creation of a list there makes it ready, as Redis's dbAdd does, so every other list write holds only its keys' entries and the metadata, as before blocking lists existed. RENAME, RENAMENX, COPY and a promoted connection's commands come here directly. Dataset changes, AOF publication, the producer's complete reply commitment and FIFO service of newly ready lists occur in that order under one keyspace, metadata, event-hub and server-state hold. Ordinary GET and SET retain their existing dispatch and targets. LPUSH, RPUSH, LPUSHX, RPUSHX and LINSERT change only their one key, so their statement opens the one-key sequence: during a rewrite a key already journaled in the window records only these appended bytes, not a further complete image of the list.";
+  let journal = None<pkg::store::AccessJournal>();
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  let logged = store^.logging;
+  set client^.now = time^.check;
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub, server = &store^.server when blocking_hold_ready(meta: meta, hub: hub, server: server) {
+    if aof_refuse(meta: meta, client: client) {
+      pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+      return unit;
+    }
+    let sequence = if list_producer_one_key(kind: kind) {
+      let one_key = pkg::store::sequence_new_key(meta: meta, loading: time^.loading);
+      give move one_key;
+    } else {
+      let several = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+      give move several;
+    }
+    let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
+    let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    blocking_commit(meta: meta, sequence: &sequence, effects: &effects, appended: appended, budget: &budget);
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+    blocking_drain(map_shared: &store^.keys, keys: keys, meta: meta, hub: hub, server: server, client: client, clock: clock, wall: &store^.wall, logged: logged);
+  }
+  return unit;
+}
+
+fn run_blocking_list(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(clock) waits {
+  doc "Validates directions and timeout once before its first key lookup. An immediately served command commits its ordinary effects and reply before draining list readiness. An empty result promotes the connection only at actual suspension, retains the original parsed deadline, registers the request under the same hold as its failed lookup and commits any earlier pipelined replies. The connection owner handles waiting and EOF after this function returns. BLPOP and BRPOP over any keys, and BRPOPLPUSH or BLMOVE whose source is its destination, open the one-key sequence, so during a rewrite a served pop or same-key move on a list already journaled in the window records only its LPOP, RPOP, RPOPLPUSH or LMOVE bytes, not a further complete image; a pop that first removes an expired earlier key falls back to complete images at run time.";
+  let parsed = blocking_parse(input: input, args: args, client: client, time: time, kind: kind);
+  let deadline = match parsed {
+    Some(value: accepted) => {
+      give accepted;
+    }
+    None() => {
+      return unit;
+    }
+  }
+  let journal = None<pkg::store::AccessJournal>();
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  let logged = store^.logging;
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub, server = &store^.server when blocking_hold_ready(meta: meta, hub: hub, server: server) {
+    if aof_refuse(meta: meta, client: client) {
+      pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+      return unit;
+    }
+    let sequence = if blocking_one_key(kind: kind, input: input, args: args) {
+      let one_key = pkg::store::sequence_new_key(meta: meta, loading: time^.loading);
+      give move one_key;
+    } else {
+      let several = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+      give move several;
+    }
+    let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
+    let (completed, appended) = blocking_try(sequence: &sequence, journal: &journal, kind: kind, keys: keys, effects: &effects, logged: logged, input: input, args: args, client: client, time: time);
+    blocking_commit(meta: meta, sequence: &sequence, effects: &effects, appended: appended, budget: &budget);
+    if bnot(completed) {
+      blocking_request(hub: hub, input: input, args: args, client: client, kind: kind, deadline: deadline);
+    }
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+    blocking_drain(map_shared: &store^.keys, keys: keys, meta: meta, hub: hub, server: server, client: client, clock: clock, wall: &store^.wall, logged: logged);
+  }
+  return unit;
+}
+
+fn held_blocking_list(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<pkg::store::Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(effects), writes(client) {
+  doc "The EXEC and script form of a blocking list command: validate exactly as the network form, execute the shared attempt, and answer null immediately if no list is ready. It never registers a blocked client; any newly ready move destination is drained after the outer execution unit commits.";
+  match blocking_parse(input: input, args: args, client: client, time: time, kind: kind) {
+    Some(value: deadline) => {
+    }
+    None() => {
+      return 0_u64;
+    }
+  }
+  let (completed, appended) = blocking_try(sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+  if bnot(completed) {
+    if kind < 203_u64 {
+      pkg::protocol::reply_nil_array(client: client);
+    } else {
+      pkg::protocol::reply_nil(client: client);
+    }
+  }
+  return appended;
+}

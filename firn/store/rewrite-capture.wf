@@ -73,13 +73,22 @@ fn sequence_fail(sequence: &WriteSequence, reason: RewriteAbortReason) -> result
 }
 
 fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) {
-  doc "Coalesces a changed key's complete final image in bounded execution-unit scratch. Every reservation precedes allocation, including capacity growth overlap and replacement of an earlier image. Failure affects capture alone; normal mutation and AOF publication still complete.";
+  doc "Coalesces a changed key's complete final image in bounded execution-unit scratch, unless the statement is opened for one key, has changed only this key and the key's previous write is journaled in the window, when it selects journaling the statement's own bytes. Effect mode is chosen at the first capture and every later capture checks the one-key claim before relying on it, so a second key revokes it before anything is published. Failure affects capture alone; normal mutation and AOF publication still complete.";
   let recording = band(sequence^.capturing, sequence^.taken);
   let viable = bnot(sequence^.failed);
   let enabled = band(recording, viable);
   if enabled {
   } else {
     return unit;
+  }
+  if sequence^.single {
+    let second = sequence_subject(sequence: sequence, key: key, slot: slot);
+    if second {
+      sequence_revoke(sequence: sequence);
+    }
+    if sequence^.failed {
+      return unit;
+    }
   }
   if sequence^.effect {
     return unit;
@@ -96,6 +105,82 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
       }
     }
   }
+  sequence_capture_image(sequence: sequence, key: key, slot: slot);
+  return unit;
+}
+
+fn sequence_subject(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> second: Bool reads(key), reads(slot), writes(sequence) {
+  doc "For a statement opened for one key, retains the name of the first key it captures, charged before allocation, and whether that key is present after its latest change, and answers true when the captured key differs from it. Names are compared byte for byte, so a key removed and written again in the same statement stays the one key.";
+  let present = False();
+  match slot^ {
+    Some(value: held) => {
+      set present = True();
+    }
+    None() => {
+    }
+  }
+  let known = False();
+  let differs = False();
+  match sequence^.subject {
+    Some(value: named) => {
+      set known = True();
+      let recorded_length = named^.inner.len;
+      let recorded = &named^.inner[0_u64..recorded_length];
+      let order = pkg::bytes::windows_order(left: key, right: recorded);
+      set differs = order != 0_i32;
+    }
+    None() => {
+    }
+  }
+  if differs {
+    return True();
+  }
+  if known {
+    set sequence^.subject_live = present;
+    return False();
+  }
+  let length = key^.len;
+  let allocation = length +sat 32_u64;
+  let charged = sequence_room(sequence: sequence, bytes: allocation);
+  if charged {
+    let retained_key = pkg::bytes::copy_bytes(input: key, start: 0_u64, length: length);
+    set sequence^.subject = Some<Box<Slots<u8>>>(value: move retained_key);
+    set sequence^.subject_live = present;
+  }
+  return False();
+}
+
+fn sequence_revoke(sequence: &WriteSequence) -> result: unit writes(sequence) {
+  doc "A statement opened for one key has changed a second. Its own bytes would reach the second key without that key's previous write being journaled, and the scanned image of that key may already hold the change, so the statement journals complete images of every key it changed instead. Keys captured so far hold images unless the first key took the byte path: a first key the statement removed has the image its name alone determines, rebuilt here; a first key still present has no image at hand, so capture fails and the rewrite aborts rather than journal a unit that does not reproduce it.";
+  set sequence^.single = False();
+  if sequence^.effect {
+  } else {
+    return unit;
+  }
+  set sequence^.effect = False();
+  if sequence^.subject_live {
+    let present_reason = RewriteAbortReason::Capture();
+    sequence_fail(sequence: sequence, reason: present_reason);
+    return unit;
+  }
+  let held = None<Box<Slots<u8>>>();
+  swap(first: &sequence^.subject, second: &held);
+  match move held {
+    Some(value: named) => {
+      let length = named.inner.len;
+      let absent = None<Entry>();
+      sequence_capture_image(sequence: sequence, key: &named.inner[0_u64..length], slot: &absent);
+    }
+    None() => {
+      let unnamed_reason = RewriteAbortReason::Capture();
+      sequence_fail(sequence: sequence, reason: unnamed_reason);
+    }
+  }
+  return unit;
+}
+
+fn sequence_capture_image(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) {
+  doc "Copies the key's complete final image into the statement's scratch, replacing an earlier image of the same key. Every reservation precedes allocation, including capacity growth overlap and replacement of an earlier image.";
   let length = key^.len;
   let measure = rewrite_measure(slot: slot, key_length: length);
   match sequence^.images {
@@ -335,7 +420,7 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
 }
 
 fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
-  doc "Journals the statement's own append-only bytes as one framed unit. Its single key's previous write is already in the journal, so replaying these bytes in sequence order reproduces the key exactly, at the cost of the bytes rather than the key's size.";
+  doc "Journals the statement's own append-only bytes as one framed unit. The statement changed one key, whose previous write is already in the journal, so replaying these bytes in sequence order reproduces the key exactly, at the cost of the bytes rather than the key's size. The retained name of that key overlaps the staging copy, so it is charged across it as an image statement's scratch is.";
   let end = meta^.log.inner.len;
   let start = sequence^.log_start;
   if start > end {
@@ -345,21 +430,26 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
   }
   let length = end - start;
   let framed = length +sat 24_u64;
-  let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
-  if room {
-    match meta^.rewrite.journal {
-      Some(value: chunks) => {
-        rewrite_journal_number(chunks: chunks, value: sequence^.value);
-        rewrite_journal_number(chunks: chunks, value: length);
-        rewrite_journal_number(chunks: chunks, value: 1_u64);
-        for (offset in start..end) {
-          let byte = meta^.log.inner[offset];
-          rewrite_journal_put(chunks: chunks, value: byte);
+  let overlap = sequence^.retained;
+  let charged = rewrite_charge(capture: &meta^.rewrite, bytes: overlap);
+  if charged {
+    let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
+    if room {
+      match meta^.rewrite.journal {
+        Some(value: chunks) => {
+          rewrite_journal_number(chunks: chunks, value: sequence^.value);
+          rewrite_journal_number(chunks: chunks, value: length);
+          rewrite_journal_number(chunks: chunks, value: 1_u64);
+          for (offset in start..end) {
+            let byte = meta^.log.inner[offset];
+            rewrite_journal_put(chunks: chunks, value: byte);
+          }
+        }
+        None() => {
         }
       }
-      None() => {
-      }
     }
+    set meta^.rewrite.used = meta^.rewrite.used -sat overlap;
   }
   return unit;
 }

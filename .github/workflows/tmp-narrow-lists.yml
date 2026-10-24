@@ -1,0 +1,61 @@
+# Temporary (firn-scope-blocking-lists), on branch claude/blocking-lists only,
+# deleted before the branch is ready: builds firn for the network cases and
+# runs only the list and blocking-list cases and the design lint, so that a
+# change to how list writes hold the keyspace is checked without the whole gate.
+# It also prints the compiler's lock ledger for run_push and run_lmove, which
+# shows on which paths each atomic statement takes the event hub, and runs the
+# list ceiling witness, whose cases run the narrow push and move.
+name: tmp-narrow-lists
+
+on:
+  push:
+    branches: [claude/blocking-lists]
+
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Cache the pinned Redis oracle
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Design lint
+        run: make design-lint
+
+      - name: Lock ledger of the list writes
+        run: |
+          compiler=$(ls build/whitefoot/*/whitefootc | head -1)
+          "$compiler" --lock-ledger --graph firn/modules.wfg --entry firn --cache build/firn-ledger-cache -o build/firn-ledger > build/ledger.txt 2>&1 || { tail -40 build/ledger.txt; exit 1; }
+          grep -E "run_push|run_lmove" build/ledger.txt || { echo "no ledger line for run_push or run_lmove"; tail -20 build/ledger.txt; exit 1; }
+
+      - name: Build firn for the network cases
+        run: make firn-test
+
+      - name: The list ceiling witness, with the narrow list writes
+        run: make list-ceiling
+
+      - name: The list and blocking-list network cases
+        run: |
+          redis_bin=$(tests/redis-suite/reference.sh)
+          FIRN="$GITHUB_WORKSPACE/build/firn-test" REDIS_SERVER="$redis_bin/redis-server" \
+            cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
+            blocking_lists lists list_push narrow --show-output

@@ -56,6 +56,40 @@ the reply's raw text.
   starts with `SELECT 0`, then three setup `SET`s; after them are the
   expected records of the test, which the replies match too.
 
+## `blocking-expired-keys-recording.json`
+
+- Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/39899773861
+- Run head commit: `b00c4463a2d05b8fad0415ac024924f9f1d5ddc6`
+- Three cases of list commands that meet an expired key, each made expired by
+  `SET key v PXAT 1` in the same write as the command. A case has `name` and
+  `steps`; a step is `pipe` (requests sent in one write with the `replies`
+  Redis gave), `send` (a request whose reply is read later), `read` (that later
+  reply) or `aof` (the complete incremental file at that point, `SELECT 0`
+  included). Cases: `top-level-producers-over-expired-key`,
+  `immediate-blocking-pops-over-expired-key` and
+  `served-waiter-over-expired-destination`. Used by the scenarios
+  `aof-expired-top-level-producers`, `aof-expired-immediate-blocking-pops` and
+  `aof-expired-served-waiter` in `tests/blocking_lists_oracle.rs`.
+
+## `blocking-waits-on-strings-recording.json`
+
+- Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/40057972246
+- Run head commit: `544cacde74c0c4e02df20d62082312527f848c89`
+- Four cases of list writes while a client is blocked on a key that holds a
+  string or on another key, in the step form of the previous file:
+  `waiter-survives-an-expired-string-then-push` (`SET k v PXAT 1` and `LPUSH k`
+  in one write), `waiter-survives-an-expired-string-then-move` (the same for
+  the destination of an `LMOVE`), `waiter-survives-a-live-string-and-a-refused-push`
+  (`LPUSH`, `LPUSHX` and `RPUSH` refused with WRONGTYPE leave the waiter
+  blocked until `DEL` and `LPUSH` create the list) and
+  `pushes-onto-a-live-list-with-a-waiter-elsewhere` (seven list writes while a
+  client waits on another key: the first, an `RPUSH`, creates the list and the
+  other six write onto it). Used by the scenarios
+  `narrow-expired-string-then-push`, `narrow-expired-string-then-move`,
+  `narrow-live-string-refused-pushes` and
+  `narrow-live-list-writes-with-waiter-elsewhere` in
+  `tests/blocking_lists_oracle.rs`.
+
 ## `lfu-rename-msetnx.json`
 
 - Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583
