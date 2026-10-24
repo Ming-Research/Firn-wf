@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -42,19 +43,84 @@ impl PortLease {
     }
 }
 
+/// An operating-system claim on a loopback port: a socket bound to it that
+/// never listens.
+///
+/// The claim must not listen. A child that another thread spawns while the
+/// claim is open copies the socket and keeps the copy until its own exec. A
+/// copy that listens goes on accepting connections after the claim is
+/// dropped, and resets them when the child execs, so a peer that connects to
+/// the port before its server has started sees a reset instead of a refusal.
+/// A bound socket that never listens refuses every connection whichever
+/// process holds a copy.
+struct PortClaim {
+    _socket: OwnedFd,
+    port: u16,
+}
+
+/// Binds a socket to `127.0.0.1:port` as `TcpListener::bind` does, a port of
+/// 0 selecting one, and leaves it unconnected and not listening.
+fn claim_loopback_port(port: u16) -> std::io::Result<PortClaim> {
+    #[repr(C)]
+    struct SocketAddressV4 {
+        family: u16,
+        port: u16,
+        address: [u8; 4],
+        zero: [u8; 8],
+    }
+    unsafe extern "C" {
+        fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
+        fn setsockopt(socket: i32, level: i32, name: i32, value: *const i32, length: u32) -> i32;
+        fn bind(socket: i32, address: *const SocketAddressV4, length: u32) -> i32;
+        fn getsockname(socket: i32, address: *mut SocketAddressV4, length: *mut u32) -> i32;
+    }
+    const AF_INET: i32 = 2;
+    const SOCK_STREAM: i32 = 1;
+    const SOCK_CLOEXEC: i32 = 0o2000000;
+    const SOL_SOCKET: i32 = 1;
+    const SO_REUSEADDR: i32 = 2;
+    let length = std::mem::size_of::<SocketAddressV4>() as u32;
+    // SAFETY: each call passes a live descriptor and pointers to values that
+    // outlive it; the new descriptor is owned by the OwnedFd at once.
+    unsafe {
+        let descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let owned = OwnedFd::from_raw_fd(descriptor);
+        let enable = 1;
+        if setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &enable, 4) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut address = SocketAddressV4 {
+            family: AF_INET as u16,
+            port: port.to_be(),
+            address: [127, 0, 0, 1],
+            zero: [0; 8],
+        };
+        if bind(descriptor, &address, length) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut written = length;
+        if getsockname(descriptor, &mut address, &mut written) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(PortClaim { _socket: owned, port: u16::from_be(address.port) })
+    }
+}
+
 /// Leases an operating-system-selected port not held by any other test.
 /// Keep the lease across every server lifetime, including restarts on that
 /// port; `ProgramChild::with_port` also retains it for a single child.
 pub fn lease_port() -> PortLease {
-    // Keep each candidate's listener bound until the registry has accepted
-    // or refused it. A refused listener is dropped before choosing again.
-    let mut listener = None;
+    // Keep each candidate's claim until the registry has accepted or refused
+    // it. A refused claim is dropped before choosing again.
+    let mut claim = None;
     lease_from(|| {
-        drop(listener.take());
-        let bound = std::net::TcpListener::bind(("127.0.0.1", 0))
-            .expect("bind loopback port for lease");
-        let port = bound.local_addr().expect("leased listener address").port();
-        listener = Some(bound);
+        drop(claim.take());
+        let bound = claim_loopback_port(0).expect("claim loopback port for lease");
+        let port = bound.port;
+        claim = Some(bound);
         port
     })
 }
@@ -64,10 +130,10 @@ pub fn lease_port() -> PortLease {
 pub(super) fn lease_named_port(port: u16) -> PortLease {
     let mut ports = locked(LEASED_PORTS.get_or_init(|| Mutex::new(HashSet::new())));
     assert!(!ports.contains(&port), "documented port {port} is already leased");
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+    let claim = claim_loopback_port(port)
         .unwrap_or_else(|error| panic!("reserve documented port {port}: {error}"));
     ports.insert(port);
-    drop(listener);
+    drop(claim);
     PortLease { reservation: Arc::new(LeasedPort { port }) }
 }
 
