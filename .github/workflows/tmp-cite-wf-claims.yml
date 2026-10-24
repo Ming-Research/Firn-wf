@@ -1,0 +1,22 @@
+# Temporary quick check for firn-cite-wf-claims; deleted before the merge.
+name: tmp-cite-wf-claims
+
+on:
+  push:
+    branches: [firn-cite-wf-claims]
+  workflow_dispatch:
+
+jobs:
+  cite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone Whitefoot
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout \
+            https://github.com/Ming-Research/Whitefoot.git "$RUNNER_TEMP/wf"
+
+      - name: Check the links and the pin comparison in docs/safety.md
+        run: python3 -I .github/tmp-cite-wf-claims.py "$RUNNER_TEMP/wf"
