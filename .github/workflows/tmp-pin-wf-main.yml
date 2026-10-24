@@ -82,3 +82,33 @@ jobs:
           name: op5-patch
           path: build/op5.patch
           retention-days: 7
+
+  # tests/list_ceiling.wf is compiled inside a copy of the firn graph that
+  # tests/list_ceiling.py assembles, so the jobs above never check it.
+  discover-ceiling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: |
+          make compiler
+          make toolchain
+
+      - name: Repair every OP-5 site of the fixture in the assembled copy
+        run: |
+          release=$(sed -n 's/^release = //p' whitefoot.pin)
+          wfc="$PWD/build/whitefoot/$release/whitefootc"
+          python3 -B tests/list_ceiling.py --out build/list-ceiling
+          python3 -B .github/tmp-op5-discover.py 40 "$wfc" build/list-ceiling/firn module commands
+          diff -u tests/list_ceiling.wf build/list-ceiling/firn/commands/list_ceiling.wf > build/ceiling.patch || true
+          cat build/ceiling.patch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ceiling-patch
+          path: build/ceiling.patch
+          retention-days: 7
