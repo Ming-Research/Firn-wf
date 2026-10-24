@@ -1442,11 +1442,12 @@ compare_client() {
         lpush_new)
             # Nearly every request pushes onto a key that does not exist, so
             # that nearly every push creates its list: the list write that the
-            # head runs under the whole-keyspace hold. The lists stay in the
-            # server for the rest of its pass and are named by the depth, so
-            # that no run pushes onto another's; COMPARE_TESTS names it last, as
-            # the record's runs do, so that the larger keyspace changes no other
-            # cell of a pass.
+            # head runs with an event-hub check beside its entry hold, and
+            # that the first two versions ran under the whole-keyspace hold.
+            # The lists stay in the server for the rest of its pass and are
+            # named by the depth, so that no run pushes onto another's;
+            # COMPARE_TESTS names it last, as the record's runs do, so that the
+            # larger keyspace changes no other cell of a pass.
             key_range=$NEW_LIST_RANGE
             what=$(lpush_new_form "$2")
             ;;
