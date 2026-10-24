@@ -923,13 +923,16 @@ rule N of "Workload cells and comparison" above (the maximum of 5%, the
 base-to-twin deviation and the round spread) with the owner-wide standard: a
 cell's noise is the half-width of the twin-to-base ratio's 95% confidence
 interval, and the candidate-to-base ratio's 95% interval decides. The arms,
-counters and semantic falsifiers above stay. Nothing here is run until the
-owner authorizes a measurement workflow in the coordinator chat; no workflow
-is pushed with this plan.
+counters and semantic falsifiers above stay. The run waits for a compiler pin
+that contains Whitefoot#388 (a statement that holds keys and then takes a
+shared object, as the head's script does for Meta at its end, can be barged
+past only a bounded number of times), which item `firn-pin-wf-main` moves on
+main; the 14900K run is then queued by the resource manager. No workflow is
+pushed with this plan.
 
 **Arms.** `base` is `origin/main` at the revision the run names (the pooled
 source with the full-attempt Meta hold), `head` is the head of Firn-wf#125
-after the owner-approval commit, and `base-twin` is a second image of `base`
+that merges, after main carries that pin, and `base-twin` is a second image of `base`
 (`redis-bench.yml`, mode `workloads` with `workload_images`, or mode `compare`
 with `revisions: base=<main sha> head=<#125 sha> base-twin=<main sha>`). Same
 pin, `make firn-lto`, Redis 7.2.16 tools, idle coordinated 14900K, server on
@@ -948,7 +951,9 @@ path):
 | C1 | 8 | 2 | control: AOF on, no rewrite, D's logged path unchanged | interval contains 1 |
 | N1 | 8 | 2 | negative control: one hot key | interval contains 1 |
 
-C1 and N1 can only falsify: a head/base interval entirely on one side of 1
+The 1.10 in the L2 and L3 rows predicts the size of the gain; the verdict
+below is taken against 1, as for every cell. C1 and N1 can only falsify: a
+head/base interval entirely on one side of 1
 there means the logged path changed or another cause moved throughput, and
 the cell is explained before any claim. The diagnostic EVALSHA cells of the
 plan above (disjoint keys per client, expiry on every write, error after a
