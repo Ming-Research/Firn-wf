@@ -11,6 +11,12 @@ Nodes: firn/orderly-stop, firn/startup
 
 Summary: Before, one accept error (such as running out of file descriptors) closed the listener and firn exited with status 0 once clients left, silently ending service. Now only shutdown, SHUTDOWN or the client limit ends accepting. The 100 ms wait stops a persistent error from spinning the CPU, which differs from Redis only because Redis calls accept after readiness; the cost is that a new connection may wait up to 100 ms after the error clears. Rejected: stopping and returning 0, retrying at once on descriptor exhaustion, and waiting only for resource exhaustion. The startup node's closing clause that firn keeps its existing handling of host accept errors no longer holds and now points here.
 
+## 2026-10-14 Add the distribution node
+
+Nodes: firn/distribution
+
+Summary: A new node records how firn is shipped: the full-LTO build as a dynamic glibc binary at the Ubuntu 24.04 baseline, a container on Debian trixie-slim running as UID 10001 with its AOF in a named volume at /data and binding every IPv4 address internally, and the quickstart checker executing the document's marked shell blocks literally. GitHub Releases and GHCR are the only channels; only tags matching ^v[0-9]+\.[0-9]+\.[0-9]+$ are stable and move latest; only pushed v* tags publish; publication refuses an existing release or image version tag and pushes the image tags before creating the release.
+
 ## 2026-10-23 Store streams in Redis's nodes
 
 Nodes: firn/streams
@@ -142,6 +148,7 @@ Nodes: firn/memory-limit
 Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-admit-tree, which asked to approve PR #67's design change at head bc2425d: while firn keeps no append-only file, a command's maxmemory admission check reads the heap and compares it with the limit without a Meta statement and takes Meta only once the reading is over the limit; with a file it keeps the Meta statement; the decision cites the 14900K measurement instead of being provisional.
 
 Summary: Every command's admission check took the exclusive Meta statement whenever a limit was set, so with an 8 GiB limit far above use main ran depth-16 GET at 0.117 and SET at 0.145 of its unlimited throughput on 8 P-cores of the i9-14900K. Without an append-only file nothing is excluded and no rewrite can start, so the Meta-held check reduces to a heap comparison; with it the change ran at 0.941 and 0.948, and without a limit within the twin's range of main ([admission without Meta](../research/investigations/memory-limit/README.md#admission-without-meta-while-no-aof-is-kept)). Admission still raises the peak when its reading exceeds the peak the connection last saw recorded.
+
 ## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture
