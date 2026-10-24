@@ -1301,7 +1301,6 @@ and B1 scaled by the square root of 18/36 (deduced): H about 0.35% for mset and
 So unless the shortfall or the test's share is about that size, reading 5 is
 the likely one for V, and it is reported as such.
 
-
 ##### Run C1 on `mset`
 
 Run [40089657162](https://github.com/Ming-Research/Firn-wf/actions/runs/40089657162),
@@ -1339,3 +1338,44 @@ shortfall; what the data support is only that the test accounts for at most
 0.69% of it and the cause is undecided. The half-widths were as predicted for H
 (0.38% against about 0.35%) and wider for T (0.59%). The instruction counts
 of the attribution run (29 more of 14,820 per `MSET`, 0.2%) lie inside V.
+
+##### Run C2 on `setmany-tx`
+
+Run [40092094599](https://github.com/Ming-Research/Firn-wf/actions/runs/40092094599),
+mode `workloads` with `workload_images`, firn only, run at 44129dc (the
+dispatching checkout; the images are the same four commits as in C1): tests
+`setmany-tx` and `limiter-tx`, 50 connections, server CPUs 2 and 4, client CPUs
+16-31, 36 passes of 10 seconds, `summary.py workloads` once per pair. No sample
+was client-limited (median client work fraction 0.16 in `setmany-tx`, 0.26 in
+`limiter-tx`, at most 0.27).
+
+| image | `setmany-tx` rate per second | p99 (ms) | slower than `base` in | `limiter-tx` rate per second | p99 (ms) | slower than `base` in |
+| --- | --- | --- | --- | --- | --- | --- |
+| base | 339.9k | 0.222 | | 612.0k | 0.099 | |
+| head | 337.8k | 0.222 | 25 of 36 passes | 607.4k | 0.104 | 22 of 36 passes |
+| head-twin | 336.2k | 0.223 | 22 of 36 passes | 606.5k | 0.108 | 23 of 36 passes |
+| variant | 336.1k | 0.224 | 24 of 36 passes | 607.8k | 0.107 | 24 of 36 passes |
+
+| pair | `setmany-tx` median | 95% interval | `limiter-tx` median | 95% interval |
+| --- | --- | --- | --- | --- |
+| H, head/base | 0.9949 | 0.9807-1.0075, contains 1 | 0.9939 | 0.9809-1.0029, contains 1 |
+| T, twin/head | 0.9991 | 0.9891-1.0158, contains 1 | 0.9984 | 0.9904-1.0096, contains 1 |
+| V, variant/head | 1.0008 | 0.9890-1.0116, contains 1 | 1.0006 | 0.9811-1.0068, contains 1 |
+| W, variant/base | 0.9930 | 0.9838-1.0049, contains 1 | 0.9910 | 0.9711-1.0007, contains 1 |
+
+Reading of `setmany-tx`. T contains 1, so the cell counts (reading 0 does not
+apply). H contains 1: reading 1. The shortfall of Run B1 (0.9877,
+0.9746-0.9923) is not detected in this dispatch; it is at most 1.93% (1 minus
+the lower end of H), and the median, 0.51% slower, is below the cell's noise.
+This does not show it absent. V and W contain 1 as well and are reported
+only. The half-widths were larger than predicted before the run: H 1.34%
+against about 0.62%, T 1.34% against about 1.15%; this dispatch's `setmany-tx`
+is noisier than a scaling of B1's 18 passes gives.
+
+`limiter-tx`, the control (a transaction of `INCRBY` and `PTTL`, not read):
+H 0.9939 (0.9809-1.0029), as in B1 (0.9927, 0.9882-1.0121). It does not detect
+a change either, and its median is also 0.6% below 1.
+
+Taken with C1, `mset` has a shortfall of about 0.5% that shows again in a
+dispatch built for it, whose cause the variant does not isolate; `setmany-tx`
+has one rejection (B1) that the dispatch built for it does not reproduce.
