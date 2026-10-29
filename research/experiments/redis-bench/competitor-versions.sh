@@ -271,6 +271,7 @@ PY
 # Selected plain competitor names, including reference-io/valkey-io. Each
 # executable is recorded once even when both of its configurations are chosen.
 # ROOT, OUT, DRAGONFLY/GARNET and COMPARE_PROBE come from redis-bench.sh.
+# COMPETITOR_PREFIX selects the installer's prefix, defaulting to ~/.local.
 # Complete the inventory before returning a failure, so host.txt explains all
 # installed lines rather than only the first mismatch. --version is bounded:
 # an executable that treats it as an ordinary server start cannot hang a run.
@@ -308,7 +309,7 @@ compare_versions() (
             cv_expected=$(printf '%s\n' "$cv_pins" | sed -n '1p')
             cv_archive_url=$(printf '%s\n' "$cv_pins" | sed -n '2p')
             cv_archive_sha=$(printf '%s\n' "$cv_pins" | sed -n '3p')
-            cv_receipt_path=$HOME/.local/opt/$cv_name-$cv_expected/firn-install-receipt
+            cv_receipt_path=${COMPETITOR_PREFIX:-$HOME/.local}/opt/$cv_name-$cv_expected/firn-install-receipt
         fi
         cv_path=$(command -v "$cv_bin" 2>/dev/null) || cv_path=
         if [ -z "$cv_path" ] || [ ! -f "$cv_path" ] || [ ! -x "$cv_path" ]; then
@@ -334,7 +335,7 @@ compare_versions() (
             else
                 cv_archive_hash_status=check-failed
             fi
-            # bin is invoked only at measurement runtime in CI. The workflow
+            # bin is invoked at measurement runtime. The workflow or reproducer
             # normally built this already; obtain its actual location rather
             # than inferring that PATH points at the reference build. Do this
             # before reading version/hash in case bin repairs a stale cache.

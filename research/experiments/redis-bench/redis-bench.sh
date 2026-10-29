@@ -14,7 +14,9 @@
 #                                 and the per-CPU busy reading against a fake
 #                                 /proc/stat, plus compare selection, client
 #                                 allocation/CSV, version and competitor pure
-#                                 logic, without building or starting a server
+#                                 logic, and the step markers of
+#                                 docs/benchmarking.md, without building or
+#                                 starting a server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
 #                                 Redis 7.0's redis-benchmark default suite
 #                                 (SUITE_DEFAULT) on every line
@@ -796,17 +798,72 @@ compare_rows_selftest() (
     echo 'compare-rows-selftest: passed'
 )
 
-# Keep pure competitor/client checks on the gate's existing selftest path.
+# host.txt is public: it must carry only the allow-listed part of the kernel
+# command line, record the frequency limits it finds, and never stop a run.
+host_info_selftest() (
+    fixture=$(mktemp -d)
+    trap 'rm -rf "$fixture"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    fail() { echo "host-info-selftest: $1" >&2; exit 1; }
+    export SYSFS_ROOT="$fixture/sys"
+    cpu_dir=$SYSFS_ROOT/devices/system/cpu
+    mkdir -p "$cpu_dir/cpu0/cpufreq" "$cpu_dir/cpu1"
+    echo 5000000 >"$cpu_dir/cpu0/cpufreq/scaling_min_freq"
+    echo 5000000 >"$cpu_dir/cpu0/cpufreq/scaling_max_freq"
+    echo 6000000 >"$cpu_dir/cpu0/cpufreq/cpuinfo_max_freq"
+
+    # A command line with a root device among allow-listed parameters keeps
+    # only the parameters.
+    echo 'BOOT_IMAGE=/vmlinuz root=PARTUUID=0a1b-2c3d ro isolcpus=2-15 quiet mitigations=off' >"$fixture/cmdline"
+    PROC_CMDLINE=$fixture/cmdline record_host_system >"$fixture/host.txt" || fail 'a readable host failed the record'
+    grep -qxF 'kernel-command-line-allowlisted: isolcpus=2-15 mitigations=off' "$fixture/host.txt" ||
+        fail 'the allow-listed parameters were not kept'
+    ! grep -qF -e PARTUUID -e BOOT_IMAGE "$fixture/host.txt" || fail 'a parameter outside the allow-list was recorded'
+    # A command line without any allow-listed parameter is none; an unreadable
+    # one is unknown.
+    echo 'BOOT_IMAGE=/vmlinuz root=PARTUUID=0a1b-2c3d ro quiet' >"$fixture/cmdline"
+    PROC_CMDLINE=$fixture/cmdline record_host_system >"$fixture/host.txt"
+    grep -qxF 'kernel-command-line-allowlisted: none' "$fixture/host.txt" || fail 'no parameters did not give none'
+    PROC_CMDLINE=$fixture/absent record_host_system >"$fixture/host.txt"
+    grep -qxF 'kernel-command-line-allowlisted: unknown' "$fixture/host.txt" || fail 'an unreadable command line did not give unknown'
+
+    # The frequency limits of a CPU that has them, and unknown for one that has
+    # not.
+    grep -qxF 'cpu-policy,cpu=0,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000' \
+        "$fixture/host.txt" || fail 'the frequency limits of cpu0 were not recorded'
+    grep -qxF 'cpu-policy,cpu=1,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown,scaling_min_freq_khz=unknown,scaling_max_freq_khz=unknown,cpuinfo_max_freq_khz=unknown' \
+        "$fixture/host.txt" || fail 'a CPU without cpufreq was not recorded as unknown'
+
+    # A host that exposes nothing still gets a complete record and a zero exit.
+    rm -rf "$SYSFS_ROOT"
+    status=0
+    PROC_CMDLINE=$fixture/absent record_host_system >"$fixture/host.txt" || status=$?
+    [ "$status" = 0 ] || fail "a host without sysfs failed the record with $status"
+    grep -qxF 'host-system-end' "$fixture/host.txt" || fail 'the record of a bare host is incomplete'
+    grep -qxF 'cpu-policy,cpu=unknown,core_type=unknown,cpu_capacity=unknown,scaling_governor=unknown,energy_performance_preference=unknown,scaling_min_freq_khz=unknown,scaling_max_freq_khz=unknown,cpuinfo_max_freq_khz=unknown' \
+        "$fixture/host.txt" || fail 'a host without CPUs did not give the unknown policy line'
+    echo 'host-info-selftest: passed'
+)
+
+# Keep pure competitor/client checks on the gate's existing selftest path;
+# the host record (host-info.sh), the guide's markers (guide-blocks.py) and the
+# reproduce table check (reproduce-table.py) are checked on it too.
 # These helpers are sourced before ROOT/build initialization and start nothing.
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$BENCH_DIR/competitors.sh"
 . "$BENCH_DIR/competitor-versions.sh"
+. "$BENCH_DIR/host-info.sh"
 if [ "${1:-}" = placement-selftest ]; then
     placement_selftest
     compare_rows_selftest
+    host_info_selftest
     competitors_selftest
     versions_selftest
     python3 "$BENCH_DIR/compare-client.py" selftest
+    python3 -I "$BENCH_DIR/guide-blocks.py" selftest
+    python3 -I "$BENCH_DIR/reproduce-table.py" selftest
+    python3 -I "$BENCH_DIR/guide-blocks.py" check "$BENCH_DIR/../../../docs/benchmarking.md"
     exit 0
 fi
 
@@ -830,12 +887,25 @@ SECONDS_PER_RUN=${SECONDS_PER_RUN:-12}
 PORT=${PORT:-$((10000 + $$ % 400 * 50))}
 MODE=${1:-bench}
 
+mkdir -p "$OUT"
+# This is the only place the host settings are recorded, standalone and in CI
+# alike. CI wrote its runner and tool inventory here first; standalone runs
+# create host.txt here.
+record_host_system >>"$OUT/host.txt"
+{
+    echo "measurement-mode: $MODE"
+    host_revision=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || host_revision=
+    echo "firn-checkout: ${host_revision:-unknown}"
+    echo 'whitefoot-pin-begin'
+    host_read_file "$ROOT/whitefoot.pin"
+    echo 'whitefoot-pin-end'
+    host_benchmark_version=$(redis-benchmark --version 2>/dev/null) || host_benchmark_version=
+    echo "redis-benchmark: ${host_benchmark_version:-unknown}"
+} >>"$OUT/host.txt"
 case $MODE in
     compare|scale|workloads|quick) ;;
     *) select_placement 2 "$DEFAULT_CLIENT_THREADS" ;;
 esac
-
-mkdir -p "$OUT"
 # firn is linked as a server would be, its module and the runtime's units
 # optimized together; FIRN_LINK names other link options, or none.
 if [ "$MODE" != compare ]; then
@@ -1574,7 +1644,7 @@ if [ "$MODE" = compare ]; then
     image_names=$(sed -n '2p' "$OUT/compare-selection.txt")
     competitor_names=$(sed -n '3p' "$OUT/compare-selection.txt")
     for pair in $IMAGES; do
-        sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/"
+        sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/" | tee -a "$OUT/host.txt"
     done
     if [ -n "${COMPARE_LINES:-}" ]; then
         echo "setting,compare_run=$([ "$COMPARE_PROBE" = true ] && echo probe || echo full)"

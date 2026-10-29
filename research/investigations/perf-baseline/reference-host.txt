@@ -1,0 +1,182 @@
+host-system-begin
+kernel: Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64 GNU/Linux
+distro-release-begin
+PRETTY_NAME="Ubuntu 26.04.1 LTS"
+NAME="Ubuntu"
+VERSION_ID="26.04"
+VERSION="26.04.1 LTS (Resolute Raccoon)"
+VERSION_CODENAME=resolute
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=resolute
+LOGO=ubuntu-logo
+distro-release-end
+cpu-summary-begin
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           46 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  32
+On-line CPU(s) list:                     0-31
+Vendor ID:                               GenuineIntel
+Model name:                              Intel(R) Core(TM) i9-14900K
+CPU family:                              6
+Model:                                   183
+Thread(s) per core:                      2
+Core(s) per socket:                      24
+Socket(s):                               1
+Stepping:                                1
+CPU(s) scaling MHz:                      75%
+CPU max MHz:                             6000.0000
+CPU min MHz:                             800.0000
+BogoMIPS:                                6374.40
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize pconfig arch_lbr ibt flush_l1d arch_capabilities
+Virtualization:                          VT-x
+L1d cache:                               896 KiB (24 instances)
+L1i cache:                               1.3 MiB (24 instances)
+L2 cache:                                32 MiB (12 instances)
+L3 cache:                                36 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-31
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Mitigation; Clear Register File
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Mitigation; IBPB before exit to userspace
+cpu-summary-end
+cpu-topology-begin
+CPU SOCKET CORE ONLINE
+  0      0    0    yes
+  1      0    0    yes
+  2      0    1    yes
+  3      0    1    yes
+  4      0    2    yes
+  5      0    2    yes
+  6      0    3    yes
+  7      0    3    yes
+  8      0    4    yes
+  9      0    4    yes
+ 10      0    5    yes
+ 11      0    5    yes
+ 12      0    6    yes
+ 13      0    6    yes
+ 14      0    7    yes
+ 15      0    7    yes
+ 16      0    8    yes
+ 17      0    9    yes
+ 18      0   10    yes
+ 19      0   11    yes
+ 20      0   12    yes
+ 21      0   13    yes
+ 22      0   14    yes
+ 23      0   15    yes
+ 24      0   16    yes
+ 25      0   17    yes
+ 26      0   18    yes
+ 27      0   19    yes
+ 28      0   20    yes
+ 29      0   21    yes
+ 30      0   22    yes
+ 31      0   23    yes
+cpu-topology-end
+microcode-begin
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode	: 0x133
+microcode-end
+total-memory: MemTotal:       129298704 kB
+performance-class-cpus: 0-15
+efficiency-class-cpus: 16-31
+cpu-policy,cpu=0,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=1,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=10,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
+cpu-policy,cpu=11,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
+cpu-policy,cpu=12,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=13,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=14,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=15,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=16,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=17,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=18,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=19,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=2,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=20,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=21,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=22,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=23,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=24,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=25,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=26,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=27,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=28,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=29,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=3,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=30,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=31,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=4,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=5,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=6,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=7,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=8,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
+cpu-policy,cpu=9,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
+intel_pstate-no_turbo: 0
+intel_pstate-status: active
+cpufreq-boost: unknown
+smt-active: 1
+smt-control: on
+transparent-hugepages-enabled: always [madvise] never
+transparent-hugepages-defrag: always defer defer+madvise [madvise] never
+vm.overcommit_memory: 0
+vm.swappiness: 60
+kernel-command-line-allowlisted: none
+irqbalance-active: inactive
+perf_event_paranoid: -1
+loopback-mtu: 65536
+host-system-end
