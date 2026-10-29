@@ -283,7 +283,9 @@ has a half-width above the floor of its depth. At depth 1 none does (widest
 against the floor of 5.8% that `srem`'s own twin sets). The follow-up run
 measures the same three images again for `incr`, `rpop`, `lrange_300` and
 `srem` at both depths with 16 passes of 5 seconds (4 tests, about 40 minutes).
-`hset` and `lpush` at depth 16 are decided and are not in it.
+`hset` and `lpush` at depth 16 are decided and are not in it (a third run
+measures them again; see the confirmation run below, which was added after the
+verdict).
 
 ### Follow-up run
 
@@ -325,20 +327,83 @@ not say:
   The criteria have no rule for dropping a pass, so none is dropped; the
   intervals are wider by it and every twin interval holds 1 with it in.
 
+### Confirmation run
+
+`hset` and `lpush` at depth 16 were measured once, with 8 passes, in the first
+run, and the follow-up run left them out because the criteria call a cell
+wholly below 1 decided. The card that asks the owner to accept the two
+regressions said they had been measured twice, which was wrong. The architect
+returned the card and asked for 16 more passes of these two cells, to be judged
+together with the first run's 8. This is an addition to the procedure made after
+the verdict, for that reason; the rule for a cell wholly below 1 (a regression
+of its size) is unchanged.
+
+Run [40851400945](https://github.com/Ming-Research/Firn-wf/actions/runs/40851400945)
+of the same workflow on the same host (kernel, clang and LLD, `redis-benchmark`
+as in the first run) and placement, with the same three images (`base` and
+`base-twin` `7cf12df`, `head` `b08522a`), `hset` and `lpush` at depth 16, 16
+passes of 5 seconds. The measuring step took 8 minutes. The commit the run was
+dispatched from differs from `b08522a` in this record, `docs/safety.md` and
+two deleted temporary files only: `firn/`, `deps/`, `whitefoot.pin` and
+`whitefoot-kit` are the same. The columns are those of the first run's table;
+the pooled rows put the first run's 8 passes and this run's 16 together, 24
+head/base ratios in one interval by the same method.
+
+| test (depth 16) | passes | head/base median | 95% interval | slower by | base-twin/base median | 95% interval | client busy |
+| --- | ---: | ---: | --- | --- | ---: | --- | ---: |
+| hset, this run | 16 | 0.9687 | 0.9586-0.9745 | 2.5% to 4.1% (median 3.1%) | 1.0025 | 0.9951-1.0132 | 0.139 |
+| hset, first run | 8 | 0.9679 | 0.9519-0.9886 | 1.1% to 4.8% (median 3.2%) | 1.0021 | 0.9865-1.0206 | 0.138 |
+| hset, pooled | 24 | 0.9683 | 0.9604-0.9750 | 2.5% to 4.0% (median 3.2%) | 1.0021 | 0.9964-1.0115 | |
+| lpush, this run | 16 | 0.9764 | 0.9715-0.9836 | 1.6% to 2.8% (median 2.4%) | 1.0003 | 0.9946-1.0075 | 0.148 |
+| lpush, first run | 8 | 0.9823 | 0.9668-0.9903 | 1.0% to 3.3% (median 1.8%) | 1.0003 | 0.9882-1.0153 | 0.147 |
+| lpush, pooled | 24 | 0.9783 | 0.9728-0.9830 | 1.7% to 2.7% (median 2.2%) | 1.0003 | 0.9956-1.0069 | |
+
+Both cells are wholly below 1 in this run alone, and every twin interval holds
+1, so both count. `head` is below `base` in 16 of 16 passes of this run for
+both cells (23 of 24 for `hset` and 24 of 24 for `lpush` with the first run's
+passes). The run alone is the figure without selection: the first run's 8
+passes are the ones that picked these two cells out of 44, and the two runs
+agree in median (`hset` 3.1% and 3.2% slower, `lpush` 2.4% and 1.8%).
+
+- **Not chance.** With no change, a cell's interval lies wholly below 1 in a
+  fresh run about 2.5% of the time (the interval's lower tail), so both named
+  cells do so together about 0.06% of the time (0.025 squared, independent
+  cells assumed; deduced). The 1.1 cells expected by chance among 44 judged
+  cells in the verdict below described the first run's pick, not these cells
+  measured again.
+- **Disturbed host?** The median over the two cells of base-twin over base per
+  pass is 0.978 to 1.019 in all 16 passes, and the twin half-widths are 0.9%
+  (`hset`) and 0.65% (`lpush`), well below the first run's floor for this
+  depth (5.8%).
+- **Where the time went.** `compare.csv` records the server CPU time per
+  request. In this run its median over the passes is 0.536 microseconds for
+  `head` against 0.515 for `base` and 0.515 for the twin in `hset` (4.1% more
+  than `base`), and 0.479 against 0.467 and 0.4675 in `lpush` (2.6% more). The
+  head asks the same server CPUs for more time per request, and the client
+  cores are at 0.14 to 0.15, so the lost rate is server work. The column
+  does not name a cause.
+- **A lead for the profile, not a cause.** `rpush` at depth 16 in the first run
+  is across 1 (1.0080, 0.9939-1.0285, 8 passes) while `lpush` is slower, and
+  `hset` is a `HashMap` command (Whitefoot#487 changed that layout) while
+  `lpush` is not. No profile was taken.
+
 ### Verdict
 
 44 judged cells (46 less the 2 client-limited), none unresolved.
 
-- **Regressions (interval wholly on the slower side), 2 cells: `hset` at
-  depth 16, median 3.2% slower, interval 1.1% to 4.8% slower; `lpush` at depth
-  16, median 1.8% slower, interval 1.0% to 3.3% slower.** About 1.1 cells
-  (44 times 2.5%) are expected below 1 by chance, and two or more would occur
-  about three times in ten (Poisson, deduced), so the run does not separate
-  these two from chance, and the criterion above does not weigh that. Neither
-  cell is slower at depth 1. The cause is not named: `hset` is a `HashMap`
-  command and Whitefoot#487 changed that layout, but `lpush` is not, and no
-  profile was taken. The pair is handed to the item `firn-pin-hset-lpush-slow`;
-  merging this pull request with the two regressions is the owner's ruling.
+- **Regressions (interval wholly on the slower side), 2 cells, confirmed by
+  the third run: `hset` at depth 16, median 3.1% slower in 16 fresh passes,
+  interval 2.5% to 4.1% slower (3.2% and 2.5% to 4.0% with the first run's 8
+  passes); `lpush` at depth 16, median 2.4% slower, interval 1.6% to 2.8%
+  (2.2% and 1.7% to 2.7% pooled).** The first run alone did not separate them
+  from chance (about 1.1 of the 44 judged cells are expected below 1 by
+  chance, and two or more would occur about three times in ten; Poisson,
+  deduced); the confirmation run measures the two named cells again and both
+  repeat. Neither cell is slower at depth 1 in the first run (8 passes; depth 1
+  was not measured again). The cause is not named and no profile was taken. The
+  pair is handed to the item `firn-pin-hset-lpush-slow`, whose first step,
+  confirming the regression with more passes, this run has done; merging this
+  pull request with the two regressions is the owner's ruling.
 - **Improvements, 4 cells (about 1.1 expected):** `set` at depth 16 (2.3%
   faster, 1.2% to 3.7%), `lpop` at depth 16 (2.8%, 2.3% to 3.9%), `get` at
   depth 1 (1.5%, 0.5% to 2.8%), `lrange_600` at depth 1 (0.6%, 0.1% to 0.9%).
