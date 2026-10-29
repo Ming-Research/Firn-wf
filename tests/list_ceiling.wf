@@ -922,6 +922,23 @@ fn case_stored_length(store: &pkg::store::Keyspace, key: &[u8], expected: u64) -
   return same;
 }
 
+fn case_waiter_bound(store: &pkg::store::Keyspace) -> bound: u64 reads(store) waits {
+  doc "Meta's bound on the keys blocked clients wait on.";
+  let bound = 0_u64;
+  atomic held = &store^.meta {
+    set bound = held^.waiter_keys_bound;
+  }
+  return bound;
+}
+
+fn case_stale_bound(store: &pkg::store::Keyspace) -> result: unit reads(store) waits {
+  doc "Leaves Meta's bound on the keys blocked clients wait on above the count of registered keys, which is zero in these cases, as it stands after the last waiter has gone.";
+  atomic held = &store^.meta {
+    set held^.waiter_keys_bound = 3_u64;
+  }
+  return unit;
+}
+
 fn case_staged_creation(stage: Bool) -> passed: Bool pure {
   doc "Checks that a push creating a list stages its key as ready for blocked clients exactly when asked to: the callers that serve waiters after their commit ask for it, and a push that holds only its keys does not, since nothing drains the queue after it.";
   let slot = None<Entry>();
@@ -948,8 +965,8 @@ fn case_staged_creation(stage: Bool) -> passed: Bool pure {
   return staged == 0_u64;
 }
 
-fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool) -> passed: Bool reads(wall) waits {
-  doc "Runs the actual LPUSH or LMOVE of a connection on which no client waits, over an absent key or destination: the list is created, the reply is the ordinary one and no ready key is staged, because a command that holds only its keys is followed by no drain, so a staged key would stay in the connection's queue for good.";
+fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool, stale: Bool) -> passed: Bool reads(wall) waits {
+  doc "Runs the actual LPUSH or LMOVE of a connection on which no client waits, over an absent key or destination: the list is created, the reply is the ordinary one and no ready key is staged, because a command that holds only its keys is followed by no drain, so a staged key would stay in the connection's queue for good. With stale set, Meta's bound on the keys blocked clients wait on starts above the count, as it stands after the last waiter has left: the command then takes its second statement, which creates the list the same way and sets the bound back to the count, zero.";
   let no = False();
   let yes = True();
   let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
@@ -960,6 +977,9 @@ fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool) -> passed: Bo
   let time = pkg::store::Time(unix_ms: 1_u64, check: 1_u64, loading: no);
   let env = pkg::bytes::KeyEnv();
   let passed = False();
+  if stale {
+    case_stale_bound(store: &store);
+  }
   if moving {
     let source_key = &case_source[0_u64..1_u64];
     let destination_key = &case_destination[0_u64..1_u64];
@@ -983,9 +1003,12 @@ fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool) -> passed: Bo
     let destination_made = case_stored_length(store: &store, key: destination_key, expected: 1_u64);
     let staged = case_ready_count(client: &client);
     let none_staged = staged == 0_u64;
+    let bound = case_waiter_bound(store: &store);
+    let refreshed = bound == 0_u64;
     let answered = band(handled, replied);
     let lists = band(source_left, destination_made);
-    let kept = band(lists, none_staged);
+    let ready_kept = band(lists, none_staged);
+    let kept = band(ready_kept, refreshed);
     set passed = band(answered, kept);
   } else {
     let key = &case_key[0_u64..1_u64];
@@ -1003,8 +1026,11 @@ fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool) -> passed: Bo
     let made = case_stored_length(store: &store, key: key, expected: 2_u64);
     let staged = case_ready_count(client: &client);
     let none_staged = staged == 0_u64;
+    let bound = case_waiter_bound(store: &store);
+    let refreshed = bound == 0_u64;
     let answered = band(handled, replied);
-    let kept = band(made, none_staged);
+    let ready_kept = band(made, none_staged);
+    let kept = band(ready_kept, refreshed);
     set passed = band(answered, kept);
   }
   return passed;
@@ -1124,12 +1150,20 @@ fn list_ceiling_main(inputs: std::process::Inputs) -> status: CaseExitStatus pur
   if bnot(staged_by_narrow_callers) {
     set failures = ior(failures, 1_u8);
   }
-  let narrow_push = case_narrow_creation(wall: &wall_clock, moving: no);
+  let narrow_push = case_narrow_creation(wall: &wall_clock, moving: no, stale: no);
   if bnot(narrow_push) {
     set failures = ior(failures, 1_u8);
   }
-  let narrow_move = case_narrow_creation(wall: &wall_clock, moving: yes);
+  let narrow_move = case_narrow_creation(wall: &wall_clock, moving: yes, stale: no);
   if bnot(narrow_move) {
+    set failures = ior(failures, 8_u8);
+  }
+  let stale_push = case_narrow_creation(wall: &wall_clock, moving: no, stale: yes);
+  if bnot(stale_push) {
+    set failures = ior(failures, 1_u8);
+  }
+  let stale_move = case_narrow_creation(wall: &wall_clock, moving: yes, stale: yes);
+  if bnot(stale_move) {
     set failures = ior(failures, 8_u8);
   }
   return std::process::exit_status(code: failures);

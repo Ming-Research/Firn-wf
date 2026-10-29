@@ -1354,6 +1354,10 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if ranked {
     return unit;
   }
+  let streamed = stream_command(store: store, input: input, args: args, client: client, env: env, time: time, code: code, name: name);
+  if streamed {
+    return unit;
+  }
   let blocking = blocking_kind(input: input, name: name);
   if blocking != 0_u64 {
     let arity = held_arity(kind: blocking);
@@ -1365,10 +1369,6 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     if go {
       run_blocking_list(store: store, kind: blocking, input: input, args: args, client: client, time: time, clock: clock);
     }
-    return unit;
-  }
-  let streamed = stream_command(store: store, input: input, args: args, client: client, env: env, time: time, code: code, name: name);
-  if streamed {
     return unit;
   }
   reply_unknown(client: client, input: input, args: args);

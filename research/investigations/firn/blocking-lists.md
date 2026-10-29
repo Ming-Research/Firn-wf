@@ -68,7 +68,12 @@ that can create a list, which returned the pushes and moves onto a live list to
 0.94 to 1.00 of main and left a push that creates its list at 0.313 (depth 16)
 and 0.801 (depth 1), with 38.8% of its cycles in the hold ([the second
 run](blocking-lists-performance.md#a1-again-the-narrowed-hold-7a4e4de)). The
-hold is the cost, so a write needs it only when it can make a client ready:
+third version took only the entry, the event hub and Meta, in a second
+statement, to ask the registry; it ran that push at 0.857 and 0.960, and 0.931
+and 0.972 with the append-only file on, with about 12% of the cycles in the
+second statement's lock operations ([the third
+run](blocking-lists-performance.md#the-head-that-merges-2d91961)). The cost is
+the locks, so a write needs them only when it can make a client ready:
 
 A list write that cannot make a client ready does not need that hold:
 
@@ -86,23 +91,34 @@ A list write that cannot make a client ready does not need that hold:
   live list and the destination, another key, holds none (`lmove_creates`). A
   destination holding another kind is refused and creates nothing.
 - A creation where no client waits readies nobody either, and a registration
-  cannot appear while the creating write holds the entry of its key, so the
-  write only has to ask the registry whether a client waits on that key. It
-  takes the event hub as well, in one statement with its entries and Meta,
-  which lists them in the order of the whole-hold path (keyspace, Meta, hub),
-  and asks `key_awaited` (`firn/commands/blocking-runtime.wf`: the registry's
-  count of waiting keys first, then a lookup of the key). Without a waiter it
-  creates the list and appends in place, as main does, so its effects and
-  bytes are main's, and it stages no ready key: only a command that holds the
+  cannot appear while the creating write holds the entry of its key and Meta,
+  so the write only has to learn whether a client waits on that key. Meta keeps
+  `waiter_keys_bound`, an upper bound on the number of keys blocked clients wait
+  on: every registration (the two places that install a request, both under the
+  whole keyspace, Meta and the hub) and every second statement below set it to
+  the registry's count (`note_waiters` in `firn/commands/blocking-runtime.wf`),
+  and no end of a wait lowers it, so it is never below the count. The creating
+  write reads it in its first statement, which holds its entries and Meta: at
+  zero no client waits on any key, and it creates the list and appends in
+  place, as main does, in that statement. Otherwise it leaves for a second
+  statement that takes the event hub as well, in the order of the whole-hold
+  path (keyspace, Meta, hub), sets the bound to the count and asks
+  `key_awaited` (the registry's count of waiting keys first, then a lookup of
+  the key). Without a waiter the second statement creates the list and appends
+  in place too, so in both cases its effects and bytes are main's, and it
+  stages no ready key: only a command that holds the
   whole keyspace drains a connection's staged keys, so a key staged here would
   stay in the connection's queue, one copy per list created, and every staging
   scans the whole queue for a duplicate (`stage_ready` of `push_body` and
   `lmove_body`, set by the held callers only). With a waiter it returns,
   having answered and changed nothing, and the dispatcher runs
   `run_list_producer`, which holds the whole keyspace and serves the client.
-  Taking the hub only in the second step, and not in every push and move,
-  leaves a push onto a live list with the hold of the first version of this
-  section: entry and Meta.
+  Taking the hub only in the second statement, which a creating write reaches
+  only while the bound is not zero, leaves a push onto a live list, and a
+  creation while no client is blocked, with the hold of the first version of
+  this section: entry and Meta. While any client is blocked on any key, every
+  creating write on every key takes the second statement; the bound does not
+  say which keys are waited on.
 - The test is a live list, not an existing entry. A request stays registered
   on a key that a string with an expiry has taken. Once the expiry has passed,
   and before anything removed the entry, a push to that key deletes the string

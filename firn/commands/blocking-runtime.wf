@@ -27,6 +27,13 @@ fn key_awaited(hub: &Hub, key: &[u8]) -> awaited: Bool reads(hub), reads(key) {
   }
 }
 
+fn note_waiters(meta: &Meta, hub: &Hub) -> result: unit reads(hub.blocking_state), writes(meta.waiter_keys_bound) {
+  doc "Sets Meta's bound on the keys blocked clients wait on to the registry's count of them. It runs wherever a registration is made, holding Meta and the hub, and in the second statement of a push or move that would create a list, which holds both too. Waits that end (service, timeout, CLIENT UNBLOCK, disconnect) do not touch Meta, so the bound may exceed the count; it is never below it, because every registration sets it to the count after the registration and every other write sets it to the count as it then is. A creating push or move that reads zero in its first statement, which holds Meta, therefore knows no client waits on any key.";
+  let counts = pkg::connection_events::blocking_counts(hub: hub);
+  set meta^.waiter_keys_bound = counts.keys;
+  return unit;
+}
+
 fn list_signal(client: &Client, key: &[u8]) -> result: unit reads(key), writes(client.list_ready) {
   doc "Stages Redis dbAdd's list-ready notification in the current execution unit, in first-signal order. It is drained only after that unit commits, and abandoned script attempts discard it. No GET/SET path calls this helper.";
   let name = pkg::bytes::make_key(input: key, start: 0_u64, length: key^.len);
@@ -291,6 +298,7 @@ fn blocking_drain(map_shared: &Shared<ConcurrentHashMap<Entry>>, keys: &Concurre
                     pkg::connection_events::block_complete(hub: hub, request: move request, client: &retry_client, time: seconds);
                   } else {
                     pkg::connection_events::block_install(hub: hub, request: move request);
+                    note_waiters(meta: meta, hub: hub);
                   }
                 }
                 None() => {

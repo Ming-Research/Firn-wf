@@ -82,6 +82,7 @@ fn run_blocking_list(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots
     blocking_commit(meta: meta, sequence: &sequence, effects: &effects, appended: appended, budget: &budget);
     if bnot(completed) {
       blocking_request(hub: hub, input: input, args: args, client: client, kind: kind, deadline: deadline);
+      note_waiters(meta: meta, hub: hub);
     }
     pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
     blocking_drain(map_shared: &store^.keys, keys: keys, meta: meta, hub: hub, server: server, client: client, clock: clock, wall: &store^.wall, logged: logged);

@@ -15,12 +15,16 @@
    the writes that can create a list. The third (`12dbbc5`) sends there only a
    push or move that creates a list on a key where a blocked client waits,
    `RENAME`, `RENAMENX`, `COPY` and a promoted connection's commands: a push or
-   move that would create a list takes the event hub as well, under its own
-   entry hold, asks the registry (`key_awaited` in
-   `firn/commands/blocking-runtime.wf`) whether a client waits on that key, and
-   leaves for `run_list_producer` only if one does (`run_push` and `run_lmove`
-   in `firn/commands/lists.wf`), and the dispatcher calls them directly, as it
-   called `run_push` in `main`. `LINSERT`, `LPUSHX`, `RPUSHX`, the pushes and
+   move that would create a list reads, in its first statement, the bound on
+   the keys blocked clients wait on that Meta keeps (`waiter_keys_bound`) and
+   at zero creates the list in place there; above zero it takes the event hub
+   as well, in a second statement under its own entry hold, asks the registry
+   (`key_awaited` in `firn/commands/blocking-runtime.wf`) whether a client
+   waits on that key, and leaves for `run_list_producer` only if one does
+   (`run_push` and `run_lmove` in `firn/commands/lists.wf`), and the
+   dispatcher calls them directly, as it called `run_push` in `main`. The
+   third version (`2d91961`) had no bound and took the second statement for
+   every creation. `LINSERT`, `LPUSHX`, `RPUSHX`, the pushes and
    moves onto a live list and the creating ones where nobody waits append in
    place, as on `main`. Which of these costs time is measured in the results below,
    for the earlier versions and for the head that merges (`2d91961`).
@@ -62,8 +66,9 @@ leaves the PR's own change as it is does not repeat a measurement.
 - **Cells.** The 20 tests of the redis-benchmark default suite of Redis 7.2
   (`SUITE_DEFAULT` in `redis-bench.sh`, 21 rows with the `LRANGE` fill, which
   `compare` sends outside the timed span; `xadd` is one of them, a stream
-  command of main that the head image's dispatcher reaches after trying the
-  four blocking commands), plus `linsert`, `lmove` and `lpush_new`, which
+  command of main that the dispatcher of the head image reaches, since the
+  fourth version, before it tries the four blocking commands; the third reached
+  it after them), plus `linsert`, `lmove` and `lpush_new`, which
   `compare_client` defines for this measurement; each at depth 16 and depth 1 on
   2 server CPUs: 46 cells, with the append-only file off (the redis-bench
   default). With the file on (`appendfsync everysec`, rewrites off, a fresh
@@ -73,9 +78,12 @@ leaves the PR's own change as it is does not repeat a measurement.
   not touch. Of the list writes, none runs the held path with its staged copy
   on the head: `lpush`, `rpush`, `linsert` and `lmove` write onto a list that
   exists (the first version of these cells measured below ran that path too)
-  and `lpush_new` creates a list where no client waits. Only `lpush_new` takes
-  the event hub and asks the registry, under its entry hold, in addition to
-  what `main` does; the other four run as `main` does.
+  and `lpush_new` creates a list where no client waits. Since the fourth version
+  none of the five takes the event hub, because no client is blocked while the
+  run lasts: `lpush_new` reads Meta's bound on the keys blocked clients wait on,
+  found zero, in the statement it holds already, in addition to what `main` does;
+  the other four run as `main` does. The third version took the event hub in a
+  second statement for `lpush_new`.
 - **Commands.** `linsert` is `LINSERT ins<depth>:<n> AFTER pivot xxx` on one of
   100,000 short lists filled with copies of the pivot outside the timed span (a
   list grows by a few hundred elements over the run, so the pivot scan stays one

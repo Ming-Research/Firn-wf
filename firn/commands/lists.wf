@@ -283,7 +283,7 @@ fn push_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
 }
 
 fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, front: Bool, existing: Bool) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "LPUSH key element [element ...] and RPUSH: pushes each element in turn at the list's head (front) or tail, creating the list for an absent key, and answers its length; LPUSHX and RPUSHX (existing) push only onto a list that exists and answer 0 for an absent key. A key whose expiry has been reached is removed first, the removal recorded before the push. A push onto a live list holds the key's entry and Meta alone. A push that finds no live list at the key, an absent or expired key where it would create the list or a key of another kind that it refuses, takes the event hub as well and asks whether a blocked client waits on the key: a registration holds the whole keyspace, which excludes the entry held here, so none can appear before the push commits, and without a waiter the push is main's in-place push, which stages no ready key for the client's queue (nothing drains it after a push that holds only its keys). Returns False, having answered nothing, only when such a client waits, because only the creation of a list can make a blocked client ready; run_list_producer, which holds the keyspace and the event hub together, then runs the push again and serves the client. LPUSHX and RPUSHX never create and always return True.";
+  doc "LPUSH key element [element ...] and RPUSH: pushes each element in turn at the list's head (front) or tail, creating the list for an absent key, and answers its length; LPUSHX and RPUSHX (existing) push only onto a list that exists and answer 0 for an absent key. A key whose expiry has been reached is removed first, the removal recorded before the push. A push onto a live list holds the key's entry and Meta alone. A push that finds no live list at the key, an absent or expired key where it would create the list or a key of another kind that it refuses, reads the bound that Meta keeps on the keys blocked clients wait on (waiter_keys_bound): a registration holds the whole keyspace and Meta, which excludes the entry and Meta held here, so none can appear before the push commits, and with a bound of zero the push is main's in-place push in this statement, which stages no ready key for the client's queue (nothing drains it after a push that holds only its keys). With a bound above zero it takes the event hub as well in a second statement, refreshes the bound from the registry and asks whether a blocked client waits on the key; without one the push is again main's in-place push. Returns False, having answered nothing, only when such a client waits, because only the creation of a list can make a blocked client ready; run_list_producer, which holds the keyspace and the event hub together, then runs the push again and serves the client. LPUSHX and RPUSHX never create and always return True.";
   let journal = None<pkg::store::AccessJournal>();
   push_parse(input: input, args: args, client: client, time: time, front: front);
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -295,7 +295,9 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if bnot(existing) {
       let held = list_kind(slot: slot, now: client^.now);
       if held != entry_wanted {
-        set probing = True();
+        if m^.waiter_keys_bound != 0_u64 {
+          set probing = True();
+        }
       }
     }
     if bnot(probing) {
@@ -319,6 +321,7 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   if probing {
     atomic claimed = &store^.keys[key], held_meta = &store^.meta, hub = &store^.pubsub {
+      note_waiters(meta: held_meta, hub: hub);
       let current = list_kind(slot: claimed, now: client^.now);
       if current != entry_wanted {
         if key_awaited(hub: hub, key: key) {
@@ -1413,7 +1416,7 @@ fn run_lmove_named(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
 }
 
 fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_head: Bool, to_head: Bool) -> done: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT and RPOPLPUSH source destination, which moves from the tail to the head: removes the element at the source list's head (from_head) or tail, pushes it onto the destination list's head (to_head) or tail, creating the destination for an absent key and removing the source when it is left empty, and answers the element; a source equal to the destination rotates the list. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, an absent source answers the null bulk string without the destination being looked at, a key holding another kind is refused, and a key found expired is removed, its removal recorded before the move. A move that does not create its destination holds the two keys' entries and Meta alone. When the source holds a live list and the destination, another key, holds nothing or only an entry whose expiry has been reached, the move creates the destination: it takes the event hub as well and asks whether a blocked client waits on the destination, which a registration, holding the whole keyspace, cannot do while the entries are held, and without a waiter it is main's in-place move, which stages no ready key for the client's queue (nothing drains it after a move that holds only its keys). Returns False, having answered nothing, only when such a client waits, since the creation may make it ready: run_list_producer, which holds the keyspace and the event hub together, then runs the move again and serves the client. Every other move, answer or refusal (a destination of another kind included) is complete here and returns True.";
+  doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT and RPOPLPUSH source destination, which moves from the tail to the head: removes the element at the source list's head (from_head) or tail, pushes it onto the destination list's head (to_head) or tail, creating the destination for an absent key and removing the source when it is left empty, and answers the element; a source equal to the destination rotates the list. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, an absent source answers the null bulk string without the destination being looked at, a key holding another kind is refused, and a key found expired is removed, its removal recorded before the move. A move that does not create its destination holds the two keys' entries and Meta alone. When the source holds a live list and the destination, another key, holds nothing or only an entry whose expiry has been reached, the move creates the destination: it reads the bound that Meta keeps on the keys blocked clients wait on (waiter_keys_bound), and with a bound of zero it is main's in-place move in this statement, since a registration, holding the whole keyspace and Meta, cannot happen while they are held. With a bound above zero it takes the event hub as well in a second statement, refreshes the bound from the registry and asks whether a blocked client waits on the destination, and without one it is again main's in-place move, which stages no ready key for the client's queue (nothing drains it after a move that holds only its keys). Returns False, having answered nothing, only when such a client waits, since the creation may make it ready: run_list_producer, which holds the keyspace and the event hub together, then runs the move again and serves the client. Every other move, answer or refusal (a destination of another kind included) is complete here and returns True.";
   let journal = None<pkg::store::AccessJournal>();
   let ks = key_set_new(capacity: 2_u64);
   let pair = rename_parse(input: input, args: args, keys: &ks);
@@ -1423,7 +1426,9 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let unstaged = False();
   atomic slots = &store^.keys[ks], m = &store^.meta {
     if lmove_creates(slots: slots, source: pair.source, destination: pair.target, now: client^.now) {
-      set probing = True();
+      if m^.waiter_keys_bound != 0_u64 {
+        set probing = True();
+      }
     }
     if bnot(probing) {
       let sequence = if logged {
@@ -1448,6 +1453,7 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     let target_place = key_bounds(input: input, args: args, index: 2_u64);
     let target_key = &input^[target_place.start..target_place.end];
     atomic claimed = &store^.keys[ks], held_meta = &store^.meta, hub = &store^.pubsub {
+      note_waiters(meta: held_meta, hub: hub);
       if lmove_creates(slots: claimed, source: pair.source, destination: pair.target, now: client^.now) {
         if key_awaited(hub: hub, key: target_key) {
           return False();
