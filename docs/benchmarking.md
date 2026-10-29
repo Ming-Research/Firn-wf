@@ -149,9 +149,10 @@ two use every performance core.
 | 16 | `0-15` | `16-31` |
 
 Host settings are recorded, never changed by the instrument. Compare your
-`host.txt` with the reference table below, including governors, turbo, SMT,
-hugepages and kernel boot options. Report differences rather than silently
-assuming the hosts are configured alike.
+`host.txt` with the reference table below, including governors, frequency
+limits (each CPU's `scaling_min_freq_khz`, `scaling_max_freq_khz` and
+`cpuinfo_max_freq_khz`), turbo, SMT, hugepages and kernel boot options. Report
+differences rather than silently assuming the hosts are configured alike.
 
 ## Probe, then run the grid
 
@@ -344,8 +345,8 @@ container on the hosted runner.
 ## Reference machine
 
 These values are what the instrument recorded in `host.txt` on the native
-i9-14900K (a `compare` run of Firn-wf commit `2659ab6f`,
-[run 40095986617](https://github.com/Ming-Research/Firn-wf/actions/runs/40095986617));
+i9-14900K (a `compare` run of Firn-wf commit `d3c16f70`,
+[run 40119330658](https://github.com/Ming-Research/Firn-wf/actions/runs/40119330658));
 [`reference-host.txt`](../research/investigations/perf-baseline/reference-host.txt)
 keeps its complete system record, every CPU's policy line included, because
 CI artifacts expire. A setting the instrument cannot read is `unknown`; the
@@ -360,6 +361,7 @@ table adds none.
 | Total memory | 129298704 kB (`MemTotal`) |
 | Scaling governor per CPU class, including any per-CPU differences | `performance` on all 32 CPUs, no difference between the classes |
 | Energy-performance preference per CPU class, including any differences | `performance` on all 32 CPUs, no difference between the classes |
+| Frequency limits per CPU class, including any per-CPU differences | Performance class (CPUs 0-15): `scaling_min_freq` and `scaling_max_freq` both 5000000 kHz, so the clock is held at 5.0 GHz; `cpuinfo_max_freq` 6000000 kHz on CPUs 8-11 and 5700000 kHz on the other twelve. Efficiency class (CPUs 16-31): `scaling_min_freq` 800000 kHz, `scaling_max_freq` and `cpuinfo_max_freq` 4400000 kHz |
 | `intel_pstate` status and `no_turbo` | `active`, `no_turbo` 0 |
 | `cpufreq` boost, when available | `unknown` (not exposed) |
 | SMT active/control | active 1, control `on` |

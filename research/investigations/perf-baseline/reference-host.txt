@@ -30,7 +30,7 @@ Thread(s) per core:                      2
 Core(s) per socket:                      24
 Socket(s):                               1
 Stepping:                                1
-CPU(s) scaling MHz:                      77%
+CPU(s) scaling MHz:                      75%
 CPU max MHz:                             6000.0000
 CPU min MHz:                             800.0000
 BogoMIPS:                                6374.40
@@ -134,38 +134,38 @@ microcode-end
 total-memory: MemTotal:       129298704 kB
 performance-class-cpus: 0-15
 efficiency-class-cpus: 16-31
-cpu-policy,cpu=0,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=1,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=10,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=11,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=12,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=13,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=14,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=15,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=16,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=17,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=18,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=19,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=2,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=20,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=21,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=22,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=23,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=24,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=25,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=26,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=27,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=28,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=29,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=3,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=30,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=31,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=4,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=5,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=6,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=7,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=8,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
-cpu-policy,cpu=9,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance
+cpu-policy,cpu=0,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=1,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=10,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
+cpu-policy,cpu=11,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
+cpu-policy,cpu=12,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=13,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=14,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=15,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=16,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=17,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=18,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=19,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=2,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=20,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=21,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=22,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=23,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=24,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=25,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=26,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=27,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=28,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=29,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=3,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=30,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=31,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=800000,scaling_max_freq_khz=4400000,cpuinfo_max_freq_khz=4400000
+cpu-policy,cpu=4,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=5,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=6,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=7,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=5700000
+cpu-policy,cpu=8,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
+cpu-policy,cpu=9,core_type=unknown,cpu_capacity=1024,scaling_governor=performance,energy_performance_preference=performance,scaling_min_freq_khz=5000000,scaling_max_freq_khz=5000000,cpuinfo_max_freq_khz=6000000
 intel_pstate-no_turbo: 0
 intel_pstate-status: active
 cpufreq-boost: unknown
