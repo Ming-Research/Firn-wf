@@ -283,3 +283,73 @@ against the floor of 5.8% that `srem`'s own twin sets). The follow-up run
 measures the same three images again for `incr`, `rpop`, `lrange_300` and
 `srem` at both depths with 16 passes of 5 seconds (4 tests, about 40 minutes).
 `hset` and `lpush` at depth 16 are decided and are not in it.
+
+### Follow-up run
+
+Run [40835968034](https://github.com/Ming-Research/Firn-wf/actions/runs/40835968034)
+of the same workflow on the same host and placement, with the same three
+images (`base` and `base-twin` `7cf12df`, `head` `b08522a`), the four tests
+above at both depths, 16 passes of 5 seconds. The measuring step took 32
+minutes. The firn sources are those of the first run; only this record and
+`docs/safety.md` differ at the commit the run was dispatched from. The columns
+are those of the first run's table.
+
+| test | depth | head/base median | 95% interval | verdict | base-twin/base median | 95% interval | client busy |
+| --- | ---: | ---: | --- | --- | ---: | --- | ---: |
+| incr | 16 | 1.0066 | 0.9994-1.0150 | no detected change | 0.9953 | 0.9765-1.0066 | 0.228 |
+| rpop | 16 | 0.9869 | 0.9786-1.0005 | no detected change | 0.9966 | 0.9822-1.0051 | 0.180 |
+| lrange_300 | 16 | 1.0073 | 0.9965-1.0081 | no detected change | 1.0016 | 0.9812-1.0049 | 0.847 |
+| srem | 16 | 0.9929 | 0.9682-1.0274 | no detected change | 1.0035 | 0.9847-1.0378 | 0.170 |
+| incr | 1 | 1.0017 | 0.9934-1.0053 | no detected change | 0.9956 | 0.9774-1.0036 | 0.423 |
+| rpop | 1 | 0.9965 | 0.9872-1.0025 | no detected change | 0.9939 | 0.9802-1.0024 | 0.416 |
+| lrange_300 | 1 | 0.9975 | 0.9886-1.0021 | no detected change | 0.9996 | 0.9914-1.0038 | 0.728 |
+| srem | 1 | 0.9953 | 0.9706-1.0153 | no detected change | 1.0018 | 0.9924-1.0194 | 0.410 |
+
+Every twin interval holds 1, so all 8 cells count, and every head/base interval
+is across 1: no detected change, and no cell is left unresolved. The follow-up
+replaces the first run's verdict for these 8 cells. Two things the verdict does
+not say:
+
+- `rpop` at depth 16 does not repeat its first run: there `head` was 2.0%
+  above `base` (and `base` was the low image, so the cell did not count); here
+  `head` is 1.3% below `base` (median 0.9869) with the interval's upper end at
+  1.0005, across 1 by 0.0005. The rule decides it as no detected change. The
+  two runs' medians are 3.3% apart, more than the twin half-width of either
+  run (0.8% and 1.2%), so a single run of this cell is not a precise
+  measurement of it.
+- Pass 8 of this run was disturbed: the median over these 8 cells of
+  base-twin over base is 0.943 in that pass and 0.987 to 1.010 in the other
+  15. Pass 8 of the first run was the lowest too (0.990 against 0.998 to
+  1.005 in the other 7), with the one outlier cell `lrange_300` at depth 16.
+  The criteria have no rule for dropping a pass, so none is dropped; the
+  intervals are wider by it and every twin interval holds 1 with it in.
+
+### Verdict
+
+44 judged cells (46 less the 2 client-limited), none unresolved.
+
+- **Regressions (interval wholly on the slower side), 2 cells: `hset` at
+  depth 16, median 3.2% slower, interval 1.1% to 4.8% slower; `lpush` at depth
+  16, median 1.8% slower, interval 1.0% to 3.3% slower.** About 1.1 cells
+  (44 times 2.5%) are expected below 1 by chance, and two or more would occur
+  about three times in ten (Poisson, deduced), so the run does not separate
+  these two from chance, and the criterion above does not weigh that. Neither
+  cell is slower at depth 1. The cause is not named: `hset` is a `HashMap`
+  command and Whitefoot#487 changed that layout, but `lpush` is not, and no
+  profile was taken. The pair is handed to a follow-up item; accepting them
+  for this pull request is a card.
+- **Improvements, 4 cells (about 1.1 expected):** `set` at depth 16 (2.3%
+  faster, 1.2% to 3.7%), `lpop` at depth 16 (2.8%, 2.3% to 3.9%), `get` at
+  depth 1 (1.5%, 0.5% to 2.8%), `lrange_600` at depth 1 (0.6%, 0.1% to 0.9%).
+- **Not judged, 2 cells (client-limited):** `lrange_500` and `lrange_600` at
+  depth 16 (client busy 0.923 and 0.925). Both are across 1 or above it, so
+  neither shows firn behind.
+- **Across 1, 38 cells**, among them the 8 of the follow-up.
+- **Noise floors for the 14900K record**, from the first run's counting twin
+  cells (8 passes): depth 1, 6.5% (`lrange_500`); depth 16, 5.8% (`srem`). Each
+  is set by one cell with an outlier pass. Among the four tests measured again
+  with 16 passes the widest twin half-width is 1.4% at depth 1 and 2.7% at
+  depth 16 (`srem`).
+- The comparison covers one 14900K, one pair of server cores and 2 server CPUs;
+  it cannot say which of the compiler, the Halo sources or the edits to firn's
+  own source moved a cell.
