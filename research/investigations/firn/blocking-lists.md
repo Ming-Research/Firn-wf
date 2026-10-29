@@ -127,7 +127,9 @@ A list write that cannot make a client ready does not need that hold:
   Measured at the design placement, a push that creates its list ran at 0.83 of
   main's rate at depth 16 with the file off and 1.01 with it on, and the lock, not
   the entry read of `list_kind` and not the place of the field in Meta, is the
-  cost ([measurement](blocking-lists-performance.md#the-fourth-version-2f2ae10)).
+  cost (inferred from the compiled instructions and seven one-place variants of
+  the push; no counter counted the acquisitions;
+  [measurement](blocking-lists-performance.md#the-fourth-version-2f2ae10)).
   Information about waiters that costs no lock when the file is off would have to
   come from the key's own entry, which a registration would mark; no version of
   this section does that.

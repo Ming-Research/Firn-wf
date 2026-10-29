@@ -251,6 +251,49 @@ images `base` (`dd8c06c`, the tip of main that the PR last merged), `head` and
   whether that moves the numbers. Its result is read against the criteria of
   question 2 unchanged.
 
+### The third and the fourth version at one placement (stated before its runs)
+
+Round 15 of the review found that the third `Rejected:` line of
+`design/firn/blocking-lists.md` rests on the third version's rates, which were
+measured with the clients on the P-cores (note at the head of Results), while the
+fourth version's rates are at the design placement. Nothing compares the two on
+equal terms, and that comparison is what says whether the bound in Meta, its
+registration bookkeeping and its stale-value correction buy anything over the
+third version's second statement. Two runs of `compare` at the design placement
+(servers on CPUs 2 and 4, clients on 16-31), F1 with the file off and F2 with it
+on (`appendfsync everysec`), 6 passes of 5 s, with the images `base` (`dd8c06c`),
+`third` (`2d91961`), `head` (`2f2ae10`, the code that merges) and `head-twin`,
+tests `set lpush rpush linsert lmove lpush_new`, depths 16 and 1, profile
+`lpush_new 16`. They could not be asked for earlier: the placement of the third
+version's runs was found from the placement line of the fourth version's first A1,
+after the third version had been rejected on them.
+
+- **Question.** At one placement, does a push that creates its list where nobody
+  waits run faster with the fourth version's read of the bound than with the third
+  version's second statement, with the file off and with it on?
+- **Prediction (inferred from the mechanism found in the fourth version's runs,
+  not measured).** With the file off both versions take Meta's lock on every such
+  push (the third in its second statement together with the event hub's, the
+  fourth in its first statement), so `third` and `head` lie within noise of each
+  other on `lpush_new` at depth 16, or `third` is slower by the cost of the hub's
+  lock; `head`/`base` reproduces A1's 0.8338 (the same image and base as run
+  40878646647). With the file on Meta is taken by both and the third also takes
+  the event hub: `third` is slower than `head` on `lpush_new`.
+- **What rejects it.** `third`/`head` wholly above 1 on `lpush_new` at depth 16
+  with the file off rejects "the fourth is no worse": the bound then costs more
+  than the statement it replaced, the third version is the faster of the two, and
+  the owner's card must say so. `third`/`head` across 1 or above with the file on
+  rejects "the bound pays with the file on". `head`/`base` for `lpush_new` 16 with
+  the file off outside A1's interval (0.8118-0.8532) means this run does not
+  reproduce A1 and is not read against it.
+- **Reading.** Per cell the ratio `third`/`head` (`summary.py ratios` with
+  `--base head --head third --twin head-twin`), not two ratios to `base`; the
+  interval of `head-twin` against `head` is the noise. The result goes into the
+  third `Rejected:` line as measured; if `third` is as fast or faster than `head`
+  in a cell that matters, a new card replaces the ruling asked for on
+  firn-q-list-producer-hold. Nothing is accepted by this record.
+- **Not covered.** No client is blocked, as in A1 and A2.
+
 ## The runs
 
 Each is a dispatch of `redis-bench.yml` on the PR's head commit; the runner
@@ -264,6 +307,7 @@ orders them on the 14900K, one at a time.
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
 | D | `compare`, `base`, `head`, `head-twin` and the throwaway images `va`, `vb`, `vc`, `lpush` and `lpush_new`, depths 16 and 1, 6 passes of 5 s, profile `lpush_new 16` | which code of the first statement is the cost of `lpush_new`, after A1 rejected the prediction of the fourth version (stated under the fourth version's results) | about 40 min |
 | E | the same with `vc`, `vd`, `ve`, `vf`, `vg` | whether the entry read or the read of Meta is the cost, and whether the field's place in `Meta` matters | about 50 min |
+| F1, F2 | `compare`, `base`, `third`, `head`, `head-twin`, tests `set lpush rpush linsert lmove lpush_new`, depths 16 and 1, 6 passes of 5 s, profile `lpush_new 16`; F1 with the file off, F2 with `aof` | whether the fourth version beats the third at one placement (stated under the fourth version) | about 35 min each |
 
 The instrument was tried first on GitHub-hosted runners, for function only (no
 rate from them counts). A hosted runner has two physical cores and the automatic
@@ -308,9 +352,10 @@ version's four runs and the first A1 of the fourth were dispatched without
 `server_cpus` and `client_cpus`, so the automatic placement put the clients on the
 P-cores 6-15 (`source=hybrid`; the one-CPU configuration of C has server CPU 2
 and clients 4-15)**: runs 40113222639, 40833091903, 40839887066 and 40843860452,
-and 40866420392. They are measurements at that placement, not at the design's, and
-the fourth version's runs below that matter (A1, D, E, A2, C) were repeated at the
-design placement.
+and 40866420392. They are measurements at that placement, not at the design's. The
+fourth version's A1 was repeated at the design placement, and its D, E, A2 and C
+were made there; the third version's runs were not repeated (runs F1 and F2 below
+measure it at the design placement beside the fourth).
 
 ### B: the floor of the hand-off class
 
@@ -594,9 +639,10 @@ statement's locks, which together make up about 12% of the cycles (the excess ov
 `base` of the four symbols), against the 14% lost (read from one profile, so
 inferred; runs D and E of the fourth version show that the same symbols come from
 the lock of Meta, which any read of Meta forces an AOF-off push to take, so this
-attribution to the second statement is superseded). `lpush` 16 spends 16.1% of its cycles in
-`try_entry`, the spin on the entry of the one key two server CPUs push to, against
-14.5% in `base`; that a longer hold per request lengthens the spin is inferred.
+attribution to the second statement is superseded). `lpush` 16 spends 16.1% of
+its cycles in `try_entry`, the spin on the entry of the one key two server CPUs
+push to, against 14.5% in `base`; that a longer hold per request lengthens the spin
+is inferred.
 
 **A2** (run 40833091903, `compare`, AOF on with `appendfsync everysec`, `set`,
 `lpush`, `rpush`, `linsert`, `lmove`, `lpush_new`, depths 16 and 1, same images
@@ -678,8 +724,9 @@ numbers; nothing in these runs is accepted by this record.
 ### The fourth version (`2f2ae10`)
 
 `2f2ae10` is the head that merges up to the records: it has the code of the
-reviewed `3f101f0` and one more section of this record (the one stated before the
-runs). The base is `dd8c06c`. The runs below are at the design placement (servers
+reviewed `c6b86a3` (`3f101f0`, the commit of the full CI, differs from it by a
+deleted temporary workflow alone) and one more section of this record (the one
+stated before the runs). The base is `dd8c06c`. The runs below are at the design placement (servers
 on CPUs 2 and 4, clients on CPUs 16-31) unless named otherwise.
 
 **First A1** (run 40866420392, `compare`, AOF off, 46 cells, 6 passes of 5 s,
@@ -705,6 +752,10 @@ medians over the passes):
 | lpush_new | 1 | 736360 | 732457 | 0.9910 | 0.9772-0.9998 | 0.9828, 0.9707-1.0026 |
 | lpush | 16 | 4237934 | 4090312 | 0.9728 | 0.9562-0.9919 | 1.0082, 0.9829-1.0220 |
 | mset | 1 | 614804 | 605798 | 0.9902 | 0.9710-0.9958 | 0.9923, 0.9795-1.0156 |
+
+The `head/base` column of this table and of the tables below is the median of the
+per-pass ratios, not the quotient of the two rate medians (2687939/3216436 =
+0.8357 for `lpush_new` 16).
 
 `xadd` 1 is 0.9896 (0.9755-1.0268) and `xadd` 16 0.9792 (0.9453-1.0186): trying the
 stream commands before the blocking ones removed the 0.5% of the third version.
