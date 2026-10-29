@@ -1,21 +1,33 @@
 # Firn's safety guarantees
 
 These claims describe Firn built with [its Whitefoot pin](../whitefoot.pin),
-`wf-af7665be672d`: [specification v0.146 at the pinned commit][spec]. They are
-conditional on a correct compiler, checker, linked definitions, runtime,
-allocator and OS ([SCOPE-3][scope]). They do not establish Redis compatibility,
-durability of every acknowledged write, or continuous availability.
+`wf-af7665be672d`: [specification v0.146 at the pinned commit][spec].
+Whitefoot's [safety claims page][claims] states what its checker claims for an
+accepted program, what it does not claim and what the claims trust; this
+document links to those entries and adds what is Firn's: the boundaries as they
+meet Firn, its resource failures, its evidence and its runtime source census.
+All of it is conditional on the page's [trusted base][claims-tcb]
+([SCOPE-3][scope]). It does not establish Redis compatibility, durability of
+every acknowledged write, or continuous availability.
+
+The page was added to Whitefoot after the pin, so it is linked at the commit
+that merged it, `4b58ba6`. Compared rule by rule between
+`spec/kernel-spec.md` at the pinned commit and at `4b58ba6`, the 35 rules the
+page cites all exist at the pin; 29 read the same there, and ENT-1, SHARE-1,
+SHARE-2, SHARE-3, STOR-3 and WAIT-2 differ only by clauses and wording the
+later specification added. The five limits under the page's
+[Not claimed][not-claimed] quote the pin's text verbatim.
 
 ## Guarantees and their boundaries
 
-| Property | What the checker and specification provide | What remains outside the claim |
+| Property | Where the claim is stated | What remains outside the claim |
 | --- | --- | --- |
-| **No data races in accepted Whitefoot code** | Spawn transfers owned arguments; shared state is accessed through atomic statements with exclusive, single-point semantics. Automatic overlap must satisfy the interference and reduction rules of PAR-1/PAR-2. [WAIT-3][wait], [SHARE-2, SHARE-3][shared], [EFF-5][effects], [PAR-1, PAR-2][parallel]. | General race conditions between separate transitions and application protocol mistakes remain possible; native runtime synchronization is trusted. [CAP-1][parallel], [SCOPE-3][scope]. |
-| **No use-after-free** | Consuming an owner kills its binding. References are invalidated by owner replacement, move, release or scope exit; invalid uses reject compilation. References cannot escape into stored values or return values. [OWN-1, REF-2, REF-3][ownership], [STOR-3][storage]. | Correct implementation of generated releases and native handle lifetimes is trusted. Resource termination has no cleanup guarantee. [SCOPE-3][scope], [STOR-3][storage]. |
-| **No out-of-bounds access** | Each element index must be proved below the initialized length; slices require proved endpoints. Unproved accesses reject compilation; accepted accesses need no runtime bounds fallback. Target layout/address arithmetic must also qualify. [OP-4][bounds], [REF-4][ownership], [STOR-6][storage]. | Acceptance proves neither that available memory can serve an allocation nor that stack frames fit the execution environment. [STOR-6, STOR-8][storage]. |
-| **No overflow of exact integer arithmetic** | Plain `+`, `-`, `*` require a representable result. Plain `/`, `%` also exclude zero divisors and signed minimum/−1; unproved domains reject compilation. [OP-2][arithmetic]. | Explicit wrap and saturating operations have their specified semantics; checked forms return errors. This is not a claim that every counter is mathematically unbounded or that floating-point results never become infinity/NaN. [OP-2, OP-3][arithmetic]. |
-| **No source panic or proof-failure trap** | No writer-reachable abort effect, exception, unwinding edge or hidden proof fallback exists; proof failure is a compile-time rejection. Expected errors are values. [SCOPE-2][scope], [EFF-4][effects], [ERR-1][errors]. | Firn can deliberately return a nonzero entry status, encounter I/O errors, or be terminated by resource failure or the host. [PRE-2][host], [SCOPE-3][scope]. |
-| **Conditional progress; no general deadlock guarantee** | An atomic guard/body cannot nest an atomic statement or call a waiting function, excluding those hold-and-wait forms. If every context reaches completion or a wait in finitely many steps from every point, WAIT-2 promises eventual next steps for runnable contexts or waits with a produced host outcome/completed joined context, and eventual unguarded or persistently enabled atomic transitions. [SHARE-2][shared], [WAIT-2][wait]. | False guards, joins on contexts that never complete, missing host outcomes or a context that never yields can still stall service. When all remaining contexts wait on false guards or other contexts and no host operation is outstanding, execution does not complete; an implementation may report and stop it. No latency bound or termination proof follows. [WAIT-2, WAIT-3][wait]. |
+| **No data races in accepted Whitefoot code** | [No data races][claim-race] | General race conditions between separate transitions and application protocol mistakes remain possible ([not claimed][not-claimed]); native runtime synchronization is trusted ([trusted base][claims-tcb]). |
+| **No use-after-free** | [No memory corruption][claim-mem], owners and references | Generated releases and native handle lifetimes are trusted ([trusted base][claims-tcb]). Resource termination has no cleanup guarantee ([not claimed][not-claimed]: resource availability). |
+| **No out-of-bounds access** | [No memory corruption][claim-mem], subscripts. Not on the page: slice endpoints must be proved (`lo <= hi`, `hi <= x.len`) before a range reference forms ([REF-4][ownership]). | Acceptance proves neither that available memory can serve an allocation nor that stack frames fit the execution environment ([not claimed][not-claimed]: resource availability; [STOR-8][storage]). |
+| **No overflow of exact integer arithmetic** | [No silent overflow][claim-overflow] | This is not a claim that every counter is mathematically unbounded or that floating-point results never become infinity/NaN. [OP-3][arithmetic]. |
+| **No source panic or proof-failure trap** | [No runtime traps][claim-trap] | Firn can deliberately return a nonzero entry status, encounter I/O errors, or be terminated by resource failure ([not claimed][not-claimed]: resource availability) or the host. [PRE-2][host]. |
+| **Conditional progress; no general deadlock guarantee** | Not on the page, which lists [freedom from deadlock as not claimed][not-claimed]. This document's reading of two rules: an atomic guard/body cannot nest an atomic statement or call a waiting function, excluding those hold-and-wait forms. If every context reaches completion or a wait in finitely many steps from every point, WAIT-2 promises eventual next steps for runnable contexts or waits with a produced host outcome/completed joined context, and eventual unguarded or persistently enabled atomic transitions. [SHARE-2][shared], [WAIT-2][wait]. | False guards, joins on contexts that never complete, missing host outcomes or a context that never yields can still stall service ([not claimed][not-claimed]: deadlock, termination). No latency bound follows. [WAIT-3][wait]. |
 
 Firn has concrete waits for its script engine and for all clients to leave;
 scripts and guarded waits can delay shutdown, and filesystem calls have no
@@ -23,11 +35,11 @@ deadline/cancellation parameter. See [script engine acquisition](../firn/scripti
 [shutdown drain](../firn/server/server.wf#L1128), [orderly-stop design](../design/firn/orderly-stop.md)
 and [PRE-2][host].
 
-Heap exhaustion does not return a Whitefoot allocation error or execute a
-language trap ([STOR-8][storage]). The pinned POSIX implementation attempts a
-resource record and calls `abort()` (**SIGABRT**) on allocation refusal or a
-classified stack-guard fault. The OS can kill the process first, and the
-language specifies no exhaustion status, signal or cleanup guarantee.
+Resource availability is [not claimed][not-claimed]. Heap exhaustion does not
+return a Whitefoot allocation error or execute a language trap
+([STOR-8][storage]); the pinned POSIX implementation attempts a resource record
+and calls `abort()` (**SIGABRT**) on allocation refusal or a classified
+stack-guard fault, and the OS can kill the process first.
 Deep recursion and recursive release can exhaust the stack. The
 [abnormal-stop audit](../research/investigations/firn/abnormal-stops.md)
 links the implementation, counts Firn's resource operations and records its
@@ -55,7 +67,7 @@ only a comment in one accepted witness and the experiment README, and gate run
 earlier pin; accepted executables were **not run**.
 These are specific source-admission examples, not a complete proof of Firn or
 of the current compiler/runtime. The rules above are cited at Firn's current
-pin.
+pin, except for the claims page, which is linked at `4b58ba6`.
 
 The audit also found an accept error that stopped service with status zero;
 firn now logs it and keeps listening ([correction in PR #104][accept-pr]).
@@ -68,12 +80,9 @@ Redis semantics. Their source evidence is in the
 
 ## Trusted base and source sizes
 
-The checker does not prove itself, the Whitefoot compiler/backend, the native
-runtime or linked host functions correct. LLVM/clang/LLD must preserve the
-generated semantics; libc's allocator, thread/signal functions and the Linux
-kernel must honor their interfaces ([SCOPE-3][scope], [PRE-1, PRE-2][host],
-[Whitefoot's trusted-base description][tcb]). Firn and Halo's checked Whitefoot
-code still need ordinary application-correctness evidence.
+Whitefoot's page lists the [trusted base][claims-tcb] that the claims above
+are conditional on and its checker does not verify. Firn and Halo's checked
+Whitefoot code still need ordinary application-correctness evidence.
 
 **Runtime census, 2026-10-13:** Linux x86-64, for both CI's ordinary cached
 Firn build and its `--par` test build ([Makefile](../Makefile#L51-L60)). The pinned
@@ -92,7 +101,9 @@ This counts physical lines, including comments, blanks and inactive
 preprocessor branches. Paths below are relative to the pinned
 [`compiler/src/backend/`][runtime-tree]. No local build/test was used to
 produce the census; it measures the selected source files, not binary size or
-verified code.
+verified code. The runtime figure in the page's [size table][claims-tcb]
+counts the units of every platform, at a Whitefoot commit after the pin, so it
+is not comparable with this Linux census at the pin.
 
 | Participating C file | Physical lines |
 | --- | ---: |
@@ -147,21 +158,25 @@ not patch-version pins. The workflow does not fix the runner image, kernel or
 libc patch; it prints clang/LLD versions but no exact linked-libc version.
 That [runner image's manifest][runner-image] lists Linux kernel
 **6.17.0-1022-azure**; the cited network job did not independently record `uname`.
-No line counts are assigned to these external tools/libraries or the OS.
+This document assigns no line counts to these external tools/libraries or the
+OS; the page's [size table][claims-tcb] gives snapshot sizes for the compiler
+and LLVM.
 
 [spec]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md
 [scope]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L7-L21
 [ownership]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L663-L740
 [storage]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L825-L935
-[bounds]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1076-L1099
 [arithmetic]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1013-L1075
-[effects]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1616-L1635
-[errors]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1638-L1658
-[parallel]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2168-L2261
 [wait]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2268-L2287
 [shared]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2321-L2360
 [host]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2363-L3216
-[tcb]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/README.md#L52-L56
+[claims]: https://github.com/Ming-Research/Whitefoot/blob/4b58ba6dc219a19a5e8c98778faf3ce5b8b20982/docs/safety-claims.md
+[claim-mem]: https://github.com/Ming-Research/Whitefoot/blob/4b58ba6dc219a19a5e8c98778faf3ce5b8b20982/docs/safety-claims.md#no-memory-corruption
+[claim-race]: https://github.com/Ming-Research/Whitefoot/blob/4b58ba6dc219a19a5e8c98778faf3ce5b8b20982/docs/safety-claims.md#no-data-races
+[claim-overflow]: https://github.com/Ming-Research/Whitefoot/blob/4b58ba6dc219a19a5e8c98778faf3ce5b8b20982/docs/safety-claims.md#no-silent-overflow
+[claim-trap]: https://github.com/Ming-Research/Whitefoot/blob/4b58ba6dc219a19a5e8c98778faf3ce5b8b20982/docs/safety-claims.md#no-runtime-traps
+[not-claimed]: https://github.com/Ming-Research/Whitefoot/blob/4b58ba6dc219a19a5e8c98778faf3ce5b8b20982/docs/safety-claims.md#not-claimed
+[claims-tcb]: https://github.com/Ming-Research/Whitefoot/blob/4b58ba6dc219a19a5e8c98778faf3ce5b8b20982/docs/safety-claims.md#the-trusted-base
 [halo-limit]: https://github.com/Ming-Research/Halo-wf/blob/58723031b1a6d58a932643d72c436026898417a1/lib/halo/embed/module.wfm#L39-L69
 [audit-pr]: https://github.com/Ming-Research/Firn-wf/pull/102
 [accept-pr]: https://github.com/Ming-Research/Firn-wf/pull/104
