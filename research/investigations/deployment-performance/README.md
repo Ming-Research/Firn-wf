@@ -657,3 +657,750 @@ turns. This tested one workload
 on one machine; the workload client reports p50 and p99, not the longest
 wait. It is evidence against turns as built for this engine, and the
 reason firn asks that any bounded-overtaking build be measured the same way.
+
+## Handshake and CLIENT LIST rate against four rivals
+
+Firn-wf#74 adds client handshake commands and `CLIENT LIST`. Run
+[38485636396](https://github.com/Ming-Research/Firn-wf/actions/runs/38485636396)
+of the `redis-bench` workflow on the i9-14900K, dispatched on branch
+`claude/perf-reproduce` at commit 9946abf, measured two workloads of the
+workload tool: new connections doing the handshake (`HELLO`,
+`CLIENT SETNAME`) and `CLIENT LIST`. Rivals: Redis 7.2.16, Valkey 9.1.2,
+Dragonfly v2.0.2, Garnet v2.2.1.
+
+Conditions, read from the run's log: firn was built from commit de6d7b5, the
+head of the pull request before it merged `main`, with `whitefoot.pin`
+`wf-d75f318d5631`; the servers ran on CPUs 2 and 4 and the load clients on
+CPUs 16-31; 50 connections; 6 passes, each running every server for 10
+seconds per workload, the order of the servers changing between passes.
+The pull request's head now differs from that commit (it has merged `main`
+and `CLIENT LIST` reads other connections' subscription counts from the
+event hub), so these figures describe the earlier build.
+
+CLIENT LIST, firn about 133k requests a second:
+
+| rival | firn / rival |
+| --- | --- |
+| Redis 7.2.16 | 3.85x |
+| Valkey 9.1.2 | 4.70x |
+| Dragonfly v2.0.2 | 5.57x |
+| Garnet v2.2.1 | 0.69x (Garnet is faster) |
+
+Handshake: all six servers land at about 20-23k new connections a second.
+The workload client busy-polls, so every client CPU shows a busy rate above
+0.998 and no cell can be told apart as client-limited from the data; the
+equal rates may be the client's limit, not the servers'.
+
+Verdict: not judged against the standard. These figures are the run's rates.
+The noise-gate and 95% confidence-interval standard needs interleaved
+base/candidate pairs beside the twin, the twin ratio's interval half-width as
+noise, the platform floor, and the candidate/base interval; this record has no
+pairs, noise, floor or interval for this run, so it claims no regression,
+improvement or "no detected change". The ratios are descriptive only.
+
+## Final-head check of the CLIENT handshake change (Firn-wf#74)
+
+Written before the measurement. The owner ruled (card firn-client-merge-perf,
+option A) that Firn-wf#74 merges when the commands firn already supported are
+not slower than before, the handshake meets the depth-1 rule against the
+fastest competitor, and CLIENT LIST is reported against all four competitors,
+its gap to Garnet followed by firn-client-list-garnet.
+
+Questions and the results that would answer them:
+
+1. Is any command firn supported before this change slower with it? The change
+   touches paths all commands share: every `EXEC` takes the client table with
+   Meta (design/firn/transactions.md), every connection takes the table when
+   it starts and when it ends, and every key access tests the connection's
+   NO-TOUCH flag. Rejected if, for any cell below, the 95% interval of
+   head/base lies wholly under 1 while the twin's interval contains 1; the
+   size does not matter. A cell whose twin interval excludes 1, or whose
+   head/base interval contains 1 yet is wider than the twin's, is undecided:
+   passes are added up to 12, and a cell still undecided is reported
+   unresolved, not as no change.
+2. Does the handshake meet the owner's depth-1 rule? Met if firn's median rate
+   is not below the fastest competitor's and its p99 is not above that
+   competitor's p99. A cell is client-limited when the median client work
+   fraction in `workload-limited.csv` of firn or of that competitor is above
+   0.90; it then asks only that firn is not behind, and its p99 is reported
+   and not judged (as for the pub/sub workloads). A shortfall smaller than the
+   twin's half-width is undecided and gets more passes, up to 12.
+3. How does CLIENT LIST compare? Reported for Redis 7.2.16, Valkey, Dragonfly
+   and Garnet: multiple of rate and p99 against each. The rule of 2 is judged
+   against the fastest competitor other than Garnet; the Garnet cell is
+   reported and not judged.
+
+Sides, measured with `summary.py` over the run's CSV files (`ratios` for A,
+`workloads` for B):
+
+- Run A, `redis-bench.yml` mode `compare`: images `base` (`origin/main` at the
+  dispatch), `head` (this branch at the dispatch) and `head-twin` (head
+  again); Redis 7.0's default `redis-benchmark` suite, the 19 tests named by
+  `SUITE_DEFAULT` in `redis-bench.sh`, at depth 1; server CPUs 2 and 4, client
+  CPUs 16-31; 6 passes of 5 seconds, profiling off. The twin is head measured
+  again, so its ratio to head is the run's noise, as the tool prints it.
+- Run B, mode `workloads` with `workload_images`: the same three images and
+  Redis 7.2.16, Valkey, Dragonfly and Garnet; tests `limiter-tx` (`MULTI`,
+  `INCRBY`, `PTTL`, `EXEC`), `setmany-tx` (`MULTI`, one `MSET` of three keys,
+  three `EXPIRE`, `EXEC`), `handshake` and `client-list`; 50 connections;
+  the same CPUs; 6 passes of 10 seconds. The two transaction workloads cover
+  `EXEC`, which `redis-benchmark` does not send.
+
+Before either run, a probe of Run A with 2 passes of 5 seconds checks that the
+inputs work and times a pass; it is not reported as a result. No noise floor
+is recorded yet for these workload classes on this machine, so each run's
+largest twin half-width per class is reported as that class's floor, for the
+architect to record, and no cell is dropped by it in these runs.
+
+### Changes to the plan after the first dispatch
+
+All runs below measured Firn-wf#74 at commit 9b514d5 (compiler release
+wf-af7665be672d) against `main` at 7f8b4f8, which that commit had merged, on
+the i9-14900K: server CPUs 2 and 4, load clients on CPUs 16-31, depth 1.
+
+- The probe of Run A (run 39898075275, 2 passes of 5 seconds) took 13.5
+  minutes, 2 of them building, and is not reported.
+- Run B was split in two. The probe of Run B (run 39910304830) stopped at the
+  handshake workload on the `base` image: `main`'s firn has neither
+  `CLIENT SETINFO` nor `CLIENT LIST`, so these two workloads have no "before"
+  to pair with. This was an error in the plan above, not a finding. Run B2
+  measures the handshake and `CLIENT LIST` with images `head` and `head-twin`
+  and the four rivals (Redis 7.2.16, Valkey 9.1.2, Dragonfly v2.0.2, Garnet
+  2.2.3); Run B1 measures the two transaction workloads with the three images
+  and no rivals.
+- Every dispatch builds its images again, so the binary of one source differs
+  in its SHA-256 between dispatches. A cell the rule left undecided after 6
+  passes got a second dispatch of the same inputs, and the two dispatches'
+  passes are pooled as passes 1-12. Within a dispatch `head` and `head-twin`
+  are one binary; `base` and `head` are two.
+- The rule was not changed after its results were seen.
+
+### Results
+
+Run A, `redis-benchmark` default suite (19 tests), 6 passes of 5 seconds in
+each of runs
+[39899821670](https://github.com/Ming-Research/Firn-wf/actions/runs/39899821670)
+and
+[39903665355](https://github.com/Ming-Research/Firn-wf/actions/runs/39903665355),
+12 passes pooled, `summary.py ratios`. The verdict column applies the rule
+above: rejected needs the head/base interval wholly under 1 with the twin's
+interval containing 1.
+
+| test | head/base median | head/base 95% interval | twin/head 95% interval | twin half-width | verdict |
+| --- | --- | --- | --- | --- | --- |
+| get | 1.0042 | 0.9949-1.0257 | 0.9874-1.0019 | 0.73% | undecided (wider than twin) |
+| hset | 0.9880 | 0.9723-1.0299 | 0.9811-1.0105 | 1.47% | undecided (wider than twin) |
+| incr | 0.9969 | 0.9801-1.0129 | 0.9927-1.0182 | 1.28% | undecided (wider than twin) |
+| lpop | 1.0014 | 0.9948-1.0183 | 0.9971-1.0118 | 0.74% | undecided (wider than twin) |
+| lpush | 0.9902 | 0.9759-1.0068 | 0.9961-1.0173 | 1.06% | undecided (wider than twin) |
+| lrange_100 | 1.0022 | 0.9879-1.0303 | 0.9923-1.0099 | 0.88% | undecided (wider than twin) |
+| lrange_300 | 1.0033 | 0.9965-1.0106 | 0.9552-1.0222 | 3.35% | no detected change |
+| lrange_500 | 1.0064 | 1.0000-1.0170 | 0.9964-1.0040 | 0.38% | undecided (wider than twin) |
+| lrange_600 | 1.0051 | 1.0009-1.0102 | 0.9918-1.0062 | 0.72% | faster |
+| mset | 1.0058 | 0.9956-1.0189 | 0.9929-1.0083 | 0.77% | undecided (wider than twin) |
+| ping_inline | 0.9911 | 0.9850-1.0136 | 0.9921-1.0075 | 0.77% | undecided (wider than twin) |
+| ping_mbulk | 0.9948 | 0.9885-1.0066 | 0.9941-1.0150 | 1.05% | no detected change |
+| rpop | 0.9918 | 0.9843-1.0033 | 0.9839-1.0115 | 1.38% | no detected change |
+| rpush | 0.9892 | 0.9753-0.9977 | 1.0020-1.0176 | 0.78% | undecided (twin interval excludes 1) |
+| sadd | 0.9831 | 0.9706-1.0248 | 0.9877-1.0145 | 1.34% | undecided (wider than twin) |
+| set | 1.0084 | 0.9859-1.0531 | 0.9877-1.0098 | 1.10% | undecided (wider than twin) |
+| spop | 0.9881 | 0.9786-1.0356 | 0.9867-1.0107 | 1.20% | undecided (wider than twin) |
+| zadd | 1.0032 | 0.9875-1.0347 | 0.9766-0.9951 | 0.92% | undecided (twin interval excludes 1) |
+| zpopmin | 0.9894 | 0.9725-1.0240 | 0.9821-1.0107 | 1.43% | undecided (wider than twin) |
+
+No client was limited (`compare-limited.csv`: no sample above 0.90). Run B1,
+transaction workloads, 50 connections, 6 passes of 10 seconds in each of runs
+[39933326848](https://github.com/Ming-Research/Firn-wf/actions/runs/39933326848)
+and
+[39935877361](https://github.com/Ming-Research/Firn-wf/actions/runs/39935877361),
+12 passes pooled, `summary.py workloads`:
+
+| workload | rate base / head / twin | head/base median | head/base 95% interval | twin/head 95% interval | twin half-width | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| limiter-tx | 612.2k / 611.3k / 608.6k per second | 0.9972 | 0.9824-1.0041 | 0.9915-1.0032 | 0.59% | undecided (wider than twin) |
+| setmany-tx | 340.9k / 338.5k / 336.6k per second | 0.9927 | 0.9761-1.0038 | 0.9668-1.0132 | 2.32% | no detected change |
+
+Run B2, the handshake and `CLIENT LIST` against the rivals, 50 connections, 6
+passes of 10 seconds in each of runs
+[39922503246](https://github.com/Ming-Research/Firn-wf/actions/runs/39922503246)
+and
+[39927545727](https://github.com/Ming-Research/Firn-wf/actions/runs/39927545727),
+12 passes pooled, `summary.py workloads`. Medians over the 12 passes:
+
+| handshake | rate per second | p99 (ms) | client work fraction |
+| --- | --- | --- | --- |
+| firn (head) | 23.29k | 5.329 | 0.981 |
+| firn (head-twin) | 23.30k | 5.316 | 0.984 |
+| Redis 7.2.16 | 23.38k | 5.128 | 0.981 |
+| Valkey 9.1.2 | 23.25k | 5.274 | 0.978 |
+| Dragonfly v2.0.2 | 21.90k | 5.412 | 0.962 |
+| Garnet 2.2.3 | 20.90k | 5.216 | 0.966 |
+
+The client work fraction is read from `workload-limited.csv` of each run's
+artifact; the artifacts expire, so its range is copied here: over the 12 passes
+every handshake line stayed between 0.943 and 0.990, every `CLIENT LIST` line
+between 0.021 and 0.156. Both ranges come from all 72 lines of each workload
+(six lines, 12 passes) of runs 39922503246 and 39927545727.
+
+| CLIENT LIST | rate per second | firn / rival | p99 (ms) | client work fraction |
+| --- | --- | --- | --- | --- |
+| firn (head) | 127.1k | | 0.635 | 0.085 |
+| firn (head-twin) | 127.5k | 0.997 | 0.677 | 0.085 |
+| Redis 7.2.16 | 34.5k | 3.679 | 2.458 | 0.036 |
+| Valkey 9.1.2 | 28.2k | 4.508 | 3.015 | 0.034 |
+| Dragonfly v2.0.2 | 23.9k | 5.311 | 4.521 | 0.021 |
+| Garnet 2.2.3 | 218.5k | 0.582 | 0.625 | 0.152 |
+
+Twin half-widths over 12 passes, offered as the first floor measurements of
+these classes on this machine: `redis-benchmark` default suite, 19 cells,
+median 1.05%, from 0.38% (lrange_500) to 3.35% (lrange_300); `limiter-tx`
+0.59%; `setmany-tx` 2.32%; handshake 1.04%; `CLIENT LIST` 0.54%.
+
+### Verdicts
+
+1. Commands firn supported before: no cell is rejected. Of the 21 cells, 16
+   are undecided, 4 show no detected change and 1 (lrange_600) is faster.
+   Fourteen of the undecided cells are undecided by the second clause only (the
+   head/base interval contains 1 but is wider than the twin's); none of them is
+   detected slower, since each interval contains 1. The clause is unmeetable as
+   written, because `base` and `head` are two binaries whose build-to-build
+   difference adds variance the twin, one binary measured twice, does not have;
+   the first dispatch of Run A made hset look wholly slower (0.9835,
+   0.9765-0.9970) and the second made it look unchanged (0.9914, 0.9502-1.0840).
+   Two cells have a twin interval that excludes 1 (rpush: twin 1.1% faster than
+   head, the same binary; zadd: twin 0.7% slower). rpush is the only cell whose
+   head/base interval lies wholly under 1 (0.9753-0.9977); the twin as the
+   candidate against `base` gives 0.9957 (0.9866-1.0056), no detected change,
+   which does not support attributing the rpush difference to the code.
+   Exploratory, not part of the rule: the geometric mean over the 19 tests of
+   each pass's ratio, with the interval taken over the passes as for a cell, is
+   1.0025 (0.9927-1.0123) for head/base in requests per second, 0.9981
+   (0.9886-1.0078) for head/base in server CPU per request, and 0.9993
+   (0.9949-1.0038) for twin/head in requests per second. Unresolved by the
+   rule: these 16 cells.
+2. Handshake: unresolved. The cell is client-limited (work fraction above 0.90
+   for every server), so only "not behind" is asked and p99 is reported, not
+   judged. Firn's median is 0.996 of the fastest rival (Redis), 0.4% short;
+   the twin half-width is 1.04%, so the shortfall is smaller than the noise
+   and, after 12 passes, the rule leaves it undecided. The paired per-pass
+   ratio firn/Redis has median 0.9943 and 95% interval 0.9867-1.0000, not part
+   of the rule. Firn is level with Redis and Valkey (1.002 of Valkey) and ahead
+   of Dragonfly (1.063) and Garnet (1.114); the three leaders sit at about
+   23.3k a second, which suggests the workload client, not the servers, sets
+   the ceiling.
+3. `CLIENT LIST`: against the fastest rival other than Garnet (Redis) firn is
+   3.679 times as fast with p99 0.635 ms against 2.458 ms, so the rule is met.
+   Against Garnet the figures are reported and not judged, as the owner ruled
+   (card firn-client-merge-perf): firn is 0.582 times as fast, p99 0.635 ms
+   against 0.625 ms; the gap is followed by item firn-client-list-garnet.
+   Against the earlier run of this section (firn de6d7b5, Garnet 2.2.1) firn's
+   `CLIENT LIST` rate is about 4% lower (127k against 133k a second) and the
+   multiples over Redis, Valkey and Dragonfly are about 4% lower (3.68, 4.51,
+   5.31 against 3.85, 4.70, 5.57); the commit differs by the merge of `main`
+   and by `CLIENT LIST` reading the other connections' subscription counts from
+   the event hub, which this measurement does not separate.
+
+### Second measurement, on the merged head
+
+Written before the measurement. Everything above measured Firn-wf#74 at
+9b514d5 against `main` at 7f8b4f8. The merged head at the time of this
+measurement is 5a0a1b9 (5a0a1b942aeb2ba2343282a77495b4cb44fc4e89), which had
+merged `main` three more times: the `maxclients` check and count in one
+atomic statement of `accept` with the new startup options, and the stream
+commands, which add a stream check to command dispatch and copy two more
+connection fields once per request read. The handshake workload crosses the
+changed accept path and every cell crosses dispatch, so the first measurement
+does not stand for the merged head. The three groups are measured again on it;
+the first results stay above, marked as made on 9b514d5. `main` is not merged
+into the branch again unless the host reports a conflict, so these revisions
+stay the merged head. The host
+reported one after Run B1, in `design/log.md` only, and `main` was merged at
+30de5d8; that change was the release packaging (nine files outside `firn/`,
+`tests/` and the Makefile), so `firn/`, `tests/`, the Makefile and the pins at
+30de5d8 equal those of 5a0a1b9, and the runs after it (B2, C1, C2) name the
+same image commits.
+
+The host reported a conflict again after Run C2, in `design/log.md` only, and
+`main` was merged at 9bfc065. That change (Firn-wf#104, firn keeps accepting
+after an accept error) is in `firn/`, so 9bfc065 is not 5a0a1b9 there. The
+pull request's own `firn/` change is the same before and after: the added and
+removed lines of `git diff` against `main`, compared without their context
+lines, are identical (14 files, 920 insertions, 82 deletions). `main`'s new
+code is the `Err` branch of the accept loop in `firn/server/server.wf`, a
+function that writes the diagnostic, a function that classifies the error and
+two variables of the accept loop, plus `firn/README.md`; the `Ok` branch of
+the accept loop and the command code are unchanged. The new code runs only
+when an accept call fails, which none of the three groups' workloads does
+(deduced from the code, not observed in the runs' output: they hold 50
+connections, the handshake workload closes each connection it opens). The
+architect ruled that the second measurement stands for 9bfc065 and is not made
+again. A later merge of `main` is measured again only if its new code runs in
+a workload of one of the groups. In the headings of this section, "the merged
+head" means 5a0a1b9, the merged head when the second measurement was made.
+
+Revisions: `head` and `head-twin` are 5a0a1b9; `base` is
+05f7e89c62a7b9d10733a43b9a08aaea53fa2090, the `main` that 5a0a1b9 merged, so
+base and head differ only by this change (14 `firn/` files, 920 insertions and
+82 deletions). The machine, CPUs, depth, connection count and rivals are those
+of the first measurement. Each group is one dispatch, so one binary per image
+for all its passes (the first measurement pooled two dispatches of six, whose
+binaries differed).
+
+- Run A, mode `compare`: the 19 tests of the first measurement and `xadd`,
+  which `main`'s `SUITE_DEFAULT` now holds and which `main` supports, so it is
+  a command supported before this change; 5 seconds, 18 passes.
+- Run B1, mode `workloads` with `workload_images`, firn only: `limiter-tx` and
+  `setmany-tx`; 10 seconds, 18 passes.
+- Run B2, mode `workloads` with `workload_images`, images `head` and
+  `head-twin` and Redis 7.2.16, Valkey, Dragonfly and Garnet (the newest stable
+  release of each at the dispatch): `handshake` and `client-list`; 10 seconds,
+  12 passes.
+
+The rule is that of the questions above with these changes:
+
+1. Commands supported before (Run A, B1). The condition is the first sentence
+   only: no cell has a head/base 95% interval wholly under 1. A cell whose
+   head/base interval contains 1 yet is wider than the twin's is reported
+   undecided and does not block: base and head are two binaries, whose
+   build-to-build difference the twin, one binary measured twice, does not
+   carry, so that clause cannot be met and gets no more passes. A cell whose
+   twin interval excludes 1 has too much noise in this run to count: it is
+   judged on the first 12 passes, and while its twin interval still excludes 1
+   the later passes of the run are added one at a time, up to all 18, then it
+   is judged by the first sentence; one still excluding 1 at 18 is reported as
+   noise that did not settle, with its size. rpush and zadd were such cells in
+   the first measurement, which is why Run A and B1 have 18 passes. A cell
+   rejected (interval wholly under 1, twin interval containing 1) blocks the
+   merge until it is fixed or accepted on an owner's card with its size and
+   reason.
+2. Handshake against the fastest rival. The cell is client-limited when the
+   median client work fraction of firn or of that rival is above 0.90; it asks
+   only that firn is not behind: the 95% interval of the per-pass ratio of
+   firn to the rival is not wholly under 1. A shortfall smaller than the twin's
+   half-width is reported undecided. p99 is judged where the cell is not
+   client-limited.
+3. `CLIENT LIST` as in the questions above: judged against the fastest rival
+   other than Garnet, reported against Garnet.
+
+The twin is still `head` measured again, not `base` (the engineering standards
+ask for a twin of the base); this keeps the results comparable with the first
+measurement and means the twin does not carry the build-to-build difference.
+No noise floor is recorded for these classes on this machine; each class's
+largest twin half-width is reported again.
+
+What each result shows: a rejected cell says the change slows that command;
+no rejected cell, with the undecided ones listed, meets the owner's "not
+slower than before" in the sense of the first sentence; a handshake interval
+wholly under 1 with a work fraction above 0.90 says firn is behind Redis on
+the handshake; `CLIENT LIST` against Redis, Valkey and Dragonfly is expected
+near the first measurement's 3.7, 4.5 and 5.3 times, and a figure clearly
+below that would say the merged accept or dispatch path costs it.
+
+Expected time on the 14900K, from the first measurement's runs: about 99
+minutes for Run A, 25 for Run B1 and 45 for Run B2.
+
+#### Run A on the merged head
+
+Run [40033786239](https://github.com/Ming-Research/Firn-wf/actions/runs/40033786239),
+`summary.py ratios` over its `compare.csv`: `base` is 05f7e89, `head` and
+`head-twin` are 5a0a1b9, 18 passes of 5 seconds, depth 1, server CPUs 2 and 4,
+client CPUs 16-31. `base` is the image with SHA-256 540d71af8a4f, `head` and
+`head-twin` one image with SHA-256 4850a10247e4 (first 12 hexadecimal digits).
+No client was limited: the largest mean client busy fraction was 0.892 and no
+sample was marked limited. On the first 12 passes the twin interval contains 1
+in all 20 cells, so the rule judges every cell on those 12 passes; the last
+column gives the interval over all 18 for comparison.
+
+| test | head/base median | head/base 95% interval, 12 passes | twin/head 95% interval | twin half-width | verdict | head/base 95% interval, 18 passes |
+| --- | --- | --- | --- | --- | --- | --- |
+| get | 0.9945 | 0.9886-1.0046 | 0.9879-1.0069 | 0.95% | no detected change | 0.9886-1.0025 |
+| hset | 1.0035 | 0.9967-1.0071 | 0.9931-1.0128 | 0.98% | no detected change | 0.9930-1.0056 |
+| incr | 0.9965 | 0.9871-1.0067 | 0.9957-1.0122 | 0.82% | undecided (wider than twin) | 0.9940-1.0101 |
+| lpop | 1.0075 | 0.9966-1.0223 | 0.9756-1.0035 | 1.40% | no detected change | 0.9932-1.0147 |
+| lpush | 0.9973 | 0.9856-1.0280 | 0.9763-1.0092 | 1.65% | undecided (wider than twin) | 0.9805-1.0153 |
+| lrange_100 | 0.9981 | 0.9944-1.0070 | 0.9890-1.0078 | 0.94% | no detected change | 0.9897-1.0064 |
+| lrange_300 | 0.9989 | 0.9956-1.0038 | 0.9912-1.0119 | 1.04% | no detected change | 0.9947-1.0026 |
+| lrange_500 | 1.0015 | 0.9977-1.0063 | 0.9915-1.0057 | 0.71% | no detected change | 0.9942-1.0030 |
+| lrange_600 | 1.0040 | 1.0015-1.0072 | 0.9880-1.0032 | 0.76% | faster | 1.0018-1.0070 |
+| mset | 0.9906 | 0.9819-0.9947 | 0.9901-1.0083 | 0.91% | rejected (wholly slower) | 0.9857-0.9958 |
+| ping_inline | 0.9988 | 0.9924-1.0105 | 0.9826-1.0094 | 1.34% | no detected change | 0.9940-1.0072 |
+| ping_mbulk | 1.0038 | 0.9927-1.0181 | 0.9953-1.0061 | 0.54% | undecided (wider than twin) | 0.9935-1.0115 |
+| rpop | 0.9983 | 0.9883-1.0086 | 0.9850-1.0089 | 1.19% | no detected change | 0.9901-1.0071 |
+| rpush | 0.9981 | 0.9879-1.0090 | 0.9967-1.0106 | 0.69% | undecided (wider than twin) | 0.9898-1.0042 |
+| sadd | 1.0011 | 0.9918-1.0113 | 0.9899-1.0123 | 1.12% | no detected change | 0.9913-1.0055 |
+| set | 0.9996 | 0.9849-1.0070 | 0.9810-1.0057 | 1.24% | no detected change | 0.9812-1.0029 |
+| spop | 0.9986 | 0.9875-1.0126 | 0.9789-1.0089 | 1.50% | no detected change | 0.9846-1.0103 |
+| xadd | 0.9998 | 0.9811-1.0124 | 0.9860-1.0151 | 1.45% | undecided (wider than twin) | 0.9887-1.0102 |
+| zadd | 1.0030 | 0.9928-1.0192 | 0.9849-1.0045 | 0.98% | undecided (wider than twin) | 0.9929-1.0124 |
+| zpopmin | 1.0053 | 0.9935-1.0313 | 0.9889-1.0125 | 1.18% | undecided (wider than twin) | 0.9930-1.0189 |
+
+Of the 20 cells, 1 is rejected (mset), 1 is faster (lrange_600), 7 are
+undecided by the second clause only and 11 show no detected change. No cell has
+a twin interval that excludes 1, so no cell needed more than 12 passes, unlike
+rpush and zadd in the first measurement.
+
+The rejected cell, mset (ten keys per command): head was slower than base in 17
+of the 18 passes (head/base per pass 0.959 to 1.012, the exception being pass
+16). Median rate over the 18 passes: base 607.1k, head 602.5k and head-twin
+599.9k a second; median server CPU per request: 3.280, 3.307 and 3.295
+microseconds. The twin, the same binary as head, sits as far below base as head
+does, so the difference is between the two binaries, not within a run. It is
+not attributed to a change: the diff of `firn/` between 05f7e89 and 5a0a1b9
+touches nothing that only MSET runs; its per-request additions (a flag test
+after each request, the NO-TOUCH save and restore around a promoted command, a
+larger connection struct and keyspace struct) apply to every cell, and no other
+cell is slower. Read from the diff and the table, not tested. If each cell's
+interval were exact and the cells independent, the chance that at least one of
+20 falls wholly on the slow side with no real difference is about 40%
+(1 - 0.975^20, deduced). A difference in code layout between the two binaries
+is a possibility not examined.
+
+#### Attribution of the mset cell
+
+Question: does the 5a0a1b9 binary do more work per `MSET` than the 05f7e89
+binary, and is that work what made Run A's mset cell slower? Both fall out of
+the comparisons below; no new rate verdict is drawn from this dispatch.
+
+Written before the dispatch (in the item's log) and copied here: (1) per-request
+user-mode instructions, head over base for mset, with set as the control and
+the twin as the noise: more instructions in head than base, and more than the
+twin differs, would say the code does more; equal instructions with more
+cycles, L1 instruction-cache misses or branch misses would say layout or
+front end; no difference in any would say this set of counters cannot tell.
+(2) The perf profile of mset against set: whether `update_access`,
+`mset_body`, `refresh_access` or the `MSET` write loop got heavier. (3) This
+dispatch's mset rate is recorded and neither enters the verdict nor overturns
+Run A's rejection.
+
+Run [40057908485](https://github.com/Ming-Research/Firn-wf/actions/runs/40057908485),
+`redis-bench.yml` mode `compare` on the 14900K at the head of the branch
+(74ca257, which differs from 5a0a1b9 only in measuring tooling): `base` 05f7e89,
+`head` and `head-twin` 5a0a1b9, tests `mset` and `set`, depth 1, server CPUs 2
+and 4, client CPUs 16-31, 18 passes of 5 seconds for the rates, then a profile
+of each image and 6 passes of `perf stat` (user-mode instructions, cycles,
+L1-icache-load-misses, branch-misses of the server, divided by the requests of
+the pass, the order of the images alternating). The images are those of Run A's
+commits built again: `base` 4e20c1e56df5 (Run A: 540d71af8a4f) and `head` and
+`head-twin` 212f34302ace (Run A: 4850a10247e4), the same release
+`wf-af7665be672d` in both dispatches. Two builds of one commit differ in
+bytes; the section "Two builds of each commit" below examines where.
+
+Per request, head/base and twin/base medians over the 6 passes, the range of
+the 6 in brackets (`compare-counters.csv`; the twin is the same binary as head):
+
+| test | counter | base median | head/base | twin/base |
+| --- | --- | --- | --- | --- |
+| mset | instructions | 14,820 | 1.0020 (1.0008-1.0025) | 1.0015 (1.0006-1.0018) |
+| mset | cycles | 6,906 | 1.0021 (0.9995-1.0343) | 1.0002 (0.9811-1.0125) |
+| mset | L1i misses | 538.6 | 1.0015 (0.9858-1.0236) | 0.9980 (0.9818-1.0044) |
+| mset | branch misses | 19.9 | 1.0038 (0.9875-1.0675) | 1.0048 (0.9657-1.0404) |
+| set | instructions | 4,703 | 1.0010 (1.0005-1.0017) | 1.0006 (0.9996-1.0028) |
+| set | cycles | 2,963 | 1.0059 (0.9916-1.0245) | 1.0048 (0.9645-1.0155) |
+| set | L1i misses | 443.6 | 1.0171 (1.0086-1.0258) | 1.0138 (0.9711-1.0299) |
+| set | branch misses | 1.5 | 1.0298 (1.0090-1.0498) | 1.0078 (0.9828-1.0745) |
+
+- Instructions: the 5a0a1b9 binary executes about 29 more user-mode
+  instructions per `MSET` (ten keys) and about 5 more per `SET` (one key), in
+  all 6 passes, and the twin agrees with head to 0.04%. That is about 3
+  instructions per key, which is what the added `if client^.no_touch` in
+  `update_access` costs (a load, a test and a branch; deduced from the diff,
+  the instruction count was not split by function).
+- Cycles, L1i misses and branch misses: the medians of head and of twin over
+  base lie inside the spread of the 6 passes of either (mset cycles: 1.0021
+  and 1.0002 against spreads of 0.98 to 1.03), in both tests; the cycles median
+  (1.0021) follows the instruction median (1.0020). These counters cannot tell
+  a layout difference at this size.
+- Profile (one perf record per image, about 50 G cycles each): the share of
+  `wf_commands.update_access` in mset is 0.18% (base), 0.28% (head) and 0.24%
+  (twin), in set 0.04%, 0.05% and 0.06%. No other firn symbol of `mset`
+  moves more between base and head than between head and twin (the largest,
+  `wf_server.serve.resume` +0.155 G cycles head over base, `wf_cmap_hold_take`
+  +0.152 G twin over head); `mset_body` is 2.87%, 2.79% and 3.02%.
+- Rates of this dispatch (not entering a verdict): mset head/base median 1.0005,
+  95% interval 0.9836-1.0174 (summary.py ratios over 18 passes), head slower
+  than base in 9 of 18 passes and the twin in 10; median server CPU per request
+  base 3.279, head 3.294 and twin 3.289 microseconds. set head/base 1.0025,
+  interval 0.9953-1.0098. The mset interval holds both 1 and Run A's 0.9906,
+  so this dispatch did not detect a difference and neither confirms nor
+  contradicts Run A.
+
+Reading: about 0.2% of Run A's 0.9% mset deficit is the added NO-TOUCH test
+(instruction count +0.2% and cycles following it; the rate effect itself is
+deduced, not separated). The rest (0.7%) is not attributed: no counter or
+symbol separates the two binaries beyond what the twin shows, and a second pair
+of builds of the same two commits gave a ratio of 1.0005 with an interval that
+holds both 1 and 0.9906. That the two rate results differ because the builds
+differ in code layout is not supported: the next section shows that two builds
+of one commit have the same code.
+
+#### Two builds of each commit
+
+Question: do two builds of one commit differ in code, so that a rate
+difference between dispatches could come from the build? The comparison was
+asked for in the item's log before it was made: how many bytes differ, in which
+section, and whether `.text` changed. The answer is "yes" if the `.text` size,
+a symbol address or an opcode differs, and "no" if the section headers and the
+symbol table are equal and the instruction streams differ only in operands that
+name data.
+
+Run [40060308360](https://github.com/Ming-Research/Firn-wf/actions/runs/40060308360),
+`redis-bench.yml` mode `build` on a GitHub-hosted runner at c125af8, `base` and
+`base2` both 05f7e89, `head` and `head2` both 5a0a1b9, each name built in a
+worktree of its own with the release `wf-af7665be672d`; the images were
+compared with `cmp -l`, a small ELF reader over the section headers and
+`objdump -d`. The builds were on a hosted runner, not the 14900K, whose builds
+were not kept, so this says nothing about differences that only that machine's
+builds would show.
+
+| pair | bytes | bytes differing | `.rodata` | `.text` | build id | `.rela.dyn` |
+| --- | --- | --- | --- | --- | --- | --- |
+| base, base2 | 1,985,984 | 903 | 857 | 24 | 20 | 2 |
+| head, head2 | 2,023,440 | 4,007 | 3,583 | 379 | 20 | 25 |
+
+For both pairs the section headers and the symbol table are equal, so every
+function has the same address and size; the disassembly has the same number of
+lines, the same address on each, and the same mnemonic on each. The only
+instructions whose text differs are `leaq` with an address relative to `%rip`:
+22 in the base pair and 324 in the head pair, each loading the address of a
+string in `.rodata` that is a few tens of bytes elsewhere in the other build.
+Those strings are listed in another order in `.rodata`; one of them is the
+compiler's temporary directory, named with its process number
+(`/tmp/whitefootc-10706-0/concurrent_map.c` in one head build,
+`/tmp/whitefootc-12836-0/concurrent_map.c` in the other). The `.text` bytes
+that differ are the displacements of those `leaq` instructions.
+
+Reading: two builds of one commit have the same code, at the same addresses, so
+a rate difference between builds of one commit does not come from code layout;
+the only difference is where read-only strings sit, and whether any of them is
+read on the MSET path was not checked. `base` and `head` are different sources
+and differ in code layout (`.text` 1,712,029 and 1,747,101 bytes); this
+comparison cannot say whether that layout accounts for any part of Run A's mset
+cell.
+
+#### Run B1 on the merged head
+
+Run [40060408858](https://github.com/Ming-Research/Firn-wf/actions/runs/40060408858),
+mode `workloads` with `workload_images`, firn only: `base` 05f7e89, `head` and
+`head-twin` 5a0a1b9, tests `limiter-tx` and `setmany-tx`, 50 connections,
+server CPUs 2 and 4, client CPUs 16-31, 18 passes of 10 seconds, at c125af8,
+`summary.py workloads`. No sample was marked client-limited: the median client
+work fraction was 0.26 in `limiter-tx` and 0.16 in `setmany-tx`, with the
+largest 0.267, for every line.
+
+| workload | rate base / head / twin | head/base median | head/base 95% interval | twin/head 95% interval | twin half-width | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| limiter-tx | 609.9k / 606.5k / 611.1k per second | 0.9927 | 0.9882-1.0121 | 0.9961-1.0143 | 0.91% | no detected change |
+| setmany-tx | 341.9k / 337.2k / 336.4k per second | 0.9877 | 0.9746-0.9923 | 0.9828-1.0152 | 1.62% | rejected (wholly slower) |
+
+`setmany-tx` (`MULTI`, one `MSET` of three keys, three `EXPIRE`, `EXEC`): head
+was slower than base in 16 of the 18 passes (head/base per pass 0.943 to
+1.004), the twin in 13; median p99 0.211, 0.222 and 0.223 ms for base, head and
+twin. The twin, the same binary as head, sits as far below base as head does, as
+in Run A's mset cell. `limiter-tx` (`MULTI`, `INCRBY`, `PTTL`, `EXEC`) has the
+same `EXEC` change and shows no detected change (head slower in 11 passes, the
+twin in 7). A fixed cost per `EXEC` would weigh more on `limiter-tx`, whose
+transaction is shorter (4 commands at 609.9k a second against 6 at 341.9k), so
+the `EXEC` change alone does not explain `setmany-tx` (deduced; `limiter-tx`'s
+interval does not exclude a 1% slowdown). Per transaction `limiter-tx` looks up
+two keys and `setmany-tx` six. The first measurement's `setmany-tx` at 9b514d5
+was 0.9927 (0.9761-1.0038, 12 pooled passes of two dispatches), no detected
+change.
+
+Taken with Run A, two cells are rejected, mset and `setmany-tx`, and both run
+`MSET`. Among the 22 cells of Run A and B1 the chance that at least two fall
+wholly on the slow side with no real difference is about 10% (deduced from
+`1 - 0.975^22 - 22 * 0.025 * 0.975^21`, each cell independent and its interval
+exact). The size of each rejected cell and the cause, 0.2% of which is the
+NO-TOUCH test, go to the owner on card firn-q-mset-regression.
+
+#### Run B2 on the merged head
+
+Run [40072228392](https://github.com/Ming-Research/Firn-wf/actions/runs/40072228392),
+mode `workloads` with `workload_images`, at ee2dcf4: `head` and `head-twin`
+5a0a1b9, Redis 7.2.16, Valkey 9.1.2, Dragonfly v2.0.2 and Garnet 2.2.3 (the
+newest stable release of each when the run was made), tests `handshake` and
+`client-list`, 50 connections, depth 1, server CPUs 2 and 4, client CPUs 16-31,
+12 passes of 10 seconds, `summary.py workloads` (its per-pass interval against
+the fastest rival is new in this change, so the table's intervals were first
+computed with a short script that gave the same figures). Medians over the 12
+passes:
+
+| handshake | rate per second | p99 (ms) | client work fraction |
+| --- | --- | --- | --- |
+| firn (head) | 23.26k | 5.311 | 0.985 |
+| firn (head-twin) | 23.31k | 5.335 | 0.984 |
+| Redis 7.2.16 | 23.42k | 5.260 | 0.979 |
+| Valkey 9.1.2 | 23.25k | 5.278 | 0.979 |
+| Dragonfly v2.0.2 | 21.97k | 5.361 | 0.962 |
+| Garnet 2.2.3 | 20.87k | 5.258 | 0.971 |
+
+| CLIENT LIST | rate per second | firn / rival | p99 (ms) | client work fraction |
+| --- | --- | --- | --- | --- |
+| firn (head) | 127.6k | | 0.704 | 0.085 |
+| firn (head-twin) | 127.5k | 1.001 | 0.732 | 0.085 |
+| Redis 7.2.16 | 34.6k | 3.693 | 2.455 | 0.036 |
+| Valkey 9.1.2 | 28.3k | 4.522 | 3.008 | 0.034 |
+| Dragonfly v2.0.2 | 23.9k | 5.339 | 4.556 | 0.021 |
+| Garnet 2.2.3 | 219.8k | 0.579 | 0.621 | 0.152 |
+
+Rule 2, the handshake against the fastest rival, which is Redis 7.2.16. The
+cell is client-limited, the median work fraction being 0.985 for firn and 0.979
+for Redis, both above 0.90 (every line stayed between 0.951 and 0.992 over the
+passes), so it asks only that firn is not behind. The head/Redis median is
+0.9945 (firn slower in 9 of the 12 passes) and its 95% interval 0.9849-1.0048
+contains 1, so the interval is not wholly under 1 and the condition holds. The
+shortfall of 0.55% is smaller than the twin's half-width of 1.45% (twin/head
+0.9837-1.0125), so it is reported undecided. Against Valkey the ratio is 1.0010
+(0.9996-1.0054), against Dragonfly 1.0608 (1.0503-1.0711) and against Garnet
+1.1143 (1.1040-1.1301). The p99 is not judged in a client-limited cell: 5.311
+ms for firn against 5.260 ms for Redis.
+
+Rule 3, `CLIENT LIST`. Against the fastest rival other than Garnet, Redis, firn
+is 3.693 times faster (95% interval 3.669-3.720), with a p99 of 0.704 ms
+against 2.455 ms; against Valkey 4.522 (4.484-4.548) with 3.008 ms, against
+Dragonfly 5.339 (5.304-5.377) with 4.556 ms. These are the first measurement's
+3.7, 4.5 and 5.3, so the merged accept and dispatch paths do not cost
+`CLIENT LIST`. Against Garnet firn is 0.579 times as fast (0.573-0.588), its
+p99 0.704 ms against 0.621 ms, reported and not judged, as owner card
+firn-client-merge-perf ruled; the gap is the work of firn-client-list-garnet.
+
+Twin half-widths of this run: handshake 1.45% (1.04% in the first measurement),
+`CLIENT LIST` 0.54% (the same). `summary.py` prints "3 criteria not met": the
+`CLIENT LIST` rate and p99 against Garnet, and the handshake median 0.993
+(its own median-only check, which rule 2 replaces by the interval above).
+
+#### Runs C1 and C2: is the shortfall stable, and is the NO-TOUCH test its cause?
+
+Written before the runs. Run A rejected mset and Run B1 rejected `setmany-tx`,
+each in a dispatch of its own; the attribution dispatch did not detect mset
+slower. Two questions: does each shortfall show again in a dispatch built for
+it, and if it does, does removing the NO-TOUCH test from `update_access` give
+it back? The instruction counts say the test costs about 0.2% of an MSET
+(29 more instructions of 14,820); a rate effect larger than that would mean the
+test costs more than its instructions.
+
+Images, built in one dispatch each: `base` 05f7e89, `head` and `head-twin`
+5a0a1b9, and `variant`, commit 0f45bbf on branch
+`claude/client-handshake-notouch-variant`, which is 5a0a1b9 with the three
+lines of `update_access` in `firn/commands/access.wf` that return early under
+CLIENT NO-TOUCH removed. The variant is for measuring only; it answers wrongly
+for a connection in NO-TOUCH mode, which no measured workload uses, and its
+branch was deleted after the runs.
+
+- Run C1, `redis-bench.yml` mode `compare` on the 14900K: test `mset`, depth 1,
+  server CPUs 2 and 4, client CPUs 16-31, 36 passes of 5 seconds, profile off;
+  `summary.py ratios` for `base`/`head` with the twin, `head`/`variant` and
+  `base`/`variant`. About 20 minutes.
+- Run C2, mode `workloads` with `workload_images`, firn only: tests
+  `setmany-tx` and `limiter-tx`, 50 connections, the same CPUs, 36 passes of 10
+  seconds; `summary.py workloads` for the same three pairs. `limiter-tx`, a
+  transaction of `INCRBY` and `PTTL` that Run B1 did not reject, is the control:
+  reported and not read. About 55 minutes.
+
+Per cell of `mset` and `setmany-tx`, with H the 95% interval of head/base, V of
+variant/head, W of variant/base and T of twin/head (the mean log ratio over the
+passes, Student's t, as in the rules above), read once:
+
+0. T excludes 1: this run's noise did not settle for the cell; it is not read.
+1. H contains 1: the shortfall is not detected in this dispatch; it is at most
+   1 minus the lower end of H in this dispatch (not shown absent). V and W are
+   reported.
+2. H is wholly under 1, V wholly above 1 and W contains 1: the NO-TOUCH test
+   accounts for the shortfall, of the size of V.
+3. H is wholly under 1, V wholly above 1 and W wholly under 1: the test accounts
+   for the part of the size of V, and the shortfall left is the interval W.
+4. H is wholly under 1 and V wholly under 1: the variant is slower than head
+   though it does less work, so a change of three instructions moves the rate by
+   about the size of V and the shortfall is not the test; code placement is
+   the candidate and is not tested.
+5. H is wholly under 1 and V contains 1: the test cannot be told from nothing;
+   it accounts for at most the upper end of V minus 1, and the cause is
+   undecided.
+
+What would reject the proposal that the test causes the shortfall: readings 4
+and 5 with H wholly under 1, or reading 1. No further passes are added whatever
+the result. The half-widths to expect, from the 18-pass half-widths of Run A
+and B1 scaled by the square root of 18/36 (deduced): H about 0.35% for mset and
+0.62% for `setmany-tx`, and T of `setmany-tx` about 1.15% (T was 1.62% in B1).
+So unless the shortfall or the test's share is about that size, reading 5 is
+the likely one for V, and it is reported as such.
+
+##### Run C1 on `mset`
+
+Run [40089657162](https://github.com/Ming-Research/Firn-wf/actions/runs/40089657162),
+mode `compare` on the 14900K, run at 30de5d8 (the dispatching checkout, which
+differs from 5a0a1b9 only by `main`'s release-packaging files and the record),
+images `base` 05f7e89, `head` and `head-twin` 5a0a1b9, `variant` 0f45bbf; test
+`mset`, depth 1, server CPUs 2 and 4, client CPUs 16-31, 36 passes of 5
+seconds, profile off, `summary.py ratios` once per pair. No sample was
+client-limited (client busy fraction at most 0.33).
+
+| image | rate per second (median) | p99 (ms, median) | slower than `base` in |
+| --- | --- | --- | --- |
+| base | 606.7k | 0.099 | |
+| head | 604.1k | 0.103 | 26 of 36 passes |
+| head-twin | 604.9k | 0.103 | 19 of 36 passes |
+| variant | 605.3k | 0.099 | 21 of 36 passes |
+
+| pair | median | 95% interval | verdict |
+| --- | --- | --- | --- |
+| H, head/base | 0.9950 | 0.9902-0.9978 | wholly under 1 |
+| T, twin/head | 1.0018 | 0.9939-1.0057 | contains 1 |
+| V, variant/head | 1.0044 | 0.9970-1.0069 | contains 1 |
+| W, variant/base | 0.9967 | 0.9911-1.0008 | contains 1 |
+
+Reading. T contains 1 (reading 0 does not apply), H does not, V contains 1:
+reading 5. The `mset` shortfall shows again in a dispatch built for it, 0.50%
+at the median and between 0.22% and 0.98% by the interval, which overlaps
+Run A's 0.9906 (0.9819-0.9947 on 12 passes). Removing the NO-TOUCH test moves
+the rate by +0.44% at the median, with an interval from -0.30% to +0.69%: the
+data cannot tell the test from nothing, and they cannot exclude that it is the
+whole shortfall (the upper end of V, 0.69%, is above the shortfall of 0.50%).
+By the criterion written before the run, reading 5 with H wholly under 1 is one
+of the two results that reject the proposal that the test causes the
+shortfall; what the data support is only that removing the test changes the
+rate by at most 0.69 percentage points, more than the whole shortfall of
+0.50%, so the cause is undecided. The half-widths were as predicted for H
+(0.38% against about 0.35%) and wider for T (0.59%). The instruction counts
+of the attribution run (29 more of 14,820 per `MSET`, 0.2%) lie inside V.
+
+##### Run C2 on `setmany-tx`
+
+Run [40092094599](https://github.com/Ming-Research/Firn-wf/actions/runs/40092094599),
+mode `workloads` with `workload_images`, firn only, run at 44129dc (the
+dispatching checkout; the images are the same four commits as in C1): tests
+`setmany-tx` and `limiter-tx`, 50 connections, server CPUs 2 and 4, client CPUs
+16-31, 36 passes of 10 seconds, `summary.py workloads` once per pair. No sample
+was client-limited (median client work fraction 0.16 in `setmany-tx`, 0.26 in
+`limiter-tx`, at most 0.27).
+
+| image | `setmany-tx` rate per second | p99 (ms) | slower than `base` in | `limiter-tx` rate per second | p99 (ms) | slower than `base` in |
+| --- | --- | --- | --- | --- | --- | --- |
+| base | 339.9k | 0.222 | | 612.0k | 0.099 | |
+| head | 337.8k | 0.222 | 25 of 36 passes | 607.4k | 0.104 | 22 of 36 passes |
+| head-twin | 336.2k | 0.223 | 22 of 36 passes | 606.5k | 0.108 | 23 of 36 passes |
+| variant | 336.1k | 0.224 | 24 of 36 passes | 607.8k | 0.107 | 24 of 36 passes |
+
+| pair | `setmany-tx` median | 95% interval | `limiter-tx` median | 95% interval |
+| --- | --- | --- | --- | --- |
+| H, head/base | 0.9949 | 0.9807-1.0075, contains 1 | 0.9939 | 0.9809-1.0029, contains 1 |
+| T, twin/head | 0.9991 | 0.9891-1.0158, contains 1 | 0.9984 | 0.9904-1.0096, contains 1 |
+| V, variant/head | 1.0008 | 0.9890-1.0116, contains 1 | 1.0006 | 0.9811-1.0068, contains 1 |
+| W, variant/base | 0.9930 | 0.9838-1.0049, contains 1 | 0.9910 | 0.9711-1.0007, contains 1 |
+
+Reading of `setmany-tx`. T contains 1, so the cell counts (reading 0 does not
+apply). H contains 1: reading 1. The shortfall of Run B1 (0.9877,
+0.9746-0.9923) is not detected in this dispatch; it is at most 1.93% (1 minus
+the lower end of H), and the median, 0.51% slower, is below the cell's noise.
+This does not show it absent. V and W contain 1 as well and are reported
+only. The half-widths were larger than predicted before the run: H 1.34%
+against about 0.62%, T 1.34% against about 1.15%; this dispatch's `setmany-tx`
+is noisier than a scaling of B1's 18 passes gives.
+
+`limiter-tx`, the control (a transaction of `INCRBY` and `PTTL`, not read):
+H 0.9939 (0.9809-1.0029), as in B1 (0.9927, 0.9882-1.0121). It does not detect
+a change either, and its median is also 0.6% below 1.
+
+Taken with C1, `mset` has a shortfall of about 0.5% that shows again in a
+dispatch built for it, whose cause the variant does not isolate; `setmany-tx`
+has one rejection (B1) that the dispatch built for it does not reproduce.

@@ -7,6 +7,9 @@ alias KeyHash = pkg::bytes::KeyHash;
 alias byte_at = pkg::bytes::byte_at;
 alias bytes_order = pkg::bytes::bytes_order;
 alias bytes_new = pkg::bytes::bytes_new;
+alias bytes_boxed = pkg::bytes::bytes_boxed;
+alias bytes_copy = pkg::bytes::bytes_copy;
+alias Client = pkg::protocol::Client;
 alias priority_queue_len = std::collections::priority_queue::priority_queue_len;
 alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
 alias priority_queue_peek = std::collections::priority_queue::priority_queue_peek;
@@ -72,8 +75,11 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let beside = shared_new::<ServerState>(value: move server);
   let pool = pkg::script_pool::new_pool();
   let scripts = shared_new::<pkg::script_pool::EnginePool>(value: move pool);
+  let records = box_slots_new::<ClientRecord>(capacity: 16_u64);
+  let table = ClientTable(records: move records);
+  let clients = shared_new::<ClientTable>(value: move table);
   let pubsub = pkg::connection_events::hub_new();
-  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, pubsub: move pubsub, logging: logging);
+  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, clients: move clients, pubsub: move pubsub, logging: logging);
 }
 
 fn keyspace_share(store: &Keyspace) -> made: Keyspace reads(store) {
@@ -88,8 +94,9 @@ fn keyspace_logging(store: &Keyspace, logging: Bool) -> made: Keyspace reads(sto
   let kept = shared_share::<Meta>(shared: &store^.meta);
   let beside = shared_share::<ServerState>(shared: &store^.server);
   let scripts = shared_share::<pkg::script_pool::EnginePool>(shared: &store^.scripts);
+  let clients = shared_share::<ClientTable>(shared: &store^.clients);
   let pubsub = pkg::connection_events::hub_share(hub: &store^.pubsub);
-  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, pubsub: move pubsub, logging: logging);
+  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, clients: move clients, pubsub: move pubsub, logging: logging);
 }
 
 fn expired(expires: u64, now: u64) -> reached: Bool pure {
@@ -518,6 +525,103 @@ fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
       std::time::cancel_fire(source: &source);
     }
     None() => {
+    }
+  }
+  return unit;
+}
+
+fn client_table_position(table: &ClientTable, id: u64) -> position: u64 reads(table) {
+  doc "The lower bound of id in the client table, whose records stay in client-number order: binary search returns the index of its first record numbered id or more, or the table's length when there is none.";
+  let count = table^.records.inner.len;
+  let lower = 0_u64;
+  let upper = count;
+  loop @find (
+    invariant ordered: lower <= upper,
+    invariant bounded: upper <= count
+  ) {
+    if lower >= upper {
+      return lower;
+    }
+    let last = upper - 1_u64;
+    let span = last - lower;
+    let half = span / 2_u64;
+    let middle = lower + half;
+    let number = table^.records.inner[middle].id;
+    if number < id {
+      set lower = middle + 1_u64;
+    } else {
+      set upper = middle;
+    }
+  }
+}
+
+fn client_record(client: &Client) -> made: ClientRecord reads(client) {
+  doc "The facts of a connection that CLIENT LIST shows to the other connections, copied into a record of their own.";
+  let addr_copy = bytes_copy(bytes: &client^.addr);
+  let addr = bytes_boxed(bytes: move addr_copy);
+  let laddr_copy = bytes_copy(bytes: &client^.laddr);
+  let laddr = bytes_boxed(bytes: move laddr_copy);
+  let name_copy = bytes_copy(bytes: &client^.name);
+  let name = bytes_boxed(bytes: move name_copy);
+  let lib_name_copy = bytes_copy(bytes: &client^.lib_name);
+  let lib_name = bytes_boxed(bytes: move lib_name_copy);
+  let lib_ver_copy = bytes_copy(bytes: &client^.lib_ver);
+  let lib_ver = bytes_boxed(bytes: move lib_ver_copy);
+  return ClientRecord(id: client^.id, since_us: client^.since_us, resp: client^.resp, addr: move addr, laddr: move laddr, name: move name, lib_name: move lib_name, lib_ver: move lib_ver);
+}
+
+fn client_publish(table: &ClientTable, record: ClientRecord) -> result: unit writes(table) {
+  doc "Places a connection's owned record into the caller-held table, replacing its earlier record and preserving client-number order.";
+  let position = client_table_position(table: table, id: record.id);
+  if position < table^.records.inner.len {
+    if table^.records.inner[position].id == record.id {
+      let replaced = remove_at(window: &table^.records.inner, index: position);
+    }
+  }
+  if table^.records.inner.len >= table^.records.inner.cap {
+    let doubled = table^.records.inner.cap +wrap table^.records.inner.cap;
+    let target = imax(doubled, 16_u64);
+    if target <= 1073741824_u64 {
+      if target >= table^.records.inner.cap {
+        grow(cell: &table^.records, capacity: target);
+      }
+    }
+  }
+  let inside = position <= table^.records.inner.len;
+  let room = table^.records.inner.len < table^.records.inner.cap;
+  let possible = band(inside, room);
+  if possible {
+    insert_at(window: &table^.records.inner, index: position, value: move record);
+  } else {
+    let dropped = move record;
+  }
+  return unit;
+}
+
+fn client_sync(store: &Keyspace, client: &Client) -> result: unit reads(store), reads(client) waits {
+  doc "Publishes the facts of a connection that CLIENT LIST shows to the other connections, replacing the record the connection published before and keeping the records in the order of their numbers. The record is made before the statement, so the table is held only to place it.";
+  let record = client_record(client: client);
+  atomic table = &store^.clients {
+    client_publish(table: table, record: move record);
+  }
+  return unit;
+}
+
+fn client_sync_held(table: &ClientTable, client: &Client) -> result: unit reads(client), writes(table) {
+  doc "Publishes the connection's current facts into the caller-held table without waiting, so EXEC publishes changed names and library metadata before releasing the same statement that commits its key changes.";
+  let record = client_record(client: client);
+  client_publish(table: table, record: move record);
+  return unit;
+}
+
+fn client_forget(store: &Keyspace, id: u64) -> result: unit reads(store) waits {
+  doc "Removes the record of the connection numbered id, if the table holds one.";
+  atomic t = &store^.clients {
+    let position = client_table_position(table: t, id: id);
+    if position < t^.records.inner.len {
+      if t^.records.inner[position].id == id {
+        let gone = remove_at(window: &t^.records.inner, index: position);
+      }
     }
   }
   return unit;

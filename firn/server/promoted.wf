@@ -317,6 +317,10 @@ fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown
           std::time::cancel_fire(source: shutdown);
         }
         pkg::commands::record_memory_peak(store: store, client: &client);
+        if client.changed {
+          set client.changed = False();
+          pkg::store::client_sync(store: store, client: &client);
+        }
       } else if parsed.state != 6_u64 {
         pkg::protocol::protocol_error(client: &client, input: bytes, parsed: parsed);
         set client.closing = True();

@@ -661,6 +661,7 @@ pub struct ProgramChild {
     monitor: ProgramMonitor,
     deadline: Instant,
     port: Option<PortLease>,
+    diagnostics_in_failure: bool,
 }
 
 impl std::ops::Deref for ProgramChild {
@@ -702,6 +703,7 @@ impl ProgramChild {
             },
             deadline: Instant::now() + limit,
             port: None,
+            diagnostics_in_failure: false,
         })
     }
 
@@ -758,6 +760,14 @@ impl ProgramChild {
         })
     }
 
+    /// Makes reply-read diagnostics part of the caller's panic payload, so
+    /// the test harness captures them even when direct stderr is omitted.
+    pub fn reply_read_failure(&mut self, what: &str, error: &std::io::Error) -> String {
+        let diagnostic = self.diagnostic_block();
+        self.diagnostics_in_failure = true;
+        format!("{what}: {error}{diagnostic}")
+    }
+
     /// Stops this child and builds the panic report within one shared two
     /// second collection budget. A later Drop never repeats blocking cleanup.
     fn diagnostic_block(&mut self) -> String {
@@ -767,7 +777,7 @@ impl ProgramChild {
 
 impl Drop for ProgramChild {
     fn drop(&mut self) {
-        if std::thread::panicking() {
+        if std::thread::panicking() && !self.diagnostics_in_failure {
             let diagnostic = self.diagnostic_block();
             // A closed or failing stderr must not cause a second panic.
             let _ = std::io::stderr().lock().write_all(diagnostic.as_bytes());
