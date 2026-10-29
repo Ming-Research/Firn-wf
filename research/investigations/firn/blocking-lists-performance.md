@@ -12,22 +12,25 @@
    together, allocates a 64-byte effects buffer and stages the hub's wake-ups,
    and, with the append-only file on, copies the staged effects into it, where
    before it appended in place. The second version (`7a4e4de`) sent there only
-   the writes that can create a list. The third (`12dbbc5`) sends there only a
-   push or move that creates a list on a key where a blocked client waits,
-   `RENAME`, `RENAMENX`, `COPY` and a promoted connection's commands: a push or
-   move that would create a list reads, in its first statement, the bound on
-   the keys blocked clients wait on that Meta keeps (`waiter_keys_bound`) and
-   at zero creates the list in place there; above zero it takes the event hub
-   as well, in a second statement under its own entry hold, asks the registry
-   (`key_awaited` in `firn/commands/blocking-runtime.wf`) whether a client
-   waits on that key, and leaves for `run_list_producer` only if one does
-   (`run_push` and `run_lmove` in `firn/commands/lists.wf`), and the
+   the writes that can create a list. The third (`12dbbc5`, measured at
+   `2d91961`) sends there only a push or move that creates a list on a key
+   where a blocked client waits, `RENAME`, `RENAMENX`, `COPY` and a promoted
+   connection's commands: every push or move that would create a list takes the
+   event hub as well, in a second statement under its own entry hold, asks the
+   registry (`key_awaited` in `firn/commands/blocking-runtime.wf`) whether a
+   client waits on that key, and leaves for `run_list_producer` only if one
+   does (`run_push` and `run_lmove` in `firn/commands/lists.wf`); the
    dispatcher calls them directly, as it called `run_push` in `main`. The
-   third version (`2d91961`) had no bound and took the second statement for
-   every creation. `LINSERT`, `LPUSHX`, `RPUSHX`, the pushes and
-   moves onto a live list and the creating ones where nobody waits append in
-   place, as on `main`. Which of these costs time is measured in the results below,
-   for the earlier versions and for the head that merges (`2d91961`).
+   fourth (the head of the PR after the measurement of `2d91961`) puts a bound
+   in front of that second statement: Meta keeps an upper bound on the keys
+   blocked clients wait on (`waiter_keys_bound`), a push or move that would
+   create a list reads it in its first statement, and at zero creates the list
+   in place there; only above zero does it take the second statement. In both
+   versions `LINSERT`, `LPUSHX`, `RPUSHX`, the pushes and moves onto a live list
+   and the creating ones where nobody waits append in place, as on `main`. Which
+   of these costs time is measured in the results below, for the earlier
+   versions and for the third (`2d91961`); the fourth version's runs are added
+   after they are made.
    The design decision for the staged copy is
    [firn-q-list-producer-staging](../../../design/firn/append-only-file.md),
    ruled A: keep the staged copy, provided this record's measurement shows no
