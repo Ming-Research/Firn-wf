@@ -930,3 +930,40 @@ board with these numbers; nothing in these runs is accepted by this record. An
 information about waiters that costs no shared lock on an AOF-off push has to come
 from what the statement already holds, the key's own entry; a mark left on the key
 by a registration is such a design and is not part of this version.
+
+**F1** (run 40924674431, `compare`, AOF off, `set lpush rpush linsert lmove
+lpush_new`, depths 16 and 1, 6 passes of 5 s, design placement:
+`source=override`, servers 2 and 4, clients 16-31; images `base` `dd8c06c`, `third`
+`2d91961`, `head` `2f2ae10` and `head-twin`; stated above). No cell is
+client-limited, and the interval of `head-twin` against `head` lies across 1 in all
+12 cells. `head`/`base`: `lpush_new` 16 is 0.8421 (0.8220-0.8641; 3347600 and
+2828252 requests/s), inside the interval of A1 (0.8118-0.8532), so the run
+reproduces it; `lpush_new` 1 0.9768 (0.9643-0.9992) and `rpush` 1 0.9796
+(0.9583-0.9964) are wholly slower, `linsert` 16 faster (1.0080), the other 8 cells
+show no change. The 1% to 2% cells do not repeat from run to run (`lpush` 16 was
+slower in A1 and is not here, `rpush` 1 is slower here and was not in A1); the
+creating push at depth 16 repeats at 0.84. `third`/`base`: `lpush_new` 16 0.8533
+(0.8350-0.8753; 2867778 requests/s) and `lpush_new` 1 0.9581 (0.9490-0.9683) are
+wholly slower; `lmove` 16 (1.0358), `linsert` 16 and `set` 16 faster; 7 cells
+without a detected change. `third`/`head`, the comparison asked for:
+
+| test | depth | third/head | 95% interval | head-twin/head, 95% interval |
+|---|---|---|---|---|
+| lpush_new | 16 | 1.0056 | 0.9921-1.0372 | 0.9908, 0.9711-1.0370 |
+| lpush_new | 1 | 0.9786 | 0.9567-0.9968 | 1.0053, 0.9915-1.0169 |
+| lpush | 16 | 1.0195 | 0.9610-1.0667 | 1.0062, 0.9829-1.0380 |
+| rpush | 16 | 1.0123 | 0.9600-1.0645 | 1.0031, 0.9789-1.0410 |
+| lmove | 16 | 1.0098 | 0.9581-1.0704 | 0.9964, 0.9823-1.0443 |
+
+The other 7 cells (`set`, `linsert`, `lmove` 1, `lpush` 1, `rpush` 1) are across 1
+too. The profile of the first `lpush_new` 16 pass (cycles): `base` 55.4 G, `third`
+65.4 G, `head` 66.9 G; `wf__shared_take` is 6.58% in `third` and 8.39% in `head`
+and not among the first symbols of `base` (whose `wf_shared_acquire_as` is 1.68% and
+`wf_shared_unlock_as` 1.27%); in `third` the other two are 1.61% and 2.41%, in
+`head` 7.12% and 4.91%. Reading against the prediction stated above: `third` and
+`head` lie within noise of each other on `lpush_new` at depth 16 (the prediction
+held, and `third`/`head` is not wholly above 1, which would have rejected "the
+fourth is no worse"), and `head`/`base` reproduces A1. With the file off the read of
+the bound buys nothing at depth 16 over the second statement it replaced: both
+versions take the lock of Meta on every creating push, and both lose 15% to 16%;
+at depth 1 the fourth is 2.1% faster (`third`/`head` 0.9786, 0.9567-0.9968).
