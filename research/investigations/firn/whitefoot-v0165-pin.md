@@ -28,6 +28,7 @@ before the run.
 
 The edits change no behavior of firn. The compiler was run only in CI: a
 temporary workflow checked each module of the graph, and a discovery script
+(both deleted before the merge)
 applied the compiler's own repairs round by round in a disposable workspace
 (the compiler reports one redundant condition per function body, so the
 repair needs several rounds) and wrote them as a patch, which was read hunk
@@ -336,8 +337,8 @@ not say:
   these two from chance, and the criterion above does not weigh that. Neither
   cell is slower at depth 1. The cause is not named: `hset` is a `HashMap`
   command and Whitefoot#487 changed that layout, but `lpush` is not, and no
-  profile was taken. The pair is handed to a follow-up item; accepting them
-  for this pull request is a card.
+  profile was taken. The pair is handed to the item `firn-pin-hset-lpush-slow`;
+  merging this pull request with the two regressions is the owner's ruling.
 - **Improvements, 4 cells (about 1.1 expected):** `set` at depth 16 (2.3%
   faster, 1.2% to 3.7%), `lpop` at depth 16 (2.8%, 2.3% to 3.9%), `get` at
   depth 1 (1.5%, 0.5% to 2.8%), `lrange_600` at depth 1 (0.6%, 0.1% to 0.9%).
