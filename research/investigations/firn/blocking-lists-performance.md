@@ -966,4 +966,48 @@ held, and `third`/`head` is not wholly above 1, which would have rejected "the
 fourth is no worse"), and `head`/`base` reproduces A1. With the file off the read of
 the bound buys nothing at depth 16 over the second statement it replaced: both
 versions take the lock of Meta on every creating push, and both lose 15% to 16%;
-at depth 1 the fourth is 2.1% faster (`third`/`head` 0.9786, 0.9567-0.9968).
+at depth 1 the fourth is 2.2% faster (`third`/`head` 0.9786, 0.9567-0.9968).
+
+**F2** (run 40931060690, the same inputs with `aof`: `appendfsync everysec`, the
+servers started with `--appendonly yes`; design placement, `source=override`; no
+cell client-limited). `head`/`base`: `lpush_new` 16 is 1.0024 (0.9606-1.0197;
+2180188 and 2186535 requests/s) and `lpush_new` 1 0.9889 (0.9688-1.0217), so A2 is
+reproduced (1.0123 and 1.0000); the wholly slower cells are the writes onto an
+existing list, as in A2: `lpush` 16 0.9511 (0.9424-0.9754) and `rpush` 16 0.9761
+(0.9657-0.9905), against 0.9816 and 0.9681 there; `set` 1 is faster (1.0044), the
+other 9 cells show no change. `third`/`base`: `lpush_new` 16 0.8971 (0.8804-0.9247;
+1959560 requests/s) and `lpush_new` 1 0.9615 (0.9469-0.9826) are wholly slower, and
+so are `lpush` 16 (0.9671), `lpush` 1 (0.9911), `linsert` 16 (0.9897) and `lmove`
+16 (0.9851). `third`/`head` (the interval of `head-twin` against `head` lies
+across 1 in every cell, 0.9579 with 0.9418-1.0166 the widest from 1 for
+`lpush_new` 16):
+
+| test | depth | third/head | 95% interval |
+|---|---|---|---|
+| lpush_new | 16 | 0.9129 | 0.8896-0.9343 |
+| lpush_new | 1 | 0.9748 | 0.9459-0.9937 |
+| rpush | 16 | 1.0075 | 0.9995-1.0226 |
+| lpush | 16 | 1.0102 | 0.9901-1.0283 |
+| lmove | 16 | 0.9980 | 0.9742-1.0546 |
+
+The other 7 cells are across 1. The profile of the first `lpush_new` 16 pass
+(cycles): `base` 55.7 G, `third` 59.1 G, `head` 54.3 G. With the file on Meta is
+taken by every push, so all three show the lock symbols (`wf_shared_acquire_as`
+12.96%, 10.70% and 11.85%, `wf__shared_take` 9.07%, 9.65% and 8.38%,
+`wf_shared_unlock_as` 7.53%, 7.83% and 7.34%); computed from the shares, the three
+together are 16.5 G in `base`, 16.7 G in `third` and 15.0 G in `head`, and `third`
+has 4.8 G more than `head` in all, of which 1.7 G are in these symbols.
+
+**Reading of F1 and F2.** The prediction held: with the file off `third` and `head`
+are within noise at depth 16, and with the file on `third` is slower. The statement
+"the fourth is no worse than the third" is not rejected in any cell. What the
+fourth version's read of the bound buys over the second statement it replaced, at
+one placement: with the file on, 9.5% of the rate of a push that creates its list at
+depth 16 (`third`/`head` 0.9129, so `head` is 1.095 of `third`) and 2.6% at depth 1;
+with the file off, nothing at depth 16 (1.0056, 0.9921-1.0372; both lose 15% to 16%
+against `main`) and 2.2% at depth 1. The third version loses 10% (file on) and 15%
+(file off) of `main`'s rate at depth 16 on a push that creates its list; the fourth
+loses nothing with the file on and 16% with it off. Whether the fourth version's
+Meta field, its registration bookkeeping and its stale-value correction are worth
+that is the owner's to rule on the open card, which now has both versions measured
+at the same placement.

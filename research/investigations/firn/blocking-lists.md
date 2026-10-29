@@ -70,9 +70,11 @@ and 0.801 (depth 1), with 38.8% of its cycles in the hold ([the second
 run](blocking-lists-performance.md#a1-again-the-narrowed-hold-7a4e4de)). The
 third version took only the entry, the event hub and Meta, in a second
 statement, to ask the registry; it ran that push at 0.857 and 0.960, and 0.931
-and 0.972 with the append-only file on, with about 12% of the cycles (estimated
-from one profile) in the second statement's lock operations ([the third
-run](blocking-lists-performance.md#the-third-version-2d91961)). The cost is
+and 0.972 with the append-only file on, with the clients on the P-cores ([the
+third run](blocking-lists-performance.md#the-third-version-2d91961)); beside the
+fourth version at the design placement it ran 0.853 and 0.958 with the file off
+and 0.897 and 0.962 with it on ([the side-by-side
+runs](blocking-lists-performance.md#the-fourth-version-2f2ae10)). The cost is
 the locks, so a write needs them only when it can make a client ready:
 
 A list write that cannot make a client ready does not need that hold:
@@ -130,6 +132,9 @@ A list write that cannot make a client ready does not need that hold:
   cost (inferred from the compiled instructions and seven one-place variants of
   the push; no counter counted the acquisitions;
   [measurement](blocking-lists-performance.md#the-fourth-version-2f2ae10)).
+  The second statement it replaced cost the same with the file off at depth 16
+  (0.85 of main) and 10% more with the file on (0.90), so the read of the bound
+  saves nothing with the file off and 9.5% of the rate with it on.
   Information about waiters that costs no lock when the file is off would have to
   come from the key's own entry, which a registration would mark; no version of
   this section does that.
