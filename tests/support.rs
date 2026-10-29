@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -29,7 +30,8 @@ impl Drop for LeasedPort {
 
 /// A loopback port reserved against reuse by another test in this process.
 /// Clones share the reservation until the last owner drops it; the operating
-/// system listener is released so the server can bind the port itself.
+/// system claim (`PortClaim`) is released so the server can bind the port
+/// itself. Until it does, nothing listens on the port.
 #[derive(Clone)]
 pub struct PortLease {
     reservation: Arc<LeasedPort>,
@@ -42,19 +44,84 @@ impl PortLease {
     }
 }
 
+/// An operating-system claim on a loopback port: a socket bound to it that
+/// never listens.
+///
+/// The claim must not listen. A child that another thread spawns while the
+/// claim is open copies the socket and keeps the copy until its own exec. A
+/// copy that listens goes on accepting connections after the claim is
+/// dropped, and resets them when the child execs, so a peer that connects to
+/// the port before its server has started sees a reset instead of a refusal.
+/// A bound socket that never listens refuses every connection whichever
+/// process holds a copy.
+struct PortClaim {
+    _socket: OwnedFd,
+    port: u16,
+}
+
+/// Binds a socket to `127.0.0.1:port` as `TcpListener::bind` does, a port of
+/// 0 selecting one, and leaves it unconnected and not listening.
+fn claim_loopback_port(port: u16) -> std::io::Result<PortClaim> {
+    #[repr(C)]
+    struct SocketAddressV4 {
+        family: u16,
+        port: u16,
+        address: [u8; 4],
+        zero: [u8; 8],
+    }
+    unsafe extern "C" {
+        fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
+        fn setsockopt(socket: i32, level: i32, name: i32, value: *const i32, length: u32) -> i32;
+        fn bind(socket: i32, address: *const SocketAddressV4, length: u32) -> i32;
+        fn getsockname(socket: i32, address: *mut SocketAddressV4, length: *mut u32) -> i32;
+    }
+    const AF_INET: i32 = 2;
+    const SOCK_STREAM: i32 = 1;
+    const SOCK_CLOEXEC: i32 = 0o2000000;
+    const SOL_SOCKET: i32 = 1;
+    const SO_REUSEADDR: i32 = 2;
+    let length = std::mem::size_of::<SocketAddressV4>() as u32;
+    // SAFETY: each call passes a live descriptor and pointers to values that
+    // outlive it; the new descriptor is owned by the OwnedFd at once.
+    unsafe {
+        let descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let owned = OwnedFd::from_raw_fd(descriptor);
+        let enable = 1;
+        if setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &enable, 4) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut address = SocketAddressV4 {
+            family: AF_INET as u16,
+            port: port.to_be(),
+            address: [127, 0, 0, 1],
+            zero: [0; 8],
+        };
+        if bind(descriptor, &address, length) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut written = length;
+        if getsockname(descriptor, &mut address, &mut written) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(PortClaim { _socket: owned, port: u16::from_be(address.port) })
+    }
+}
+
 /// Leases an operating-system-selected port not held by any other test.
 /// Keep the lease across every server lifetime, including restarts on that
 /// port; `ProgramChild::with_port` also retains it for a single child.
 pub fn lease_port() -> PortLease {
-    // Keep each candidate's listener bound until the registry has accepted
-    // or refused it. A refused listener is dropped before choosing again.
-    let mut listener = None;
+    // Keep each candidate's claim until the registry has accepted or refused
+    // it. A refused claim is dropped before choosing again.
+    let mut claim = None;
     lease_from(|| {
-        drop(listener.take());
-        let bound = std::net::TcpListener::bind(("127.0.0.1", 0))
-            .expect("bind loopback port for lease");
-        let port = bound.local_addr().expect("leased listener address").port();
-        listener = Some(bound);
+        drop(claim.take());
+        let bound = claim_loopback_port(0).expect("claim loopback port for lease");
+        let port = bound.port;
+        claim = Some(bound);
         port
     })
 }
@@ -64,10 +131,10 @@ pub fn lease_port() -> PortLease {
 pub(super) fn lease_named_port(port: u16) -> PortLease {
     let mut ports = locked(LEASED_PORTS.get_or_init(|| Mutex::new(HashSet::new())));
     assert!(!ports.contains(&port), "documented port {port} is already leased");
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+    let claim = claim_loopback_port(port)
         .unwrap_or_else(|error| panic!("reserve documented port {port}: {error}"));
     ports.insert(port);
-    drop(listener);
+    drop(claim);
     PortLease { reservation: Arc::new(LeasedPort { port }) }
 }
 
@@ -955,6 +1022,98 @@ mod tests {
             );
         }
         assert_eq!(ports.len(), 400);
+    }
+
+    #[repr(C)]
+    struct Timespec {
+        seconds: i64,
+        nanoseconds: i64,
+    }
+
+    unsafe extern "C" {
+        fn nanosleep(request: *const Timespec, remaining: *mut Timespec) -> i32;
+    }
+
+    /// Runs `/bin/true` after a pause between fork and exec, the stretch in
+    /// which a child still holds a copy of every descriptor that was open
+    /// when it was forked.
+    fn run_slow_exec_child() {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("/bin/true");
+        // SAFETY: the closure calls only nanosleep, which is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                let pause = Timespec { seconds: 0, nanoseconds: 2_000_000 };
+                nanosleep(&pause, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        let status = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn slow-exec witness");
+        assert!(status.success(), "slow-exec witness: {status:?}");
+    }
+
+    /// Nothing listens on a leased port until its server does, so a peer that
+    /// connects to it must be refused. A child that another thread forks while
+    /// a lease is being taken holds a copy of the lease's socket until its own
+    /// exec; if that socket listens, the child accepts the peer and resets it
+    /// at the exec, which is how a server's readiness check once read
+    /// "Connection reset by peer" before the server had started.
+    #[test]
+    fn leased_port_refuses_connections_while_a_concurrent_spawn_runs() {
+        const SPAWNERS: usize = 4;
+        const LEASERS: usize = 2;
+        const LEASES_PER_THREAD: usize = 5_000;
+        let stop = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(std::sync::Barrier::new(SPAWNERS + LEASERS));
+        let spawners: Vec<_> = (0..SPAWNERS)
+            .map(|_| {
+                let (stop, ready) = (Arc::clone(&stop), Arc::clone(&ready));
+                std::thread::spawn(move || {
+                    ready.wait();
+                    while !stop.load(Ordering::Relaxed) {
+                        run_slow_exec_child();
+                    }
+                })
+            })
+            .collect();
+        let leasers: Vec<_> = (0..LEASERS)
+            .map(|_| {
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    ready.wait();
+                    let mut accepted = Vec::new();
+                    for _ in 0..LEASES_PER_THREAD {
+                        let lease = lease_port();
+                        let address = std::net::SocketAddr::from(([127, 0, 0, 1], lease.port()));
+                        match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                            outcome => accepted.push((lease.port(), format!("{outcome:?}"))),
+                        }
+                    }
+                    accepted
+                })
+            })
+            .collect();
+        let leased: Vec<_> = leasers.into_iter().map(|thread| thread.join()).collect();
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().expect("spawning thread");
+        }
+        let accepted: Vec<_> = leased
+            .into_iter()
+            .flat_map(|leases| leases.expect("leasing thread"))
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "{} of {} connections to freshly leased ports were not refused: {accepted:?}",
+            accepted.len(),
+            LEASERS * LEASES_PER_THREAD
+        );
     }
 
     #[test]
