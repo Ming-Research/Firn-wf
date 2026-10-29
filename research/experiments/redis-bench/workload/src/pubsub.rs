@@ -23,7 +23,7 @@ const READ_CHUNK: usize = 65536;
 /// The server answered a subscription with an unknown-command error: the
 /// workload does not exist for it, which is not a failure of the measurement.
 #[derive(Debug)]
-pub(super) struct Unsupported(String);
+pub(super) struct Unsupported(pub(super) String);
 
 impl std::fmt::Display for Unsupported {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -107,7 +107,7 @@ impl Wire {
 }
 
 // Reads what the socket has into `input` through `scratch`; whether it read.
-fn read_available(socket: &mut TcpStream, input: &mut Vec<u8>, scratch: &mut [u8]) -> Result<bool> {
+pub(super) fn read_available(socket: &mut TcpStream, input: &mut Vec<u8>, scratch: &mut [u8]) -> Result<bool> {
     match socket.read(scratch) {
         Ok(0) => Err("server closed connection".into()),
         Ok(n) => { input.extend_from_slice(&scratch[..n]); Ok(true) }
@@ -176,7 +176,7 @@ fn has_room(next: u64, slowest: u64, depth: usize, window: usize) -> bool {
 
 // Padded to a cache line, so that subscribers' counters do not share one.
 #[repr(align(64))]
-struct Counter(AtomicU64);
+pub(super) struct Counter(pub(super) AtomicU64);
 
 struct Shared {
     // Per subscriber, the messages it has received.
@@ -199,15 +199,15 @@ struct Context {
     window: usize,
 }
 
-struct Accounting {
+pub(super) struct Accounting {
     // Busy time and all loop time. The publisher's busy time is its scans that
     // moved bytes, as for the other workloads. A subscriber thread scans many
     // sockets, most of them empty, so a scan in which any socket moved would
     // make a thread that polls 50 sockets look busy as soon as the server
     // trickles data: its busy time is the reads that returned data and the
     // parsing of what they returned.
-    work: Duration,
-    total: Duration,
+    pub(super) work: Duration,
+    pub(super) total: Duration,
 }
 
 fn publisher_worker(mut p: Publisher, ctx: &Context, begin: Instant, run_for: Duration,

@@ -1,0 +1,276 @@
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias arg = pkg::protocol::arg;
+alias name_is = pkg::bytes::name_is;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_wrong_type = pkg::protocol::reply_wrong_type;
+
+const blocking_word_blpop: Array<u8, 5> = "BLPOP";
+
+const blocking_word_brpop: Array<u8, 5> = "BRPOP";
+
+const blocking_word_brpoplpush: Array<u8, 10> = "BRPOPLPUSH";
+
+const blocking_word_blmove: Array<u8, 6> = "BLMOVE";
+
+const blocking_word_lpop: Array<u8, 4> = "LPOP";
+
+const blocking_word_rpop: Array<u8, 4> = "RPOP";
+
+const blocking_word_lmove: Array<u8, 5> = "LMOVE";
+
+const blocking_timeout_gap: Array<u8, 75> = "ERR blocking timeout conversion is not implemented: firn-req-extended-float";
+
+fn blocking_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "The four blocking list commands, compared over their complete names without accepting a NUL suffix: 201 BLPOP, 202 BRPOP, 203 BRPOPLPUSH and 204 BLMOVE; zero for another name.";
+  if name_is(input: input, start: name.start, length: name.length, word: &blocking_word_blpop[0_u64..5_u64]) {
+    return 201_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &blocking_word_brpop[0_u64..5_u64]) {
+    return 202_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &blocking_word_brpoplpush[0_u64..10_u64]) {
+    return 203_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &blocking_word_blmove[0_u64..6_u64]) {
+    return 204_u64;
+  }
+  return 0_u64;
+}
+
+fn blocking_command(kind: u64) -> blocking: Bool pure {
+  let first = kind >= 201_u64;
+  let last = kind <= 204_u64;
+  return band(first, last);
+}
+
+fn blocking_timeout(input: &[u8], span: Span, client: &Client, time: &Time) -> deadline: Option<u64> reads(input), reads(time), writes(client) {
+  doc "UNIMPLEMENTED extended conversion, tracked by firn-req-extended-float: only the literal byte 0 currently returns Redis's infinite-wait sentinel. Every other input receives an explicit Firn capability error, never a fabricated Redis validation error. The completed function must match strtold, separately rounded extended multiplication by 1000, ceill and signed deadline overflow; it must not use f64 or exact decimal rounding. The caller invokes this once before key access and preserves the deadline across wakes.";
+  set client^.now = time^.check;
+  if span.length == 1_u64 {
+    if span.start < input^.len {
+      if input^[span.start] == 48_u8 {
+        return Some<u64>(value: 0_u64);
+      }
+    }
+  }
+  reply_error(client: client, word: &blocking_timeout_gap[0_u64..75_u64]);
+  return None<u64>();
+}
+
+fn blocking_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> deadline: Option<u64> reads(input), reads(args), reads(time), writes(client) {
+  doc "Parses an admitted blocking list command once: BLMOVE directions precede the timeout, which precedes key lookups. Arity and kind are checked by admission. None means a complete error reply was written; Some carries the absolute millisecond deadline, with zero meaning no deadline.";
+  if kind == 204_u64 {
+    let valid = lmove_parse(input: input, args: args, client: client);
+    if bnot(valid) {
+      return None<u64>();
+    }
+  }
+  let final = args^.inner.len -sat 1_u64;
+  let timeout_span = arg(args: args, index: final);
+  return blocking_timeout(input: input, span: timeout_span, client: client, time: time);
+}
+
+fn blocking_list_nonempty(slot: &Option<Entry>) -> ready: Bool reads(slot) {
+  doc "Whether a previously classified live list has an element. This observation adds no access refresh; pop_body performs the one Redis lookup refresh before mutation.";
+  match slot^ {
+    Some(value: held) => {
+      match held^.value {
+        Items(items: list) => {
+          return list^.inner.len > 0_u64;
+        }
+        Text(bytes: stored) => {
+          return False();
+        }
+        Members(members: stored) => {
+          return False();
+        }
+        Fields(fields: stored) => {
+          return False();
+        }
+        Ranked(ranked: stored) => {
+          return False();
+        }
+        Stream(..) => {
+          return False();
+        }
+      }
+    }
+    None() => {
+      return False();
+    }
+  }
+}
+
+fn blocking_pop_log(effects: &Box<Slots<u8>>, input: &[u8], key: Span, front: Bool, budget: &pkg::store::LogBudget) -> result: unit reads(input), writes(effects), writes(budget) {
+  doc "Records a served BLPOP or BRPOP as the two-argument LPOP or RPOP selected-key command, as Redis 7.2.16 blockingPopGenericCommand rewrites it; no count or timeout is propagated.";
+  let room = key.length +sat 64_u64;
+  pkg::store::log_count(log: effects, count: 2_u64, room: room, budget: budget);
+  if front {
+    pkg::store::log_word(log: effects, word: &blocking_word_lpop[0_u64..4_u64], budget: budget);
+  } else {
+    pkg::store::log_word(log: effects, word: &blocking_word_rpop[0_u64..4_u64], budget: budget);
+  }
+  pkg::store::log_input(log: effects, input: input, span: key, budget: budget);
+  return unit;
+}
+
+fn blocking_pop_try(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> (completed: Bool, appended: u64) reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(effects), writes(client) {
+  doc "Attempts a validated BLPOP or BRPOP under the caller's whole-map hold, visiting original key order including duplicates. Expiry, access refresh, removal and rewrite capture reuse pop_body. A complete key-element array or wrong-type error returns true; absence writes no reply and returns false. The caller owns waiting and effect publication.";
+  let count = args^.inner.len -sat 2_u64;
+  let command_keys = key_set_new(capacity: count);
+  for (step in 0_u64..count) {
+    let index = step + 1_u64;
+    let place = key_bounds(input: input, args: args, index: index);
+    let key = &input^[place.start..place.end];
+    key_set_insert(keys: &command_keys, key: key);
+  }
+  let slots = &keys^[command_keys];
+  let budget = pkg::store::log_budget_new();
+  let appended = 0_u64;
+  set client^.now = time^.check;
+  for (step in 0_u64..count) {
+    let index = step + 1_u64;
+    let place = key_bounds(input: input, args: args, index: index);
+    let key = &input^[place.start..place.end];
+    let rank = pkg::store::key_rank(keys: &command_keys, key: key);
+    if rank < slots^.len {
+      let slot = &slots^[rank];
+      set client^.state = state_absent;
+      set client^.number = 1_u64;
+      set client^.low = 1_i64;
+      if front {
+        set client^.low = 0_i64;
+      }
+      set client^.high = 0_i64;
+      let found = list_kind(slot: slot, now: client^.now);
+      if found == entry_wanted {
+        let nonempty = blocking_list_nonempty(slot: slot);
+        if bnot(nonempty) {
+          refresh_access(journal: journal, key: key, slot: slot, client: client);
+          continue;
+        }
+        reply_array(client: client, count: 2_u64);
+        let key_span = arg(args: args, index: index);
+        reply_bulk_input(client: client, input: input, start: key_span.start, length: key_span.length);
+      }
+      let work = pop_body(sequence: sequence, journal: journal, access_key: key, slot: slot, client: client);
+      let expired_records = mset_lapse_meta(log: effects, logged: logged, lapsed: work.removed, key: key, budget: &budget);
+      set appended = appended +wrap expired_records;
+      if work.changed {
+        if logged {
+          let key_span = arg(args: args, index: index);
+          blocking_pop_log(effects: effects, input: input, key: key_span, front: front, budget: &budget);
+          set appended = appended +wrap 1_u64;
+        }
+        return True(), appended;
+      }
+      if client^.state == state_wrong {
+        reply_wrong_type(client: client);
+        return True(), appended;
+      }
+    }
+  }
+  return False(), appended;
+}
+
+fn blocking_move_log(effects: &Box<Slots<u8>>, kind: u64, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(args), writes(effects), writes(budget) {
+  doc "Records BRPOPLPUSH as RPOPLPUSH source destination and BLMOVE as LMOVE source destination with the original direction bytes, exactly as Redis 7.2.16 lmoveGenericCommand rewrites them; neither records the timeout.";
+  let source = arg(args: args, index: 1_u64);
+  let destination = arg(args: args, index: 2_u64);
+  let key_room = source.length +sat destination.length;
+  let room = key_room +sat 128_u64;
+  if kind == 204_u64 {
+    pkg::store::log_count(log: effects, count: 5_u64, room: room, budget: budget);
+    pkg::store::log_word(log: effects, word: &blocking_word_lmove[0_u64..5_u64], budget: budget);
+  } else {
+    pkg::store::log_count(log: effects, count: 3_u64, room: room, budget: budget);
+    pkg::store::log_word(log: effects, word: &word_rpoplpush[0_u64..9_u64], budget: budget);
+  }
+  pkg::store::log_input(log: effects, input: input, span: source, budget: budget);
+  pkg::store::log_input(log: effects, input: input, span: destination, budget: budget);
+  if kind == 204_u64 {
+    let from = arg(args: args, index: 3_u64);
+    let to = arg(args: args, index: 4_u64);
+    pkg::store::log_input(log: effects, input: input, span: from, budget: budget);
+    pkg::store::log_input(log: effects, input: input, span: to, budget: budget);
+  }
+  return unit;
+}
+
+fn blocking_move_try(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> (completed: Bool, appended: u64) reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(effects), writes(client) {
+  doc "Attempts a validated BRPOPLPUSH or BLMOVE through lmove_body, retaining its same-key behavior, source-before-destination lookup, expiry records and capture. Reestablishes directions from the retained command but never reparses its timeout. An empty source leaves the destination untouched and returns false without an empty reply. A non-empty source whose distinct destination is at the list ceiling is refused by lmove_body before any change; the list-limit error completes the attempt, so the waiter is served that error instead of waiting for room.";
+  let from_head = False();
+  let to_head = True();
+  if kind == 204_u64 {
+    let valid = lmove_parse(input: input, args: args, client: client);
+    if bnot(valid) {
+      return True(), 0_u64;
+    }
+    set from_head = client^.low == 0_i64;
+    set to_head = client^.high == 0_i64;
+  }
+  let command_keys = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &command_keys);
+  let slots = &keys^[command_keys];
+  set client^.now = time^.check;
+  let staged = True();
+  let work = lmove_body(sequence: sequence, journal: journal, access_keys: &command_keys, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head, stage_ready: staged);
+  let budget = pkg::store::log_budget_new();
+  let source_place = key_bounds(input: input, args: args, index: 1_u64);
+  let source_key = &input^[source_place.start..source_place.end];
+  let target_place = key_bounds(input: input, args: args, index: 2_u64);
+  let target_key = &input^[target_place.start..target_place.end];
+  let source_records = mset_lapse_meta(log: effects, logged: logged, lapsed: work.source_expired, key: source_key, budget: &budget);
+  let target_records = mset_lapse_meta(log: effects, logged: logged, lapsed: work.target_expired, key: target_key, budget: &budget);
+  let appended = source_records +wrap target_records;
+  if client^.state == state_list_full {
+    reply_list_limit(client: client);
+    return True(), appended;
+  }
+  if work.changed {
+    if logged {
+      blocking_move_log(effects: effects, kind: kind, input: input, args: args, budget: &budget);
+      set appended = appended +wrap 1_u64;
+    }
+    return True(), appended;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return True(), appended;
+  }
+  return False(), appended;
+}
+
+fn blocking_one_key(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> result: Bool reads(input), reads(args) {
+  doc "Whether a served or attempted blocking list command opens the one-key sequence. BLPOP and BRPOP always do, over any keys: their append-only bytes name only keys they change, an expired key they remove as its removal and the served key as LPOP or RPOP, and every key they change before another is a removed one, so when an earlier expired key is removed before a later key is served the sequence revokes its one-key mode at run time and journals complete images, rebuilding the removed key's image from its name. BRPOPLPUSH or BLMOVE opens it only when its source equals its destination: a move between two keys leaves its first changed key in place and its bytes read the source, so it keeps complete images from the start.";
+  if kind < 203_u64 {
+    return True();
+  }
+  let first_place = key_bounds(input: input, args: args, index: 1_u64);
+  let first = &input^[first_place.start..first_place.end];
+  let place = key_bounds(input: input, args: args, index: 2_u64);
+  let other = &input^[place.start..place.end];
+  let order = pkg::bytes::windows_order(left: first, right: other);
+  return order == 0_i32;
+}
+
+fn blocking_try(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> (completed: Bool, appended: u64) reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(effects), writes(client) {
+  doc "One attempt at an admitted and timeout-validated blocking list command under the caller's whole-map hold. True means a complete reply or error; false means no key was ready and no reply was emitted; appended counts every emitted expiry or mutation record. The caller retains the original parsed deadline, publishes accumulated expiry and mutation effects, and either registers or continues its wait.";
+  if kind == 201_u64 {
+    let front = True();
+    let (done, records) = blocking_pop_try(sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: front);
+    return done, records;
+  }
+  if kind == 202_u64 {
+    let front = False();
+    let (done, records) = blocking_pop_try(sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: front);
+    return done, records;
+  }
+  let (done, records) = blocking_move_try(sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+  return done, records;
+}

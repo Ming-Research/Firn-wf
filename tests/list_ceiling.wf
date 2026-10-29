@@ -33,6 +33,8 @@ const case_nil_reply: Array<u8, 5> = "$-1\r\n";
 
 const case_wrong_reply: Array<u8, 68> = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
 
+const case_blocking_input: Array<u8, 23> = "BLMOVE s d LEFT RIGHT 0";
+
 const case_eval_call_input: Array<u8, 47> = "EVAL return redis.call('RPUSH',KEYS[1],'z') 1 k";
 
 const case_eval_pcall_input: Array<u8, 112> = "EVAL local r=redis.pcall('RPUSH',KEYS[1],'z'); if type(r)~='table' then return 'not-table' end; return r.err 1 k";
@@ -40,6 +42,12 @@ const case_eval_pcall_input: Array<u8, 112> = "EVAL local r=redis.pcall('RPUSH',
 const case_eval_call_reply: Array<u8, 119> = "-ERR list would exceed the maximum of 8 elements script: f0dc111d1549375c24aedc24e3d2332ee84c43a5, on @user_script:1.\r\n";
 
 const case_eval_pcall_reply: Array<u8, 54> = "$47\r\nERR list would exceed the maximum of 8 elements\r\n";
+
+const case_narrow_push_input: Array<u8, 11> = "LPUSH k x y";
+
+const case_narrow_move_input: Array<u8, 20> = "LMOVE s d LEFT RIGHT";
+
+const case_pair_reply: Array<u8, 4> = ":2\r\n";
 
 fn case_element(value: u8) -> made: Box<Slots<u8>> pure {
   let bytes = box_slots_new::<u8>(capacity: 1_u64);
@@ -225,7 +233,8 @@ fn case_push(front: Bool, existing: Bool, initial: u64, capacity: u64, added: u6
   }
   let sequence = pkg::store::sequence_inert();
   let journal = None<pkg::store::AccessJournal>();
-  let work = push_body(sequence: &sequence, journal: &journal, access_key: &case_key[0_u64..1_u64], slot: &slot, client: &client, front: front, existing: existing);
+  let unstaged = False();
+  let work = push_body(sequence: &sequence, journal: &journal, access_key: &case_key[0_u64..1_u64], slot: &slot, client: &client, front: front, existing: existing, stage_ready: unstaged);
   if refuse {
     if bor(work.removed, work.changed) {
       return False();
@@ -279,7 +288,8 @@ fn case_new_push(front: Bool, existing: Bool, lapsed: Bool) -> passed: Bool pure
   }
   let sequence = pkg::store::sequence_inert();
   let journal = None<pkg::store::AccessJournal>();
-  let work = push_body(sequence: &sequence, journal: &journal, access_key: &case_key[0_u64..1_u64], slot: &slot, client: &client, front: front, existing: existing);
+  let unstaged = False();
+  let work = push_body(sequence: &sequence, journal: &journal, access_key: &case_key[0_u64..1_u64], slot: &slot, client: &client, front: front, existing: existing, stage_ready: unstaged);
   if work.changed {
     return False();
   }
@@ -387,7 +397,8 @@ fn case_move(from_head: Bool, to_head: Bool, same: Bool) -> passed: Bool pure wa
     }
     let sequence = pkg::store::sequence_inert();
     let journal = None<pkg::store::AccessJournal>();
-    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head);
+    let unstaged = False();
+    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head, stage_ready: unstaged);
     if same {
       if bnot(work.changed) {
         set passed = False();
@@ -583,7 +594,8 @@ fn case_move_lookup(from_head: Bool, to_head: Bool, scenario: u64) -> passed: Bo
     }
     let sequence = pkg::store::sequence_inert();
     let journal = None<pkg::store::AccessJournal>();
-    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head);
+    let unstaged = False();
+    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head, stage_ready: unstaged);
     if work.source_expired {
       set passed = False();
     }
@@ -669,11 +681,12 @@ fn case_move_lookup(from_head: Bool, to_head: Bool, scenario: u64) -> passed: Bo
   return band(passed, reply_matches);
 }
 
-fn case_eval(clock: &std::time::Clock, input: &[u8], script_length: u64, protected: Bool) -> passed: Bool reads(input), writes(clock) waits {
+fn case_eval(clock: &std::time::Clock, wall: &std::time::WallClock, input: &[u8], script_length: u64, protected: Bool) -> passed: Bool reads(input), reads(wall), writes(clock) waits {
   doc "Runs the actual EVAL interpreter and FirnCommands binding: redis.call raises the capacity error with script context, while redis.pcall returns an error table whose err field is the exact command error; both preserve the full list and its metadata.";
   let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
   let no = False();
-  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64);
+  let store_wall = std::time::wall_clock_share(clock: wall);
+  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall);
   let store_key = &case_key[0_u64..1_u64];
   atomic slot = &store.keys[store_key] {
     set slot^ = case_entry(length: 8_u64, capacity: 8_u64);
@@ -703,6 +716,92 @@ fn case_eval(clock: &std::time::Clock, input: &[u8], script_length: u64, protect
     give case_reply(client: &client, expected: &case_eval_call_reply[0_u64..119_u64]);
   }
   return band(list_preserved, reply_matches);
+}
+
+fn case_blocking_move(wall: &std::time::WallClock, full: Bool) -> passed: Bool reads(wall) waits {
+  doc "Runs the actual BLMOVE attempt over a two-element source and a distinct destination. At the ceiling of 8 the attempt completes at once with the list-limit error and leaves both lists and their metadata as they were, rather than registering a waiter that no push could ever satisfy; one element short of the ceiling it moves an element and writes no limit error.";
+  let no = False();
+  let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
+  let store_wall = std::time::wall_clock_share(clock: wall);
+  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall);
+  let source_key = &case_source[0_u64..1_u64];
+  let destination_key = &case_destination[0_u64..1_u64];
+  let destination_length = 7_u64;
+  if full {
+    set destination_length = 8_u64;
+  }
+  atomic slot = &store.keys[source_key] {
+    set slot^ = case_entry(length: 2_u64, capacity: 8_u64);
+  }
+  atomic slot = &store.keys[destination_key] {
+    set slot^ = case_entry(length: destination_length, capacity: 8_u64);
+  }
+  let input = &case_blocking_input[0_u64..23_u64];
+  let args = box_slots_new::<Span>(capacity: 8_u64);
+  let command = Span(start: 0_u64, length: 6_u64);
+  let source_span = Span(start: 7_u64, length: 1_u64);
+  let destination_span = Span(start: 9_u64, length: 1_u64);
+  let from_span = Span(start: 11_u64, length: 4_u64);
+  let to_span = Span(start: 16_u64, length: 5_u64);
+  let timeout_span = Span(start: 22_u64, length: 1_u64);
+  place_back(window: &args.inner, value: command);
+  place_back(window: &args.inner, value: source_span);
+  place_back(window: &args.inner, value: destination_span);
+  place_back(window: &args.inner, value: from_span);
+  place_back(window: &args.inner, value: to_span);
+  place_back(window: &args.inner, value: timeout_span);
+  let client = pkg::protocol::client_new(capacity: 256_u64);
+  let time = pkg::store::Time(unix_ms: 1_u64, check: 1_u64, loading: no);
+  let sequence = pkg::store::sequence_inert();
+  let journal = None<pkg::store::AccessJournal>();
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let completed = False();
+  let records = 99_u64;
+  atomic held = &store.keys {
+    let (done, appended) = blocking_move_try(sequence: &sequence, journal: &journal, kind: 204_u64, keys: held, effects: &effects, logged: no, input: input, args: &args, client: &client, time: &time);
+    set completed = done;
+    set records = appended;
+  }
+  let no_records = records == 0_u64;
+  let passed = band(completed, no_records);
+  let source_matches = False();
+  atomic slot = &store.keys[source_key] {
+    if full {
+      set source_matches = case_original(slot: slot, length: 2_u64);
+    } else {
+      match live_list_size(slot: slot, now: 1_u64) {
+        Some(value: length) => {
+          set source_matches = length == 1_u64;
+        }
+        None() => {
+        }
+      }
+    }
+  }
+  let destination_matches = False();
+  atomic slot = &store.keys[destination_key] {
+    if full {
+      set destination_matches = case_original(slot: slot, length: 8_u64);
+    } else {
+      match live_list_size(slot: slot, now: 1_u64) {
+        Some(value: length) => {
+          set destination_matches = length == 8_u64;
+        }
+        None() => {
+        }
+      }
+    }
+  }
+  let lists_match = band(source_matches, destination_matches);
+  set passed = band(passed, lists_match);
+  if full {
+    let limit_reply = case_reply(client: &client, expected: &case_limit_reply[0_u64..50_u64]);
+    set passed = band(passed, limit_reply);
+  } else {
+    let not_full = client.state != state_list_full;
+    set passed = band(passed, not_full);
+  }
+  return passed;
 }
 
 fn case_insert_room(after: Bool) -> passed: Bool pure {
@@ -757,7 +856,8 @@ fn case_move_room(from_head: Bool, to_head: Bool) -> passed: Bool pure waits {
     }
     let sequence = pkg::store::sequence_inert();
     let journal = None<pkg::store::AccessJournal>();
-    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head);
+    let unstaged = False();
+    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head, stage_ready: unstaged);
     if bnot(work.changed) {
       set passed = False();
     }
@@ -797,9 +897,148 @@ fn case_move_room(from_head: Bool, to_head: Bool) -> passed: Bool pure waits {
   return passed;
 }
 
+fn case_ready_count(client: &Client) -> count: u64 reads(client) {
+  match client^.list_ready {
+    Some(value: queued) => {
+      return queued^.inner.len;
+    }
+    None() => {
+    }
+  }
+  return 0_u64;
+}
+
+fn case_stored_length(store: &pkg::store::Keyspace, key: &[u8], expected: u64) -> same: Bool reads(store), reads(key) waits {
+  let same = False();
+  atomic slot = &store^.keys[key] {
+    match live_list_size(slot: slot, now: 1_u64) {
+      Some(value: length) => {
+        set same = length == expected;
+      }
+      None() => {
+      }
+    }
+  }
+  return same;
+}
+
+fn case_waiter_bound(store: &pkg::store::Keyspace) -> bound: u64 reads(store) waits {
+  doc "Meta's bound on the keys blocked clients wait on.";
+  let bound = 0_u64;
+  atomic held = &store^.meta {
+    set bound = held^.waiter_keys_bound;
+  }
+  return bound;
+}
+
+fn case_stale_bound(store: &pkg::store::Keyspace) -> result: unit reads(store) waits {
+  doc "Leaves Meta's bound on the keys blocked clients wait on above the count of registered keys, which is zero in these cases, as it stands after the last waiter has gone.";
+  atomic held = &store^.meta {
+    set held^.waiter_keys_bound = 3_u64;
+  }
+  return unit;
+}
+
+fn case_staged_creation(stage: Bool) -> passed: Bool pure {
+  doc "Checks that a push creating a list stages its key as ready for blocked clients exactly when asked to: the callers that serve waiters after their commit ask for it, and a push that holds only its keys does not, since nothing drains the queue after it.";
+  let slot = None<Entry>();
+  let client = pkg::protocol::client_new(capacity: 64_u64);
+  set client.now = 1_u64;
+  set client.state = state_absent;
+  set client.low = 0_i64;
+  let element = case_element(value: 'z'_u8);
+  let bytes = Bytes::Long(bytes: move element);
+  let item = Key(hash: 0_u64, bytes: move bytes);
+  push_item(client: &client, item: move item);
+  let sequence = pkg::store::sequence_inert();
+  let journal = None<pkg::store::AccessJournal>();
+  let front = True();
+  let existing = False();
+  let work = push_body(sequence: &sequence, journal: &journal, access_key: &case_key[0_u64..1_u64], slot: &slot, client: &client, front: front, existing: existing, stage_ready: stage);
+  if bnot(work.changed) {
+    return False();
+  }
+  let staged = case_ready_count(client: &client);
+  if stage {
+    return staged == 1_u64;
+  }
+  return staged == 0_u64;
+}
+
+fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool, stale: Bool) -> passed: Bool reads(wall) waits {
+  doc "Runs the actual LPUSH or LMOVE of a connection on which no client waits, over an absent key or destination: the list is created, the reply is the ordinary one and no ready key is staged, because a command that holds only its keys is followed by no drain, so a staged key would stay in the connection's queue for good. With stale set, Meta's bound on the keys blocked clients wait on starts above the count, as it stands after the last waiter has left: the command then takes its second statement, which creates the list the same way and sets the bound back to the count, zero.";
+  let no = False();
+  let yes = True();
+  let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
+  let store_wall = std::time::wall_clock_share(clock: wall);
+  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall);
+  let args = box_slots_new::<Span>(capacity: 8_u64);
+  let client = pkg::protocol::client_new(capacity: 256_u64);
+  let time = pkg::store::Time(unix_ms: 1_u64, check: 1_u64, loading: no);
+  let env = pkg::bytes::KeyEnv();
+  let passed = False();
+  if stale {
+    case_stale_bound(store: &store);
+  }
+  if moving {
+    let source_key = &case_source[0_u64..1_u64];
+    let destination_key = &case_destination[0_u64..1_u64];
+    atomic slot = &store.keys[source_key] {
+      set slot^ = case_entry(length: 2_u64, capacity: 8_u64);
+    }
+    let input = &case_narrow_move_input[0_u64..20_u64];
+    let command = Span(start: 0_u64, length: 5_u64);
+    let source_span = Span(start: 6_u64, length: 1_u64);
+    let destination_span = Span(start: 8_u64, length: 1_u64);
+    let from_span = Span(start: 10_u64, length: 4_u64);
+    let to_span = Span(start: 15_u64, length: 5_u64);
+    place_back(window: &args.inner, value: command);
+    place_back(window: &args.inner, value: source_span);
+    place_back(window: &args.inner, value: destination_span);
+    place_back(window: &args.inner, value: from_span);
+    place_back(window: &args.inner, value: to_span);
+    let handled = run_lmove_named(store: &store, input: input, args: &args, client: &client, env: &env, time: &time);
+    let replied = case_reply(client: &client, expected: &case_head_reply[0_u64..7_u64]);
+    let source_left = case_stored_length(store: &store, key: source_key, expected: 1_u64);
+    let destination_made = case_stored_length(store: &store, key: destination_key, expected: 1_u64);
+    let staged = case_ready_count(client: &client);
+    let none_staged = staged == 0_u64;
+    let bound = case_waiter_bound(store: &store);
+    let refreshed = bound == 0_u64;
+    let answered = band(handled, replied);
+    let lists = band(source_left, destination_made);
+    let ready_kept = band(lists, none_staged);
+    let kept = band(ready_kept, refreshed);
+    set passed = band(answered, kept);
+  } else {
+    let key = &case_key[0_u64..1_u64];
+    let input = &case_narrow_push_input[0_u64..11_u64];
+    let command = Span(start: 0_u64, length: 5_u64);
+    let key_span = Span(start: 6_u64, length: 1_u64);
+    let first_span = Span(start: 8_u64, length: 1_u64);
+    let second_span = Span(start: 10_u64, length: 1_u64);
+    place_back(window: &args.inner, value: command);
+    place_back(window: &args.inner, value: key_span);
+    place_back(window: &args.inner, value: first_span);
+    place_back(window: &args.inner, value: second_span);
+    let handled = run_push(store: &store, input: input, args: &args, client: &client, env: &env, time: &time, front: yes, existing: no);
+    let replied = case_reply(client: &client, expected: &case_pair_reply[0_u64..4_u64]);
+    let made = case_stored_length(store: &store, key: key, expected: 2_u64);
+    let staged = case_ready_count(client: &client);
+    let none_staged = staged == 0_u64;
+    let bound = case_waiter_bound(store: &store);
+    let refreshed = bound == 0_u64;
+    let answered = band(handled, replied);
+    let ready_kept = band(made, none_staged);
+    let kept = band(ready_kept, refreshed);
+    set passed = band(answered, kept);
+  }
+  return passed;
+}
+
 fn list_ceiling_main(inputs: std::process::Inputs) -> status: CaseExitStatus pure waits {
-  doc "Failure status is a bit mask: 1 for push admission, 2 for permitted growth, 4 for LINSERT, 8 for distinct-key moves, and 16 for same-key rotations. 32 for move lookup ordering, 64 for EVAL errors, and 128 for startup cleanup. All groups run even after a failure.";
-  let std::process::Inputs(cwd: directory, handles: factory, clock: clock, ..) = move inputs;
+  doc "Failure status is a bit mask: 1 for push admission and for the ready key a created list stages, 2 for permitted growth, 4 for LINSERT, 8 for distinct-key moves, blocking ones and the ready key a created destination stages included, and 16 for same-key rotations. 32 for move lookup ordering, 64 for EVAL errors, and 128 for startup cleanup. All groups run even after a failure.";
+  let std::process::Inputs(cwd: directory, handles: factory, clock: clock, wall_clock: wall_clock, ..) = move inputs;
   let std::fs::Directory(read: directory_read, write: directory_write) = move directory;
   let closed_write = std::fs::close_directory_write(factory: &factory, directory: move directory_write);
   let closed_read = std::fs::close_directory(factory: &factory, directory: move directory_read);
@@ -887,13 +1126,45 @@ fn list_ceiling_main(inputs: std::process::Inputs) -> status: CaseExitStatus pur
       }
     }
   }
-  let call_passed = case_eval(clock: &clock, input: &case_eval_call_input[0_u64..47_u64], script_length: 38_u64, protected: no);
+  let call_passed = case_eval(clock: &clock, wall: &wall_clock, input: &case_eval_call_input[0_u64..47_u64], script_length: 38_u64, protected: no);
   if bnot(call_passed) {
     set failures = ior(failures, 64_u8);
   }
-  let pcall_passed = case_eval(clock: &clock, input: &case_eval_pcall_input[0_u64..112_u64], script_length: 103_u64, protected: yes);
+  let blocking_full = case_blocking_move(wall: &wall_clock, full: yes);
+  if bnot(blocking_full) {
+    set failures = ior(failures, 8_u8);
+  }
+  let blocking_room = case_blocking_move(wall: &wall_clock, full: no);
+  if bnot(blocking_room) {
+    set failures = ior(failures, 8_u8);
+  }
+  let pcall_passed = case_eval(clock: &clock, wall: &wall_clock, input: &case_eval_pcall_input[0_u64..112_u64], script_length: 103_u64, protected: yes);
   if bnot(pcall_passed) {
     set failures = ior(failures, 64_u8);
+  }
+  let staged_by_waiter_callers = case_staged_creation(stage: yes);
+  if bnot(staged_by_waiter_callers) {
+    set failures = ior(failures, 1_u8);
+  }
+  let staged_by_narrow_callers = case_staged_creation(stage: no);
+  if bnot(staged_by_narrow_callers) {
+    set failures = ior(failures, 1_u8);
+  }
+  let narrow_push = case_narrow_creation(wall: &wall_clock, moving: no, stale: no);
+  if bnot(narrow_push) {
+    set failures = ior(failures, 1_u8);
+  }
+  let narrow_move = case_narrow_creation(wall: &wall_clock, moving: yes, stale: no);
+  if bnot(narrow_move) {
+    set failures = ior(failures, 8_u8);
+  }
+  let stale_push = case_narrow_creation(wall: &wall_clock, moving: no, stale: yes);
+  if bnot(stale_push) {
+    set failures = ior(failures, 1_u8);
+  }
+  let stale_move = case_narrow_creation(wall: &wall_clock, moving: yes, stale: yes);
+  if bnot(stale_move) {
+    set failures = ior(failures, 8_u8);
   }
   return std::process::exit_status(code: failures);
 }

@@ -1064,6 +1064,7 @@ fn rename_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
         }
         pkg::store::sequence_replace(sequence: sequence, slot: &slots^[target], replacement: move moved);
         pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+        list_signal_at(client: client, keys: access_keys, index: target, slot: &slots^[target]);
         pkg::store::sequence_capture_at(sequence: sequence, keys: access_keys, index: source, slot: &slots^[source]);
         set work.outcome = rename_done;
       }
@@ -1184,6 +1185,7 @@ fn copy_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
           set work.at = held_expiry(slot: &copied);
           pkg::store::sequence_replace(sequence: sequence, slot: &slots^[target], replacement: move copied);
           pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+          list_signal_at(client: client, keys: access_keys, index: target, slot: &slots^[target]);
           set work.outcome = rename_done;
         }
       }
@@ -1212,29 +1214,6 @@ fn copy_finish(client: &Client, error: u64, outcome: u64) -> result: unit writes
   return unit;
 }
 
-fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "RENAME and RENAMENX by rename_parse, rename_body, transfer_meta and rename_finish, in one statement on both named entries and the metadata.";
-  let journal = None<pkg::store::AccessJournal>();
-  let keys = key_set_new(capacity: 2_u64);
-  let pair = rename_parse(input: input, args: args, keys: &keys);
-  set client^.now = time^.check;
-  let logged = store^.logging;
-  let outcome = rename_missing;
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    if aof_refuse(meta: m, client: client) {
-      return unit;
-    }
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
-    let work = rename_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
-    let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
-    set outcome = work.outcome;
-    pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-  }
-  rename_finish(client: client, outcome: outcome, fresh: fresh);
-  return unit;
-}
-
 fn copy_refused(client: &Client, plan: &CopyPlan) -> rejected: Bool reads(plan), writes(client) {
   doc "Writes COPY's parse refusal before either entry is reached, and answers whether the command was refused.";
   if plan^.error == 0_u64 {
@@ -1242,34 +1221,6 @@ fn copy_refused(client: &Client, plan: &CopyPlan) -> rejected: Bool reads(plan),
   }
   copy_finish(client: client, error: plan^.error, outcome: rename_missing);
   return True();
-}
-
-fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "COPY by copy_parse and rename_parse, copy_body, transfer_meta and copy_finish, in one statement on both named entries and the metadata; parse errors reach neither entry.";
-  let journal = None<pkg::store::AccessJournal>();
-  let plan = copy_parse(input: input, args: args);
-  let rejected = copy_refused(client: client, plan: &plan);
-  if rejected {
-    return unit;
-  }
-  let keys = key_set_new(capacity: 2_u64);
-  let pair = rename_parse(input: input, args: args, keys: &keys);
-  set client^.now = time^.check;
-  let logged = store^.logging;
-  let outcome = rename_missing;
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    if aof_refuse(meta: m, client: client) {
-      return unit;
-    }
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
-    let work = copy_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
-    let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
-    set outcome = work.outcome;
-    pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-  }
-  copy_finish(client: client, error: 0_u64, outcome: outcome);
-  return unit;
 }
 
 fn changed_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {

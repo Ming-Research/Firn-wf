@@ -2,6 +2,7 @@
 //! Loopback RESP2/HELLO RESP3; worker threads multiplex nonblocking connections using std only.
 mod limiter;
 mod eviction;
+mod handoff;
 mod handshake;
 mod pubsub;
 
@@ -18,6 +19,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
     "evict-zipf", "handshake", "client-list", "pubsub-channel", "pubsub-pattern",
+    "blocking-handoff",
 ];
 
 #[derive(Clone)]
@@ -38,8 +40,9 @@ struct Options {
     maxmemory: Option<u64>,
     // File that receives client_work_fraction after the measured run.
     work_file: Option<String>,
-    // Pub/sub only: PUBLISH commands the publisher keeps unanswered, and how
-    // many messages it may send ahead of the slowest subscriber.
+    // Pub/sub and blocking-handoff: PUBLISH or LPUSH commands the publisher
+    // keeps unanswered. Pub/sub only: how many messages it may send ahead of
+    // the slowest subscriber.
     pipeline: usize,
     window: usize,
 }
@@ -55,7 +58,8 @@ impl Options {
             sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None,
             pipeline: 1, window: 1024,
         };
-        let (mut keys_given, mut value_given, mut pubsub_given) = (false, false, false);
+        let (mut keys_given, mut value_given) = (false, false);
+        let (mut pipeline_given, mut window_given) = (false, false);
         let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
             let value = args.next().ok_or("each option needs a value")?;
@@ -83,8 +87,8 @@ impl Options {
                 "--sample-ms" => opts.sample_interval = Duration::from_millis(value.parse()?),
                 "--maxmemory" => opts.maxmemory = Some(value.parse()?),
                 "--client-work-file" => opts.work_file = Some(value),
-                "--pipeline" => { opts.pipeline = value.parse()?; pubsub_given = true; }
-                "--window" => { opts.window = value.parse()?; pubsub_given = true; }
+                "--pipeline" => { opts.pipeline = value.parse()?; pipeline_given = true; }
+                "--window" => { opts.window = value.parse()?; window_given = true; }
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
         }
@@ -93,20 +97,31 @@ impl Options {
             if !value_given { opts.value = vec![b'x'; 64]; }
         }
         let pubsub = pubsub::is_pubsub(&opts.workload);
-        if pubsub && !value_given { opts.value = vec![b'x'; 64]; }
-        if pubsub_given && !pubsub {
-            return Err("--pipeline and --window only apply to the pub/sub workloads".into());
+        let handoff = handoff::is_handoff(&opts.workload);
+        if (pubsub || handoff) && !value_given { opts.value = vec![b'x'; 64]; }
+        if pipeline_given && !(pubsub || handoff) {
+            return Err("--pipeline only applies to the pub/sub and blocking-handoff workloads".into());
         }
-        if pubsub {
+        if window_given && !pubsub {
+            return Err("--window only applies to the pub/sub workloads".into());
+        }
+        if pubsub || handoff {
             if opts.requests.is_some() || opts.seconds.is_none() {
-                return Err("the pub/sub workloads take --seconds, not --requests".into());
+                return Err("the pub/sub and blocking-handoff workloads take --seconds, not --requests".into());
             }
             if opts.value.len() < 16 {
-                return Err("a pub/sub payload holds a 16-byte header: --value-size is at least 16".into());
+                return Err("a payload holds a 16-byte header: --value-size is at least 16".into());
             }
-            if opts.pipeline == 0 || opts.window < opts.pipeline {
-                return Err("--pipeline must be positive and --window at least --pipeline".into());
+            if opts.pipeline == 0 {
+                return Err("--pipeline must be positive".into());
             }
+        }
+        if pubsub && opts.window < opts.pipeline {
+            return Err("--window must be at least --pipeline".into());
+        }
+        if handoff && opts.connections < opts.pipeline {
+            // A batch pushes to as many different consumers' keys.
+            return Err("--connections must be at least --pipeline for the blocking-handoff workload".into());
         }
         if !opts.zipf_s.is_finite() || opts.zipf_s < 0.0 || opts.sample_interval.is_zero() {
             return Err("--zipf-s must be finite and nonnegative; --sample-ms must be positive".into());
@@ -610,6 +625,7 @@ fn run(opts: Options) -> Result<()> {
     if opts.workload == "evict-zipf" { return eviction::run(&opts); }
     if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
     if pubsub::is_pubsub(&opts.workload) { return pubsub::run(&opts); }
+    if handoff::is_handoff(&opts.workload) { return handoff::run(&opts); }
     if matches!(opts.workload.as_str(), "handshake" | "client-list") && !opts.warmup.is_zero() {
         let mut warm = opts.clone();
         warm.seconds = Some(opts.warmup);
@@ -627,9 +643,17 @@ fn run(opts: Options) -> Result<()> {
 fn main() {
     if let Err(e) = Options::parse().and_then(run) {
         eprintln!("firn-workload: {e}");
-        // Exit status 3 says that the server lacks the workload's commands, so
-        // that the harness can record a skip; every other failure is 1.
-        std::process::exit(if e.downcast_ref::<pubsub::Unsupported>().is_some() { 3 } else { 1 });
+        // Exit status 3 says that the server lacks the workload's commands and
+        // 4 that it stopped handing out the elements, so that the harness can
+        // record a skip for a competitor; every other failure is 1.
+        let status = if e.downcast_ref::<pubsub::Unsupported>().is_some() {
+            3
+        } else if e.downcast_ref::<handoff::Stalled>().is_some() {
+            4
+        } else {
+            1
+        };
+        std::process::exit(status);
     }
 }
 
@@ -666,9 +690,9 @@ mod tests {
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
-            // Cache-aside, connection and pub/sub workloads have separate checked cases.
+            // Cache-aside, connection, pub/sub and hand-off workloads have separate checked cases.
             if matches!(workload, "evict-zipf" | "handshake" | "client-list"
-                | "pubsub-channel" | "pubsub-pattern") { continue; }
+                | "pubsub-channel" | "pubsub-pattern" | "blocking-handoff") { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {

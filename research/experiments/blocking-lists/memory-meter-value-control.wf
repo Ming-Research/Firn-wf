@@ -1,0 +1,11 @@
+alias MemoryMeter = std::process::MemoryMeter;
+
+fn consume_meter(value: Option<MemoryMeter>) -> result: unit pure {
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure {
+  let absent = None<MemoryMeter>();
+  consume_meter(value: move absent);
+  return std::process::exit_status(code: 0_u8);
+}
