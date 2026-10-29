@@ -58,11 +58,13 @@ placement is [measurement-sessions](../../../design/firn/measurement-sessions.md
 on the 14900K the servers on CPUs 2 and 4 (P-cores) and the clients on CPUs
 16-31 (E-cores), for every line and the noise floor alike. Every run is
 dispatched on the head commit of the PR that merges; the base is the revision of
-main that the PR's last merge of main brought in (`7cf12df`, the tip of main when
-the PR last merged it, with the stream commands of main in both images), so the
-two images differ by the PR alone; the first two A1 runs below, made before that
-merge, used `05f7e89`, the tip of the merge before. A later merge of main that
-leaves the PR's own change as it is does not repeat a measurement.
+main that the PR's last merge of main brought in (`dd8c06c` for the fourth
+version, the tip of main when the PR last merged it; `7cf12df` for the runs of
+the third version below, with the stream commands of main in both images), so
+the two images differ by the PR alone; the first two A1 runs below, made before
+the merge of `7cf12df`, used `05f7e89`, the tip of the merge before. A later
+merge of main that leaves the PR's own change as it is does not repeat a
+measurement.
 
 ### Cost on existing commands (question 1)
 
@@ -221,7 +223,7 @@ orders them on the 14900K, one at a time.
 
 | run | mode and inputs | answers | expected duration |
 |---|---|---|---|
-| A1 | `compare`, `base`, `head`, `head-twin`, the 23 tests with `lpush_new` last, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16;lpush_new 16` | question 1, file off; run on `da1e2c3` and `7a4e4de`, repeated on the head that merges | about 95 min (the 44-cell first A1 run 40049518328 took 85, builds included) |
+| A1 | `compare`, `base`, `head`, `head-twin`, the 23 tests with `lpush_new` last, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16;lpush_new 16` | question 1, file off; run on `da1e2c3` and `7a4e4de`, repeated on the third version (`2d91961`) and on the head that merges (the fourth version) | about 95 min (the 44-cell first A1 run 40049518328 took 85, builds included) |
 | A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove lpush_new`, the same profile | question 1, file on: the in-place append of `lpush_new` beside the event-hub check | about 25 min |
 | B | `workloads` with `workload_images`, `head` and `head-twin` (and the `reference` line that `workload_images` adds), `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
@@ -261,8 +263,9 @@ the run with `firn-1 stopped handing out elements in blocking-handoff`.
 
 Every run below is on the 14900K at the commit it names, with the servers on
 CPUs 2 and 4 and the clients on CPUs 16-31: B and the first A1 at `da1e2c3`, the
-PR's first version, the second A1 at `7a4e4de`; the runs of the head that merges,
-`2d91961` (A1, A2, a retest at depth 1, and C), follow them.
+PR's first version, the second A1 at `7a4e4de`; the runs of the third version,
+`2d91961` (A1, A2, a retest at depth 1, and C), follow them, and the runs of the
+fourth version, the head that merges, are added after those when they are made.
 
 ### B: the floor of the hand-off class
 
@@ -500,11 +503,11 @@ Table, all 46 cells (head/base and twin/head: median, 95% interval):
 | zpopmin | 1 | 0.9957 | 0.9814-1.0166 | no detected change | 1.0213 | 0.9938-1.0355 |
 | zpopmin | 16 | 1.0003 | 0.9686-1.0294 | no detected change | 1.0127 | 0.9796-1.0459 |
 
-### The head that merges (`2d91961`)
+### The third version (`2d91961`)
 
 `2d91961` has the code of the third version (`12dbbc5`, narrowed again by the
 `stage_ready` flag) and differs from the last commit reviewed (`74e7ec4`) by a
-deleted temporary workflow. The base is `7cf12df`, the tip of main last merged
+deleted temporary workflow. The base is `7cf12df`, the tip of main merged by then
 (the earlier A1 runs used `05f7e89`, so a cell is compared with its twin in the
 same run and not with the same cell of an earlier run).
 
@@ -617,7 +620,7 @@ the profile count the contexts woken per write or the wait on the lock, so the
 instrument the plan said would be missing is missing; it belongs to that item and
 is not built here.
 
-**Reading of the head's runs.** The creating push still loses 14% (AOF off,
+**Reading of the third version's runs.** The creating push still loses 14% (AOF off,
 depth 16) and 4% (depth 1) in A1 and 7% and 3% in A2, `lpush` 16 loses 3% in A1
 and none in A2, `xadd` 1 loses 0.5%, and the hand-off reaches 0.34 and 0.57 of the
 fastest competitor. By the criteria stated above each is a cell wholly on the
