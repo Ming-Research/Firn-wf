@@ -119,6 +119,18 @@ A list write that cannot make a client ready does not need that hold:
   this section: entry and Meta. While any client is blocked on any key, every
   creating write on every key takes the second statement; the bound does not
   say which keys are waited on.
+- The read costs a shared lock when the file is off. Main's compiled statement
+  takes Meta only on its logging path, so with the file off a push holds its
+  entry alone and two server CPUs share no lock (the decision of
+  `firn/command-parts` for statements that read nothing else from Meta);
+  reading the bound takes Meta's lock for every push that finds no live list.
+  Measured at the design placement, a push that creates its list ran at 0.83 of
+  main's rate at depth 16 with the file off and 1.01 with it on, and the lock, not
+  the entry read of `list_kind` and not the place of the field in Meta, is the
+  cost ([measurement](blocking-lists-performance.md#the-fourth-version-2f2ae10)).
+  Information about waiters that costs no lock when the file is off would have to
+  come from the key's own entry, which a registration would mark; no version of
+  this section does that.
 - The test is a live list, not an existing entry. A request stays registered
   on a key that a string with an expiry has taken. Once the expiry has passed,
   and before anything removed the entry, a push to that key deletes the string

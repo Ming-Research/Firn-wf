@@ -262,6 +262,8 @@ orders them on the 14900K, one at a time.
 | A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove lpush_new`, the same profile | question 1, file on: the in-place append of `lpush_new` beside the event-hub check | about 25 min |
 | B | `workloads` with `workload_images`, `head` and `head-twin` (and the `reference` line that `workload_images` adds), `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
+| D | `compare`, `base`, `head`, `head-twin` and the throwaway images `va`, `vb`, `vc`, `lpush` and `lpush_new`, depths 16 and 1, 6 passes of 5 s, profile `lpush_new 16` | which code of the first statement is the cost of `lpush_new`, after A1 rejected the prediction of the fourth version (stated under the fourth version's results) | about 40 min |
+| E | the same with `vc`, `vd`, `ve`, `vf`, `vg` | whether the entry read or the read of Meta is the cost, and whether the field's place in `Meta` matters | about 50 min |
 
 The instrument was tried first on GitHub-hosted runners, for function only (no
 rate from them counts). A hosted runner has two physical cores and the automatic
@@ -296,11 +298,19 @@ the run with `firn-1 stopped handing out elements in blocking-handoff`.
 
 ## Results
 
-Every run below is on the 14900K at the commit it names, with the servers on
-CPUs 2 and 4 and the clients on CPUs 16-31: B and the first A1 at `da1e2c3`, the
-PR's first version, the second A1 at `7a4e4de`; the runs of the third version,
-`2d91961` (A1, A2, a retest at depth 1, and C), follow them, and the runs of the
-fourth version, the head that merges, are added after those when they are made.
+Every run below is on the 14900K at the commit it names. The design places the
+servers on CPUs 2 and 4 and the clients on CPUs 16-31. B and the first A1 at
+`da1e2c3` (the PR's first version) and the second A1 at `7a4e4de` have that
+placement (`source=override` in the run's placement line). The runs of the third
+version, `2d91961` (A1, A2, a retest at depth 1, and C), follow them, and the
+runs of the fourth version, the head that merges, follow those; **the third
+version's four runs and the first A1 of the fourth were dispatched without
+`server_cpus` and `client_cpus`, so the automatic placement put the clients on the
+P-cores 6-15 (`source=hybrid`; the one-CPU configuration of C has server CPU 2
+and clients 4-15)**: runs 40113222639, 40833091903, 40839887066 and 40843860452,
+and 40866420392. They are measurements at that placement, not at the design's, and
+the fourth version's runs below that matter (A1, D, E, A2, C) were repeated at the
+design placement.
 
 ### B: the floor of the hand-off class
 
@@ -547,8 +557,9 @@ deleted temporary workflow. The base is `7cf12df`, the tip of main merged by the
 same run and not with the same cell of an earlier run).
 
 **A1** (run 40113222639, `compare`, AOF off, 46 cells, 6 passes of 5 s, 2 server
-CPUs on CPUs 2 and 4, clients on CPUs 16-31, profile `lpush 16;lmove 16;lpush_new
-16`; UTC 16:48 to 18:07). 46 cells: 8 faster (`get`, `lmove`, `lpop`,
+CPUs on CPUs 2 and 4, clients on the P-cores 6-15 (automatic placement, see the
+note at the head of Results), profile `lpush 16;lmove 16;lpush_new 16`; UTC 16:48
+to 18:07). 46 cells: 8 faster (`get`, `lmove`, `lpop`,
 `ping_inline`, `ping_mbulk`, `rpop`, `set`, `zadd`, all at depth 16), 29 no
 detected change, 9 wholly on the slower side. The twin interval lies wholly off 1
 in 5 cells (`get` 1, `set` 1, `set` 16 and `lrange_100` 1 faster, `lrange_500` 1
@@ -581,7 +592,9 @@ statements, the first (entry and Meta) finding no live list, the second (entry,
 event hub and Meta) asking the registry; the symbols above are the second
 statement's locks, which together make up about 12% of the cycles (the excess over
 `base` of the four symbols), against the 14% lost (read from one profile, so
-inferred). `lpush` 16 spends 16.1% of its cycles in
+inferred; runs D and E of the fourth version show that the same symbols come from
+the lock of Meta, which any read of Meta forces an AOF-off push to take, so this
+attribution to the second statement is superseded). `lpush` 16 spends 16.1% of its cycles in
 `try_entry`, the spin on the entry of the one key two server CPUs push to, against
 14.5% in `base`; that a longer hold per request lengthens the spin is inferred.
 
@@ -661,3 +674,208 @@ and none in A2, `xadd` 1 loses 0.5%, and the hand-off reaches 0.34 and 0.57 of t
 fastest competitor. By the criteria stated above each is a cell wholly on the
 slower side or below its threshold, and goes to the owner on the board with these
 numbers; nothing in these runs is accepted by this record.
+
+### The fourth version (`2f2ae10`)
+
+`2f2ae10` is the head that merges up to the records: it has the code of the
+reviewed `3f101f0` and one more section of this record (the one stated before the
+runs). The base is `dd8c06c`. The runs below are at the design placement (servers
+on CPUs 2 and 4, clients on CPUs 16-31) unless named otherwise.
+
+**First A1** (run 40866420392, `compare`, AOF off, 46 cells, 6 passes of 5 s,
+automatic placement: clients on CPUs 6-15, so not the design's). The creating push
+at depth 16 was 0.8396 (0.8244-0.8492; twin 0.9955, 0.9792-1.0147) and at depth 1
+0.9758 (0.9640-0.9862); `lpush` 16 0.9580, `rpush` 16 0.9777; five cells at depth
+1 (`incr`, `lpop`, `sadd`, `set`, `zadd`) were wholly slower by less than 1% with
+twins across 1; `xadd` 1 was 1.0014 (0.9957-1.0129). 9 cells slower, 8 faster, 29
+without a detected change. The prediction stated above, that `lpush_new` lies
+across 1, was rejected by this run; the placement was found wrong from its
+placement line, and the runs below repeat it.
+
+**A1** (run 40878646647, same inputs at the design placement, profile `lpush
+16;lpush_new 16` with `callers`). 4 cells wholly slower, 7 faster (`get`, `linsert`,
+`lpop`, `ping_inline`, `ping_mbulk`, `sadd` and `set`, all at depth 16), 35 no
+detected change; the client is the limit (median busy fraction above 0.9) in
+`lrange_500` 16 and `lrange_600` 16, which are not judged. The 4 cells (rates are
+medians over the passes):
+
+| test | depth | base (requests/s) | head (requests/s) | head/base | 95% interval | twin/head, 95% interval |
+|---|---|---|---|---|---|---|
+| lpush_new | 16 | 3216436 | 2687939 | 0.8338 | 0.8118-0.8532 | 1.0005, 0.9771-1.0297 |
+| lpush_new | 1 | 736360 | 732457 | 0.9910 | 0.9772-0.9998 | 0.9828, 0.9707-1.0026 |
+| lpush | 16 | 4237934 | 4090312 | 0.9728 | 0.9562-0.9919 | 1.0082, 0.9829-1.0220 |
+| mset | 1 | 614804 | 605798 | 0.9902 | 0.9710-0.9958 | 0.9923, 0.9795-1.0156 |
+
+`xadd` 1 is 0.9896 (0.9755-1.0268) and `xadd` 16 0.9792 (0.9453-1.0186): trying the
+stream commands before the blocking ones removed the 0.5% of the third version.
+The prediction stated above is rejected again: the creating push at depth 16 is
+wholly slower, at 0.834 and not across 1. The profile of its first `lpush_new 16`
+pass, as the rule above asks, shows the four lock symbols, not at the share of
+`base` but at more than three times it (cycles in G; `base` 57.8 in total, `head`
+71.7): `wf__shared_take` 5.83 (none in `base`), `wf_shared_acquire_as` 4.98 (1.27),
+`wf_shared_unlock_as` 3.51 (0.61), the three together 12.4 of the 13.9 that `head`
+has more; `acquire_entry` (10.60 against 10.45) and `wf__table_lock_entry` (3.18
+against 3.09) are the same. The `callers` option gave no callers: perf's unwinding
+printed addresses such as `0x12` for these functions. The profile of `lpush` 16
+(`head` 49.2 G, `base` 48.2 G) has none of the three in excess.
+
+**Runs D and E, stated before they were made** (written in the item's log on 29
+October before each run; the sides, the prediction and what rejects it are copied
+here). The question after A1: the second statement was predicted to be the cost,
+and its locks are the excess, but with the bound at zero it should not run.
+Which code is the cost? The side branches, throwaway branches on `2f2ae10` that
+were deleted after the runs, each changing one place of `run_push`
+(`firn/commands/lists.wf`) and, for two, the position of the field in `Meta`:
+
+- D, with `base`, `head` and `head-twin` (the noise): `va`, the first statement's
+  test `waiter_keys_bound != 0` changed to `== 7`, so that with no blocked client
+  the second statement cannot run; `vb`, the second statement deleted; `vc`, the
+  first statement's `list_kind` and read of the bound deleted, so that the first
+  statement is main's with the new signature. Prediction (inferred, not measured):
+  `va` equals `head` (the bound is zero). Rejected if `va` is wholly faster than
+  `head` (the bound is not zero in the run, a defect); `vb` faster than `head`
+  would show that the second statement's existence costs, `vc` faster that the
+  cost is in the first statement's probe, neither that it is in the shape of the
+  function.
+- E, with the same three: `vc` again; `vd`, `list_kind` kept and the read of the
+  bound removed (`held > client^.unix_us`, never true and not removable by the
+  compiler); `ve`, the read of the bound kept (for every push, a live list
+  included) and `list_kind` removed; `vf`, `ve` with `waiter_keys_bound` moved to
+  be the first field of `Meta` (and the constructor in `store.wf` reordered, which
+  the compiler requires: the first attempt of E, run 40898679237, stopped there
+  and measured nothing); `vg`, `ve` with the field right after `commit_seq`, which
+  every write statement writes. Prediction (inferred): `vd` returns to `base` and
+  `ve` is as slow as `head`; `vf` and `vg` faster than `ve` would show that the
+  cache line of the field is the cost. Rejected if `vd` is as slow as `head`
+  (reading the entry is the cost) or if `vd` and `ve` are both fast and `head`
+  slow.
+
+D (run 40893273232, `compare`, AOF off, `lpush` and `lpush_new`, depths 16 and 1,
+6 passes of 5 s, profile `lpush_new 16`), head/base median (95% interval):
+
+| image | lpush_new 16 | lpush_new 1 | lpush 16 | lpush 1 |
+|---|---|---|---|---|
+| head | 0.8290 (0.8177-0.8491) | 0.9799 (0.9744-0.9881) | 0.9651 (0.9447-0.9803) | 0.9883 (0.9548-1.0066) |
+| va | 0.8212 (0.8131-0.8462) | 0.9770 (0.9666-0.9955) | 0.9805 (0.9614-0.9973) | 0.9946 (0.9851-1.0036) |
+| vb | 0.8318 (0.8107-0.8487) | 0.9840 (0.9724-0.9953) | 0.9832 (0.9534-1.0000) | 0.9939 (0.9773-1.0072) |
+| vc | 1.0027 (0.9796-1.0305) | 0.9876 (0.9710-1.0068) | 0.9930 (0.9789-1.0068) | 0.9848 (0.9754-0.9975) |
+| head-twin / head | 0.9773 (0.9605-1.0117) | 0.9903 (0.9740-0.9997) | 1.0114 (0.9747-1.0351) | 0.9909 (0.9665-1.0320) |
+
+`va` and `vb` against `head`: 0.9873 (0.9709-1.0208) and 0.9972 (0.9841-1.0071)
+for `lpush_new` 16, no detected change; `vc` against `head` 1.2019 (1.1862-1.2257),
+faster. The profiles (`lpush_new` 16, cycles in G): `va` and `vb` have the excess of
+`head` (`wf__shared_take` 5.63 and 5.35), `vc` has none (`wf_shared_acquire_as`
+0.97, `wf_shared_unlock_as` 0.56, against 1.28 and 0.68 in `base`). So the bound is
+zero, the second statement does not run, its existence costs nothing, and the cost
+is in the first statement's probe (prediction held).
+
+E (run 40900755503, same inputs, 8 images):
+
+| image | lpush_new 16 | lpush_new 1 | lpush 16 | lpush 1 |
+|---|---|---|---|---|
+| head | 0.8305 (0.8201-0.8364) | 0.9741 (0.9624-0.9977) | 0.9665 (0.9497-0.9937) | 0.9916 (0.9858-1.0031) |
+| vc | 1.0086 (0.9758-1.0225) | 0.9940 (0.9752-1.0231) | 0.9904 (0.9688-1.0168) | 0.9927 (0.9376-1.0179) |
+| vd | 0.9915 (0.9731-1.0021) | 1.0139 (0.9948-1.0207) | 0.9771 (0.9662-0.9926) | 0.9791 (0.9669-1.0000) |
+| ve | 0.8351 (0.8223-0.8472) | 0.9772 (0.9602-1.0068) | 0.8702 (0.8396-0.8841) | 0.9938 (0.9677-1.0032) |
+| vf | 0.8327 (0.8135-0.8541) | 0.9910 (0.9738-1.0045) | 0.8571 (0.8414-0.8752) | 0.9755 (0.9627-0.9900) |
+| vg | 0.8353 (0.8256-0.8486) | 0.9880 (0.9080-1.0326) | 0.8585 (0.8493-0.8699) | 0.9754 (0.9644-0.9875) |
+| head-twin / head | 1.0061 (0.9785-1.0342) | 1.0075 (0.9958-1.0147) | 0.9999 (0.9594-1.0244) | 0.9990 (0.9705-1.0172) |
+
+Against `head`: `vc` 1.2096 (1.1768-1.2361) and `vd` 1.1884 (1.1667-1.2186) faster,
+`ve` 1.0052 (0.9889-1.0270) no detected change, for `lpush_new` 16. The excess
+symbols of `head` appear in `ve` (`wf__shared_take` 5.15 G of 69.4), `vf` (5.65 of
+71.2) and `vg` (5.27 of 70.5) and not in `vc` and `vd`. The reading of the
+prediction: `vd` returns to `base` and `ve` is as slow as `head` (held); `vf` and
+`vg` are not faster than `ve`, so the cache line of the field is not the cost, and
+the cost is the read of Meta itself, not the entry read of `list_kind`
+(about 2% to 3% on a live list at depth 16: `vd` 0.9771, `vc` 0.9904, `vc` against
+`head` 1.0214). Reading the field for every push, a live list included (`ve`), costs
+13% there (0.8702).
+
+**Mechanism** (read from instructions and the runs, not counted). In `base` the
+instructions of `run_push.resume` after `wf__table_lock_entry` are `test %r14b,%r14b;
+je ...`, with `r14b` a byte loaded from the store before the call (the source's
+`logged = store^.logging`), and the jump skips the call to `wf__shared_take`: the compiled statement takes Meta only on the path that uses it,
+the logging path. With the file off a push of `base` holds only its key's entry, and
+the two server cores share no lock; this is the decision of `firn/command-parts`
+(while the keyspace keeps no append-only file, a statement that reads nothing else
+from Meta holds only its keys' entries). The fourth version reads
+`waiter_keys_bound` in the first statement for every push that does not find a live
+list, so the statement takes Meta's lock on every such push and the two cores queue
+on it: the `wf__shared_take`, acquire and unlock symbols are that lock, and a
+creating push loses 17% at depth 16. With the file on, Meta is taken anyway
+(`wf__shared_take` is 4.57 G in `base`'s A2 profile of `lpush_new` 16, none in its
+A1 profile), so one more field read adds nothing (A2 below). That Meta's lock is the
+shared lock is inferred from this and from D and E; no counter counted its
+acquisitions.
+
+**A2** (run 40907743576, `compare`, AOF on with `appendfsync everysec`, `set`,
+`lpush`, `rpush`, `linsert`, `lmove`, `lpush_new`, depths 16 and 1, 6 passes of 5
+s, profile `lpush_new 16;lpush 16`, design placement). 12 cells: 2 wholly slower, 3
+faster, 7 no detected change. `lpush_new` 16 is 1.0123 (1.0034-1.0268; twin 0.9986,
+0.9582-1.0315; 2126414 requests/s in `base`, 2160193 in `head`) and `lpush_new` 1
+1.0000 (0.9813-1.0233). The slower cells: `rpush` 16 0.9681 (0.9553-0.9821; twin
+1.0106, 0.9943-1.0241; 2893148 and 2815431) and `lpush` 16 0.9816 (0.9674-0.9980;
+twin 1.0041, 0.9835-1.0184; 2842284 and 2805004). Faster: `linsert` 16 1.0141, `set`
+16 1.0483 and `lpush_new` 16. The others: `linsert` 1 0.9970, `lmove` 16 0.9734
+(0.9422-1.0043), `lmove` 1 0.9975, `lpush` 1 0.9888, `rpush` 1 0.9897, `set` 1
+1.0140. The profile of `lpush_new` 16 has no excess (`base` 54.8 G, `head` 54.7);
+that of `lpush` 16 has 1.8 G more of 49.3, of which `run_push.resume` itself is
+0.56 and `wf__shared_take` 0.26: the probe's own code (a second read of the entry,
+a branch and a local), about 2% to 3% on an existing list, not a lock.
+
+**C** (run 40912672893, `workloads` with `workload_images`, `blocking-handoff`,
+`reference`, `redis-latest`, `valkey-latest`, `valkey-io-latest`, `dragonfly-latest`,
+`garnet-latest` and the images `head` and `head-twin`, 50 consumers, depths 16 and
+1, 2 server CPUs on CPUs 2 and 4, clients on 16-31, 6 passes of 10 s,
+`sched_report`, profile). `summary.py pubsub` with the floor 1.12% of B: twin
+half-widths 1.10% and 0.36%, none above the floor; firn's client work fraction is
+0.043 and 0.299, so no cell is client-limited. The 4 criteria (2 cells, a rate and
+a p99 each: the rate at least 1.4 times the fastest competitor's at depth 16 and at
+least 1.0 at depth 1, the p99 not above its) are not met:
+
+| depth | line | rate (elements/s) | p99 (ms) |
+|---|---|---|---|
+| 16 | valkey-io-latest (fastest) | 299524 | 0.080 |
+| 16 | reference (Redis 7.2.16) | 291255 | 0.055 |
+| 16 | redis-latest | 284699 | 0.056 |
+| 16 | valkey-latest | 272046 | 0.059 |
+| 16 | dragonfly-latest | 211884 | 0.088 |
+| 16 | garnet-latest | 125890 | 0.946 |
+| 16 | head | 100142 | 0.758 |
+| 16 | head-twin | 100255 | 0.758 |
+| 1 | valkey-io-latest (fastest) | 119259 | 0.012 |
+| 1 | reference (Redis 7.2.16) | 114125 | 0.010 |
+| 1 | redis-latest | 111718 | 0.010 |
+| 1 | valkey-latest | 110930 | 0.010 |
+| 1 | dragonfly-latest | 101073 | 0.017 |
+| 1 | head | 76695 | 0.082 |
+| 1 | head-twin | 77233 | 0.080 |
+| 1 | garnet-latest | 75182 | 0.141 |
+
+`head` is 0.334 of the fastest at depth 16 (needs 1.4) and 0.643 at depth 1 (needs
+1.0), with a p99 of 0.758 ms against 0.080 and 0.082 against 0.012; against Redis
+7.2.16 0.344 and 0.672. It is faster than `garnet-latest` only at depth 1 and by
+2%. The first pass of `head` under `perf` spends 45.23% of its cycles at depth 16
+and 20.65% at depth 1 in `wf_shared_acquire_as`, as the third version's run did
+(45.65% and 22.74%): the cost the second question predicted is in the runtime's
+shared-acquire function; that the wait is the listening lock of board item
+coord-wfbl-03-04 is still inferred from the symbol, and no counter counts the
+contexts woken per write.
+
+**Reading of the fourth version's runs.** The version meant to read a number
+instead of taking the event hub did not remove the loss where it was measured, the
+file off: a push that creates its list is 0.83 of `main` at depth 16 (0.99 at depth
+1), against 0.86 and 0.96 for the third version at the other placement, and the
+prediction that it would lie across 1 was rejected by A1 and the cause was found
+in the first statement's read of Meta (D, E and the mechanism above). With the file
+on the creating push is not slower (1.01 and 1.00). An existing list loses 2% to 3%
+at depth 16 to the probe's code (`lpush` with the file off 0.973, with it on 0.982,
+`rpush` with it on 0.968), the stream commands no longer lose, and `mset` 1 loses
+1% in A1 (0.9902, the upper end of the interval 0.9958). The hand-off is at 0.334
+and 0.643 of the fastest competitor. By the criteria stated above these are cells
+wholly on the slower side and criteria not met, and they go to the owner on the
+board with these numbers; nothing in these runs is accepted by this record. An
+information about waiters that costs no shared lock on an AOF-off push has to come
+from what the statement already holds, the key's own entry; a mark left on the key
+by a registration is such a design and is not part of this version.
