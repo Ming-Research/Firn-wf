@@ -133,7 +133,7 @@ independent cells; deduced, not measured) exclude 1 by chance in a quiet run,
 and about 1 head/base interval (46 times 2.5%) lies wholly below 1 by chance
 alone; the run reports how many of each it found, set against those
 expectations, and whether the excluded cells cluster in one pass or one
-image position, which would point at a disturbed host. A cell whose client work fraction (`compare-limited.csv`)
+image position, which would point at a disturbed host. A cell whose client busy fraction (`client_busy_mean` in `compare-limited.csv`)
 has a median above 0.90 in any image is client-limited: its verdict is
 reported and not judged. The cells that do not count and those whose
 interval is too wide to say whether the head is slower than the twin's
@@ -176,4 +176,110 @@ count; the second dispatch names the CPUs.
 
 ## Results
 
-Not yet measured.
+### First run
+
+Run [40120506904](https://github.com/Ming-Research/Firn-wf/actions/runs/40120506904)
+of `redis-bench.yml` on the 14900K (Intel Core i9-14900K, Linux 7.0.0-38, clang
+and LLD 22.1.8, `redis-benchmark` 7.2.16), mode `compare`, built from head `b08522a`: `base` is `7cf12df` (pin
+`wf-af7665be672d`), `base-twin` is `7cf12df` again, `head` is `b08522a` (pin
+`wf-63b7cbb03820`). Servers on CPUs 2 and 4 (P-cores), clients on CPUs 16-31
+(E-cores), 8 passes of 5 seconds, no AOF, no profile. The measuring step took 96
+minutes. The tables below are `summary.py ratios` on the run's `compare.csv`,
+once with `--head head` and once with `--head base-twin`; the last column is the
+largest over the three images of the median over passes of the client CPUs'
+busy fraction (`client_busy_mean` in `compare-limited.csv`).
+
+| test | depth | head/base median | 95% interval | verdict | base-twin/base median | 95% interval | client busy |
+| --- | ---: | ---: | --- | --- | ---: | --- | ---: |
+| ping_inline | 16 | 0.9994 | 0.9958-1.0062 | no detected change | 0.9996 | 0.9838-1.0061 | 0.275 |
+| ping_mbulk | 16 | 1.0005 | 0.9936-1.0107 | no detected change | 0.9984 | 0.9899-1.0052 | 0.277 |
+| set | 16 | 1.0230 | 1.0116-1.0367 | faster | 1.0075 | 0.9972-1.0258 | 0.233 |
+| get | 16 | 0.9967 | 0.9847-1.0109 | no detected change | 0.9956 | 0.9878-1.0125 | 0.227 |
+| incr | 16 | 0.9924 | 0.9896-1.0003 | no detected change (not counted: twin excludes 1) | 0.9953 | 0.9885-0.9999 | 0.225 |
+| lpush | 16 | 0.9823 | 0.9668-0.9903 | slower | 1.0003 | 0.9882-1.0153 | 0.147 |
+| rpush | 16 | 1.0080 | 0.9939-1.0285 | no detected change | 1.0084 | 0.9895-1.0269 | 0.146 |
+| lpop | 16 | 1.0276 | 1.0229-1.0390 | faster | 1.0067 | 0.9963-1.0163 | 0.145 |
+| rpop | 16 | 1.0201 | 1.0125-1.0345 | faster (not counted: twin excludes 1) | 1.0131 | 1.0068-1.0226 | 0.149 |
+| sadd | 16 | 0.9835 | 0.9521-1.0125 | no detected change | 1.0017 | 0.9671-1.0332 | 0.150 |
+| hset | 16 | 0.9679 | 0.9519-0.9886 | slower | 1.0021 | 0.9865-1.0206 | 0.138 |
+| spop | 16 | 1.0013 | 0.9777-1.0343 | no detected change | 1.0027 | 0.9917-1.0091 | 0.168 |
+| zadd | 16 | 1.0083 | 0.9989-1.0202 | no detected change | 1.0006 | 0.9907-1.0094 | 0.047 |
+| zpopmin | 16 | 1.0058 | 0.9738-1.0291 | no detected change | 0.9868 | 0.9710-1.0177 | 0.150 |
+| lrange_100 | 16 | 1.0095 | 0.9997-1.0366 | no detected change | 1.0032 | 0.9815-1.0170 | 0.594 |
+| lrange_300 | 16 | 1.0055 | 0.9030-1.0524 | no detected change | 1.0034 | 0.9676-1.0199 | 0.848 |
+| lrange_500 | 16 | 1.0008 | 0.9952-1.0115 | no detected change (client-limited, not judged) | 0.9990 | 0.9950-1.0072 | 0.923 |
+| lrange_600 | 16 | 1.0050 | 1.0017-1.0124 | faster (client-limited, not judged) | 1.0024 | 0.9989-1.0093 | 0.925 |
+| mset | 16 | 1.0195 | 0.9640-1.0707 | no detected change | 1.0027 | 0.9808-1.0473 | 0.100 |
+| sismember | 16 | 1.0061 | 0.9737-1.0724 | no detected change | 1.0057 | 0.9665-1.0707 | 0.144 |
+| srem | 16 | 1.0006 | 0.9621-1.0798 | no detected change | 1.0067 | 0.9510-1.0670 | 0.162 |
+| hget | 16 | 0.9711 | 0.9456-1.0055 | no detected change | 0.9952 | 0.9872-1.0109 | 0.150 |
+| hdel | 16 | 1.0187 | 0.9833-1.0456 | no detected change | 1.0078 | 0.9863-1.0334 | 0.166 |
+| ping_inline | 1 | 0.9990 | 0.9877-1.0099 | no detected change | 0.9978 | 0.9874-1.0058 | 0.431 |
+| ping_mbulk | 1 | 0.9953 | 0.9799-1.0128 | no detected change | 0.9951 | 0.9846-1.0135 | 0.443 |
+| set | 1 | 0.9929 | 0.9862-1.0074 | no detected change | 1.0050 | 0.9919-1.0134 | 0.431 |
+| get | 1 | 1.0151 | 1.0053-1.0278 | faster | 1.0034 | 0.9898-1.0146 | 0.426 |
+| incr | 1 | 1.0059 | 0.9490-1.0410 | no detected change | 1.0063 | 0.9916-1.0312 | 0.422 |
+| lpush | 1 | 1.0029 | 0.9686-1.0216 | no detected change | 0.9994 | 0.9772-1.0196 | 0.399 |
+| rpush | 1 | 0.9954 | 0.9644-1.0181 | no detected change | 0.9847 | 0.9474-1.0180 | 0.402 |
+| lpop | 1 | 0.9962 | 0.9761-1.0035 | no detected change | 1.0022 | 0.9399-1.0249 | 0.406 |
+| rpop | 1 | 1.0125 | 0.9898-1.0692 | no detected change | 1.0042 | 0.9853-1.0542 | 0.415 |
+| sadd | 1 | 0.9990 | 0.9787-1.0237 | no detected change | 1.0009 | 0.9727-1.0315 | 0.409 |
+| hset | 1 | 0.9990 | 0.9814-1.0202 | no detected change | 0.9969 | 0.9778-1.0321 | 0.406 |
+| spop | 1 | 0.9978 | 0.9747-1.0124 | no detected change | 0.9921 | 0.9745-1.0105 | 0.412 |
+| zadd | 1 | 0.9991 | 0.9810-1.0227 | no detected change | 0.9979 | 0.9823-1.0196 | 0.323 |
+| zpopmin | 1 | 0.9993 | 0.9880-1.0112 | no detected change | 0.9918 | 0.9787-1.0023 | 0.408 |
+| lrange_100 | 1 | 1.0013 | 0.9963-1.0130 | no detected change | 0.9990 | 0.9899-1.0089 | 0.568 |
+| lrange_300 | 1 | 0.9995 | 0.9880-1.0095 | no detected change | 0.9983 | 0.9897-1.0080 | 0.727 |
+| lrange_500 | 1 | 0.9986 | 0.9900-1.0161 | no detected change | 0.9938 | 0.9105-1.0408 | 0.826 |
+| lrange_600 | 1 | 1.0057 | 1.0014-1.0094 | faster | 1.0018 | 0.9972-1.0072 | 0.884 |
+| mset | 1 | 0.9975 | 0.9701-1.0199 | no detected change | 1.0063 | 0.9907-1.0205 | 0.324 |
+| sismember | 1 | 0.9996 | 0.9797-1.0186 | no detected change | 1.0067 | 0.9321-1.0408 | 0.399 |
+| srem | 1 | 1.0031 | 0.9875-1.0194 | no detected change | 1.0051 | 0.9940-1.0186 | 0.409 |
+| hget | 1 | 0.9989 | 0.9949-1.0015 | no detected change | 0.9975 | 0.9762-1.0051 | 0.411 |
+| hdel | 1 | 1.0123 | 0.9960-1.0226 | no detected change | 1.0102 | 0.9882-1.0193 | 0.410 |
+
+**Counts against the expectations stated above.** 46 cells; 2 do not count
+(`incr` and `rpop` at depth 16: the twin's interval excludes 1, 2 expected) and
+2 are client-limited (`lrange_500` and `lrange_600` at depth 16, above 0.90),
+which leaves 42 judged cells (about 1 wholly below 1 and about 1 wholly above 1
+expected by chance, deduced).
+
+- **Wholly below 1, 2 cells (about 1 expected by chance): `hset` at depth 16,
+  0.9679 median, 1.1% to 4.8% slower; `lpush` at depth 16, 0.9823 median, 1.0%
+  to 3.3% slower.** Neither cell is slower at depth 1 (`hset` 0.9990, 0.9814 to
+  1.0202; `lpush` 1.0029, 0.9686 to 1.0216). Seen against chance alone, 2 where
+  1.05 are expected is not unusual (a Poisson count of 1.05 gives 2 or more
+  about one time in four; deduced); the criterion above does not weigh that,
+  so each cell is a regression of its size.
+- Wholly above 1, 4 cells (about 1 expected): `set` at depth 16 (2.3%, 1.2% to
+  3.7%), `lpop` at depth 16 (2.8%, 2.3% to 3.9%), `get` at depth 1 (1.5%, 0.5%
+  to 2.8%) and `lrange_600` at depth 1 (0.6%, 0.1% to 0.9%). `lrange_600` at
+  depth 16 is faster by 0.5% (0.2% to 1.2%) but client-limited, so it is
+  reported and not judged; `rpop` at depth 16 (2.0%, 1.3% to 3.5%) does not
+  count.
+- The other 36 judged cells are across 1.
+- **Disturbed host?** The excluded twin intervals do not cluster in one pass or
+  one image position. The median over the 46 cells of base-twin over base per
+  pass is 0.990 to 1.005 in all 8 passes; `incr` at depth 16 has the twin
+  below 1 in 7 of 8 passes (0.982 to 1.006), `rpop` at depth 16 has it above 1
+  in all 8 (1.005 to 1.035), in odd and even passes alike, so the direction is
+  the same whichever image runs first. `rpop` at depth 16 has `head` above
+  `base` in all 8 passes as well, so `base` is the low image in that cell, and
+  the cell cannot say anything about the head. One pass of one cell is far from
+  the rest: `lrange_300` at depth 16 in pass 8 (`head` 0.779 of `base`, twin
+  0.926), which is why that cell's interval is wide.
+- **Noise floor of this class** (widest counting twin half-width, as the
+  architect is asked to copy; the median is given for context): depth 1,
+  `lrange_500`, 6.5% (23 counting cells, median 1.6%, narrowest 0.5%);
+  depth 16, `srem`, 5.8% (21 counting cells, median 1.4%, narrowest 0.5%).
+  Half-width is half the interval's width as a ratio.
+
+**Follow-up chosen from the first run.** The criteria above do not define "too
+wide to say whether the head is slower than the twin's noise", and this reading
+was fixed after the tables were read: a judged cell whose head/base interval
+has a half-width above the floor of its depth. At depth 1 none does (widest
+`incr`, 4.6%); at depth 16 `lrange_300` does (7.5%) and `srem` by a hair (5.9%,
+against the floor of 5.8% that `srem`'s own twin sets). The follow-up run
+measures the same three images again for `incr`, `rpop`, `lrange_300` and
+`srem` at both depths with 16 passes of 5 seconds (4 tests, about 40 minutes).
+`hset` and `lpush` at depth 16 are decided and are not in it.
