@@ -65,4 +65,4 @@ jobs:
         run: |
           redis_bin=$(tests/redis-suite/reference.sh)
           FIRN="$GITHUB_WORKSPACE/build/firn-test" REDIS_SERVER="$redis_bin/redis-server" \
-            cargo test --manifest-path tests/Cargo.toml --locked --test streams -- --show-output
+            cargo test --manifest-path tests/Cargo.toml --locked --test network -- streams:: --show-output
