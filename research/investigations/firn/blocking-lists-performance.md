@@ -22,8 +22,8 @@
    in `firn/commands/lists.wf`), and the dispatcher calls them directly, as it
    called `run_push` in `main`. `LINSERT`, `LPUSHX`, `RPUSHX`, the pushes and
    moves onto a live list and the creating ones where nobody waits append in
-   place, as on `main`. Which of these costs time is measured for the earlier
-   versions in the results below; the head's own runs are made before the merge.
+   place, as on `main`. Which of these costs time is measured in the results below,
+   for the earlier versions and for the head that merges (`2d91961`).
    The design decision for the staged copy is
    [firn-q-list-producer-staging](../../../design/firn/append-only-file.md),
    ruled A: keep the staged copy, provided this record's measurement shows no
@@ -250,8 +250,8 @@ the run with `firn-1 stopped handing out elements in blocking-handoff`.
 
 Every run below is on the 14900K at the commit it names, with the servers on
 CPUs 2 and 4 and the clients on CPUs 16-31: B and the first A1 at `da1e2c3`, the
-PR's first version, the second A1 at `7a4e4de`; the runs of the head that merges
-are added after them.
+PR's first version, the second A1 at `7a4e4de`; the runs of the head that merges,
+`2d91961` (A1, A2, a retest at depth 1, and C), follow them.
 
 ### B: the floor of the hand-off class
 
@@ -488,3 +488,127 @@ Table, all 46 cells (head/base and twin/head: median, 95% interval):
 | zadd | 16 | 1.0093 | 0.9912-1.0291 | no detected change | 0.9871 | 0.9785-1.0091 |
 | zpopmin | 1 | 0.9957 | 0.9814-1.0166 | no detected change | 1.0213 | 0.9938-1.0355 |
 | zpopmin | 16 | 1.0003 | 0.9686-1.0294 | no detected change | 1.0127 | 0.9796-1.0459 |
+
+### The head that merges (`2d91961`)
+
+`2d91961` has the code of the third version (`12dbbc5`, narrowed again by the
+`stage_ready` flag) and differs from the last commit reviewed (`74e7ec4`) by a
+deleted temporary workflow. The base is `7cf12df`, the tip of main last merged
+(the earlier A1 runs used `05f7e89`, so a cell is compared with its twin in the
+same run and not with the same cell of an earlier run).
+
+**A1** (run 40113222639, `compare`, AOF off, 46 cells, 6 passes of 5 s, 2 server
+CPUs on CPUs 2 and 4, clients on CPUs 16-31, profile `lpush 16;lmove 16;lpush_new
+16`; UTC 16:48 to 18:07). 46 cells: 8 faster (`get`, `lmove`, `lpop`,
+`ping_inline`, `ping_mbulk`, `rpop`, `set`, `zadd`, all at depth 16), 29 no
+detected change, 9 wholly on the slower side. The twin interval lies wholly off 1
+in 5 cells (`get` 1, `set` 1, `set` 16 and `lrange_100` 1 faster, `lrange_500` 1
+slower); the widest twin half-width is `mset` 16 (7.3%, above the 5.2% bound; its
+head/base interval, 0.9644-1.1076, does not decide). The client is the limit in
+`lrange_100` (16), `lrange_300`, `lrange_500` and `lrange_600`, which are not
+judged. The 9 cells:
+
+| test | depth | base (requests/s) | head (requests/s) | head/base | 95% interval | twin/head, 95% interval |
+|---|---|---|---|---|---|---|
+| lpush_new | 16 | 3216458 | 2764612 | 0.8573 | 0.8511-0.8714 | 0.9977, 0.9811-1.0120 |
+| lpush_new | 1 | 747712 | 717578 | 0.9602 | 0.9486-0.9671 | 1.0042, 0.9979-1.0169 |
+| lpush | 16 | 4249900 | 4129357 | 0.9689 | 0.9572-0.9866 | 0.9968, 0.9819-1.0191 |
+| lpush | 1 | 792200 | 784178 | 0.9884 | 0.9851-0.9959 | 1.0051, 0.9982-1.0093 |
+| rpush | 1 | 790316 | 783370 | 0.9914 | 0.9845-0.9983 | 1.0028, 0.9974-1.0082 |
+| sadd | 1 | 800721 | 794387 | 0.9918 | 0.9845-0.9990 | 1.0039, 0.9952-1.0103 |
+| xadd | 1 | 703299 | 698732 | 0.9904 | 0.9818-0.9976 | 1.0012, 0.9912-1.0178 |
+| zadd | 1 | 641836 | 632160 | 0.9838 | 0.9624-0.9999 | 1.0099, 0.9872-1.0283 |
+| lrange_100 | 1 | 608366 | 605025 | 0.9963 | 0.9924-0.9988 | 1.0040, 1.0007-1.0065 |
+
+`lrange_100` at depth 1 does not count, by the rule above: its twin lies wholly
+off 1 (the same code differs by 0.4%). Against the second A1 run, the cell that
+creates a list went from 0.313 and 0.801 to 0.857 and 0.960, `lmove` 16 and
+`linsert` 1 are no longer slower (1.0559 and 1.0025), and `lpush` 16 went from
+0.941 to 0.969. The profile of the first `lpush_new 16` pass of each image
+reads: `wf__shared_take` 6.11% in `head` (not among the first twenty symbols of
+`base`), `wf__table_lock_entry` 8.95% (5.98% in `base`), `wf_shared_unlock_as`
+2.28% (1.14%), `wf__table_unlock_entry` 1.51%. A creating push runs two atomic
+statements, the first (entry and Meta) finding no live list, the second (entry,
+event hub and Meta) asking the registry; the symbols above are the second
+statement's locks, which together make up about 12% of the cycles (the excess over
+`base` of the four symbols), against the 14% lost (read from one profile, so
+inferred). `lpush` 16 spends 16.1% of its cycles in
+`try_entry`, the spin on the entry of the one key two server CPUs push to, against
+14.5% in `base`; that a longer hold per request lengthens the spin is inferred.
+
+**A2** (run 40833091903, `compare`, AOF on with `appendfsync everysec`, `set`,
+`lpush`, `rpush`, `linsert`, `lmove`, `lpush_new`, depths 16 and 1, same images
+and passes; UTC 07:04 to 07:29). 12 cells: 3 wholly slower, 9 no detected
+change, no twin interval off 1. `lpush_new` 16 is 0.9310 (0.9049-0.9458; twin
+0.9814, 0.9689-1.0094) and `lpush_new` 1 is 0.9715 (0.9580-0.9862); `lmove` 1 is
+0.9972 (0.9923-0.9998). `lpush` 16 is 0.9874 (0.9768-1.0009), `lpush` 1 1.0040,
+`rpush` 0.9910 and 0.9963, `linsert` 1.0101 and 1.0001, `lmove` 16 0.9984, and the
+control `set` 1.0092 and 0.9986. With the file on the creating push loses less
+than with it off (0.931 against 0.857) because the append takes a larger share of
+the request. A write onto an existing list shows no loss, so the staged copy, which
+runs only for a push that serves a waiting client, `RENAME`, `COPY` and a promoted
+connection, is not in any cell and its cost stays unmeasured.
+
+**A1 retest at depth 1** (run 40839887066, `compare`, AOF off, `rpush`, `sadd`,
+`xadd`, `zadd`, `lrange_100`, `lpush`, `get`, `set` at depth 1, 12 passes of 5 s;
+UTC 08:07 to 08:34), for the depth 1 cells of A1 that were wholly slower and are
+not list creations, with `get` and `set` as controls. 7 of 8 cells show no detected change (`lpush` 0.9963, 0.9921-1.0001;
+`rpush` 0.9985; `sadd` 0.9963, 0.9907-1.0004; `zadd` 0.9972; `lrange_100` 0.9978;
+control `get` 1.0020 and `set` 1.0016), so the A1 results for these were noise.
+`xadd` 1 is wholly slower again: 0.9946 (0.9888-0.9985; twin 0.9976,
+0.9911-1.0006). `xadd` is a stream command, which the dispatcher reaches after
+trying the four blocking commands by name; `main` has no such step. That the name
+comparisons cost the 0.5% is inferred, not tested.
+
+**C** (run 40843860452, `workloads` with `workload_images`, `blocking-handoff`,
+`reference` (Redis 7.2.16), `redis-latest`, `valkey-latest`, `valkey-io-latest`,
+`dragonfly-latest`, `garnet-latest` and the images `head` and `head-twin`, 50
+consumers, depths 16 and 1, 1 and 2 server CPUs, 6 passes of 10 s, `sched_report`
+and `profile`; UTC 08:40 to 09:36). `summary.py pubsub` with the floor 1.12% of B:
+the twin half-widths of the 4 cells are 0.39% to 0.94%, none above the floor. No
+cell is client-limited (firn's client work fraction is 0.04 and 0.23). All 8
+criteria (4 cells, a rate and a p99 each) are not met. The cells with 2 server
+CPUs, the ones the acceptance row names:
+
+| depth | line | rate (elements/s) | p99 (ms) |
+|---|---|---|---|
+| 16 | valkey-io-latest (fastest) | 297734 | 0.080 |
+| 16 | valkey-latest | 276305 | 0.058 |
+| 16 | reference | 270647 | 0.059 |
+| 16 | redis-latest | 243308 | 0.066 |
+| 16 | dragonfly-latest | 215001 | 0.086 |
+| 16 | garnet-latest | 125471 | 1.015 |
+| 16 | head | 100631 | 0.758 |
+| 16 | head-twin | 101128 | 0.754 |
+| 1 | valkey-io-latest (fastest) | 136445 | 0.011 |
+| 1 | redis-latest | 118537 | 0.010 |
+| 1 | valkey-latest | 117852 | 0.010 |
+| 1 | reference | 116447 | 0.009 |
+| 1 | dragonfly-latest | 109758 | 0.017 |
+| 1 | garnet-latest | 78146 | 0.158 |
+| 1 | head-twin | 78057 | 0.096 |
+| 1 | head | 77752 | 0.097 |
+
+`head` is 0.338 of the fastest at depth 16 (needs 1.4) and 0.570 at depth 1 (needs
+1.0), with a p99 of 0.758 ms against 0.080 and 0.097 against 0.011. Against Redis
+7.2.16 it is 0.372 and 0.668. With 1 server CPU the fastest is `redis-latest` at
+depth 16 (283236 against `head` 84987, 0.300) and `reference` at depth 1 (120397
+against 78462, 0.652). `head` is faster than `garnet-latest` only with 1 server
+CPU (45990 against 78462 at depth 1, 58456 against 84987 at depth 16); with 2 it
+is slower than every competitor in both cells (`garnet-latest` 125471 against
+100631, and 78146 against 77752). The first pass of `head` under `perf` spends 45.65% of its cycles at depth
+16 and 22.74% at depth 1 (2 CPUs) in `wf_shared_acquire_as`, the runtime's
+shared-acquire function (30% in the pub/sub measurement), which is where the
+prediction of question 2 puts the cost; that the wait is the listening lock of
+board item coord-wfbl-03-04 is inferred from the symbol, since neither the
+scheduling counts of the server log (borrows and stolen contexts per driver) nor
+the profile count the contexts woken per write or the wait on the lock, so the
+instrument the plan said would be missing is missing; it belongs to that item and
+is not built here.
+
+**Reading of the head's runs.** The creating push still loses 14% (AOF off,
+depth 16) and 4% (depth 1) in A1 and 7% and 3% in A2, `lpush` 16 loses 3% in A1
+and none in A2, `xadd` 1 loses 0.5%, and the hand-off reaches 0.34 and 0.57 of the
+fastest competitor. By the criteria stated above each is a cell wholly on the
+slower side or below its threshold, and goes to the owner on the board with these
+numbers; nothing in these runs is accepted by this record.
