@@ -777,11 +777,11 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let spelled_length = array_filled::<u64, 34>(value: 0_u64);
     for @arguments (index in 2_u64..count) {
       let parameter = arg(args: args, index: index);
-      let held = before_zero(input: input, span: parameter);
-      let globbing = has_glob(input: input, start: parameter.start, length: held);
+      let held_value = before_zero(input: input, span: parameter);
+      let globbing = has_glob(input: input, start: parameter.start, length: held_value);
       let length = parameter.length;
       if globbing {
-        set length = held;
+        set length = held_value;
       }
       for @parameters (which in 0_u64..34_u64) {
         let unseen = found[which] == 0_u64;
@@ -1057,10 +1057,8 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       if bnot(parsed_memory.valid) {
         return unit;
       }
-      if memory_slot < 6_u64 {
-        set memory_given[memory_slot] = 1_u64;
-        set memory_values[memory_slot] = parsed_memory.value;
-      }
+      set memory_given[memory_slot] = 1_u64;
+      set memory_values[memory_slot] = parsed_memory.value;
     } else if which < 32_u64 {
       let slot = parameter_slots[which];
       if slot < 11_u64 {

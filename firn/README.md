@@ -549,8 +549,10 @@ incomplete. The host send contract permits zero progress, so this deadline
 alone establishes no strict return-time bound.
 `CONFIG SET maxclients` changes admission for subsequent connections;
 lowering it below the current count leaves every existing client connected.
-The pinned Whitefoot host APIs have no resource-limit facility, so firn
-leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
+The Whitefoot release firn was written against, `wf-af7665be672d`, had no
+resource-limit facility; the pinned release adds `open_files_limit` and
+`raise_open_files_limit` to `std::process`, which firn does not call yet, so
+firn leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
 `maxclients` at startup or refuse `CONFIG SET` solely because the operating
 system cannot supply enough descriptors; Redis can also refuse its event
 loop's capacity adjustment. The configured application limit does not

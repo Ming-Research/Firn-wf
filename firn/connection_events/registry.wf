@@ -30,11 +30,9 @@ fn member_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, key: &Key, id: u64
       let std::collections::hash_map::HashMapPair(key: previous_key, value: members) = move pair;
       let count = members.inner.len;
       for @members (index in 0_u64..count) {
-        if index < members.inner.len {
-          if members.inner[index] == id {
-            let removed = remove_at(window: &members.inner, index: index);
-            break @members;
-          }
+        if members.inner[index] == id {
+          let removed = remove_at(window: &members.inner, index: index);
+          break @members;
         }
       }
       if members.inner.len > 0_u64 {
@@ -53,9 +51,7 @@ fn member_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, key: &Key, id: u64
 fn memberships_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<Slots<Key>>, id: u64) -> result: unit reads(names), writes(map) {
   let count = names^.inner.len;
   for (index in 0_u64..count) {
-    if index < names^.inner.len {
-      member_remove(map: map, key: &names^.inner[index], id: id);
-    }
+    member_remove(map: map, key: &names^.inner[index], id: id);
   }
   return unit;
 }
@@ -64,10 +60,8 @@ fn subscription_add(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<Slo
   let env = KeyEnv();
   let count = names^.inner.len;
   for (index in 0_u64..count) {
-    if index < names^.inner.len {
-      if pkg::bytes::key_equal(env: &env, left: &names^.inner[index], right: &key) {
-        return unit;
-      }
+    if pkg::bytes::key_equal(env: &env, left: &names^.inner[index], right: &key) {
+      return unit;
     }
   }
   member_add(map: map, key: &key, id: id);
@@ -79,12 +73,10 @@ fn subscription_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<
   let env = KeyEnv();
   let count = names^.inner.len;
   for @names (index in 0_u64..count) {
-    if index < names^.inner.len {
-      if pkg::bytes::key_equal(env: &env, left: &names^.inner[index], right: key) {
-        let removed = remove_at(window: &names^.inner, index: index);
-        member_remove(map: map, key: key, id: id);
-        break @names;
-      }
+    if pkg::bytes::key_equal(env: &env, left: &names^.inner[index], right: key) {
+      let removed = remove_at(window: &names^.inner, index: index);
+      member_remove(map: map, key: key, id: id);
+      break @names;
     }
   }
   return unit;

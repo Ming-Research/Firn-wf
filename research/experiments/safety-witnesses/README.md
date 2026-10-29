@@ -10,8 +10,10 @@ They do not change firn or reproduce complete server commands.
 
 **Validation status: all ten pairs passed in [CI][validation-run] at
 [the tested revision][validation-revision], with the compiler release
-`wf-af7665be672d` that `whitefoot.pin` names.** Each rejected program received
-its expected diagnostic and each correction built an executable.
+`wf-af7665be672d`, which `whitefoot.pin` named then.** Each rejected program
+received its expected diagnostic and each correction built an executable.
+`whitefoot.pin` now names `wf-63b7cbb03820`; the gate compiles the pairs under
+it on every push, and the run above predates the move.
 
 ## What the evidence means
 
@@ -22,10 +24,12 @@ upstream compatibility, termination, or correctness of the compiler/runtime.
 The accepted executables are built but not run; this check measures source
 acceptance, not their application results or scheduling behavior.
 
-The language claim belongs to the [pinned specification][spec] (v0.146), read
-at Whitefoot commit `af7665be672d29912d878dd5da8c3932bb6f296c`, the revision
-of the release `wf-af7665be672d` that [whitefoot.pin](../../../whitefoot.pin)
-names:
+The language claim belongs to the [specification][spec] (v0.146), read at
+Whitefoot commit `af7665be672d29912d878dd5da8c3932bb6f296c`, the revision of
+the release `wf-af7665be672d`, which
+[whitefoot.pin](../../../whitefoot.pin) named when these passages were read.
+The pin now names `wf-63b7cbb03820` (v0.165), and the passages below have not
+been read again there:
 
 - [SCOPE-2 and SCOPE-3][scope] require static discharge before lowering and
   specify no undefined behavior conditional on the compiler, checker, linked

@@ -200,8 +200,8 @@ fn collection_scan_body(sequence: &pkg::store::WriteSequence, journal: &Option<p
   let visit = CollectionScanVisit(pattern: move pattern, matching: plan.matching, emitting: no, compact_scores: no, count: 0_u64, client: move temporary_client);
   swap(first: client, second: &visit.client);
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Members(members: set_of) => {
           hash_map_each::<Key, unit, CollectionScanVisit, fn collection_scan_member, ceiling>(map: set_of, env: &visit);
           collection_scan_header(client: &visit.client, count: visit.count);

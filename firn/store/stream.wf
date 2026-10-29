@@ -80,13 +80,11 @@ fn stream_strings_copy(strings: &Box<Slots<Bytes>>) -> made: Box<Slots<Bytes>> r
   let count = strings^.inner.len;
   let copied = box_slots_new::<Bytes>(capacity: count);
   for @strings (index in 0_u64..count) {
-    if index < strings^.inner.len {
-      let text = bytes_copy(bytes: &strings^.inner[index]);
-      if copied.inner.len < copied.inner.cap {
-        place_back(window: &copied.inner, value: move text);
-      } else {
-        let dropped = move text;
-      }
+    let text = bytes_copy(bytes: &strings^.inner[index]);
+    if copied.inner.len < copied.inner.cap {
+      place_back(window: &copied.inner, value: move text);
+    } else {
+      let dropped = move text;
     }
   }
   return move copied;
@@ -98,15 +96,13 @@ fn stream_node_copy(node: &StreamNode) -> made: StreamNode reads(node) {
   let count = node^.items.inner.len;
   let items = box_slots_new::<StreamItem>(capacity: count);
   for @items (index in 0_u64..count) {
-    if index < node^.items.inner.len {
-      let original = &node^.items.inner[index];
-      let pairs = stream_strings_copy(strings: &original^.pairs);
-      let item = StreamItem(id: original^.id, deleted: original^.deleted, same: original^.same, pairs: move pairs, size: original^.size);
-      if items.inner.len < items.inner.cap {
-        place_back(window: &items.inner, value: move item);
-      } else {
-        let dropped = move item;
-      }
+    let original = &node^.items.inner[index];
+    let pairs = stream_strings_copy(strings: &original^.pairs);
+    let item = StreamItem(id: original^.id, deleted: original^.deleted, same: original^.same, pairs: move pairs, size: original^.size);
+    if items.inner.len < items.inner.cap {
+      place_back(window: &items.inner, value: move item);
+    } else {
+      let dropped = move item;
     }
   }
   return StreamNode(fields: move fields, items: move items, live: node^.live, deleted: node^.deleted, master: node^.master, body: node^.body);

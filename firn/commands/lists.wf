@@ -115,11 +115,11 @@ binding ElementOut : DequeVisit<Box<Slots<u8>>, Client> {
 fn live_list_size(slot: &Option<Entry>, now: u64) -> size: Option<u64> reads(slot) {
   doc "Returns the length of a live list, or none for an absent, expired or wrong-type entry, without refreshing access or changing data.";
   match slot^ {
-    Some(value: held) => {
-      if expired(expires: held^.expires, now: now) {
+    Some(value: held_value) => {
+      if expired(expires: held_value^.expires, now: now) {
         return None<u64>();
       }
-      match held^.value {
+      match held_value^.value {
         Items(items: list) => {
           return Some<u64>(value: list^.inner.len);
         }
@@ -555,8 +555,8 @@ fn run_llen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 
 fn word_at(input: &[u8], span: Span, word: &[u8]) -> matched: Bool reads(input), reads(word) {
   doc "Whether an argument spells an upper-case word, letters in either case, compared as Redis compares one with strcasecmp, up to a zero byte.";
-  let held = before_zero(input: input, span: span);
-  let matched = name_is(input: input, start: span.start, length: held, word: word);
+  let held_value = before_zero(input: input, span: span);
+  let matched = name_is(input: input, start: span.start, length: held_value, word: word);
   return matched;
 }
 
@@ -1012,12 +1012,10 @@ fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: 
       let length = list^.inner.len;
       let found = length;
       for @seek (index in 0_u64..length) {
-        if index < list^.inner.len {
-          let same = element_is(element: &list^.inner[index], input: input, span: pivot);
-          if same {
-            set found = index;
-            break @seek;
-          }
+        let same = element_is(element: &list^.inner[index], input: input, span: pivot);
+        if same {
+          set found = index;
+          break @seek;
         }
       }
       if found >= length {
@@ -1221,12 +1219,12 @@ fn run_lpos(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 fn list_kind(slot: &Option<Entry>, now: u64) -> kind: u64 reads(slot) {
   doc "What an entry holds for a list command naming several keys: entry_none for no value, entry_lapsed for one whose expiry has been reached at now, entry_wanted for a live list and entry_other for a live value of another kind.";
   match slot^ {
-    Some(value: held) => {
-      let reached = expired(expires: held^.expires, now: now);
+    Some(value: held_value) => {
+      let reached = expired(expires: held_value^.expires, now: now);
       if reached {
         return entry_lapsed;
       }
-      match held^.value {
+      match held_value^.value {
         Items(items: list) => {
           return entry_wanted;
         }
@@ -1256,8 +1254,8 @@ fn list_kind(slot: &Option<Entry>, now: u64) -> kind: u64 reads(slot) {
 fn take_element(slot: &Option<Entry>, from_head: Bool, client: &Client) -> popped: Option<Box<Slots<u8>>> writes(slot), writes(client) {
   doc "Removes and returns the element at the head (from_head) or tail of the list an entry holds, leaving how many elements the list keeps in the client's number; none for an entry holding no list.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Items(items: list) => {
           let popped = pop_one(list: list, from_head: from_head);
           set client^.number = list^.inner.len;
@@ -1289,11 +1287,11 @@ fn take_element(slot: &Option<Entry>, from_head: Bool, client: &Client) -> poppe
 fn place_element(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit reads(client), writes(sequence), writes(slot) {
   doc "Pushes an element onto the head (to_head) or tail of the list an entry holds, creating the list, without an expiry, for an entry holding none; an entry holding another kind, which the caller has refused, drops it.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Items(items: list) => {
           push_element(list: list, element: move element, front: to_head);
-          pkg::store::sequence_entry(sequence: sequence, value: held);
+          pkg::store::sequence_entry(sequence: sequence, value: held_value);
           return unit;
         }
         Text(bytes: stored) => {
@@ -1428,8 +1426,8 @@ fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   let removed = False();
   let changed = False();
   match slot^ {
-    Some(value: held) => {
-      let edited = push_items(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = push_items(env: client, value: held_value);
     }
     None() => {
     }
@@ -1528,8 +1526,8 @@ fn pop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::A
   let removed = False();
   let changed = False();
   match slot^ {
-    Some(value: held) => {
-      let edited = pop_items(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = pop_items(env: client, value: held_value);
     }
     None() => {
     }
@@ -1600,8 +1598,8 @@ fn lrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "LRANGE over its held entry; live values use the existing reply writer and expired entries record state_expired.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = range_items(env: client, value: held);
+    Some(value: held_value) => {
+      let found = range_items(env: client, value: held_value);
     }
     None() => {
     }
@@ -1634,8 +1632,8 @@ fn llen_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   doc "LLEN over its held entry; live values use the existing reply writer and expired entries record state_expired.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = list_length(env: client, value: held);
+    Some(value: held_value) => {
+      let found = list_length(env: client, value: held_value);
     }
     None() => {
     }
@@ -1669,8 +1667,8 @@ fn lindex_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "LINDEX over its held entry; live values use the existing reply writer and expired entries record state_expired.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = index_item(env: client, value: held);
+    Some(value: held_value) => {
+      let found = index_item(env: client, value: held_value);
     }
     None() => {
     }
@@ -1714,8 +1712,8 @@ fn lset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   let value_span = arg(args: args, index: 3_u64);
   let element = argument_element(input: input, span: value_span);
   match slot^ {
-    Some(value: held) => {
-      let edited = set_item(env: client, value: held, element: move element);
+    Some(value: held_value) => {
+      let edited = set_item(env: client, value: held_value, element: move element);
     }
     None() => {
       let dropped = move element;
@@ -1778,8 +1776,8 @@ fn lrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   let changed = False();
   let element = arg(args: args, index: 3_u64);
   match slot^ {
-    Some(value: held) => {
-      let edited = remove_items(env: client, value: held, input: input, element: element);
+    Some(value: held_value) => {
+      let edited = remove_items(env: client, value: held_value, input: input, element: element);
     }
     None() => {
     }
@@ -1845,8 +1843,8 @@ fn ltrim_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   let removed = False();
   let changed = False();
   match slot^ {
-    Some(value: held) => {
-      let edited = trim_items(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = trim_items(env: client, value: held_value);
     }
     None() => {
     }
@@ -1910,8 +1908,8 @@ fn linsert_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   let pivot = arg(args: args, index: 3_u64);
   let after = client^.low == 1_i64;
   match slot^ {
-    Some(value: held) => {
-      let edited = insert_item(env: client, value: held, input: input, pivot: pivot, element: move element, after: after);
+    Some(value: held_value) => {
+      let edited = insert_item(env: client, value: held_value, input: input, pivot: pivot, element: move element, after: after);
     }
     None() => {
       let dropped = move element;
@@ -2030,8 +2028,8 @@ fn lpos_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], cli
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let element = arg(args: args, index: 2_u64);
   match slot^ {
-    Some(value: held) => {
-      let found = seek_items(env: seek, value: held, input: input, element: element, positions: positions);
+    Some(value: held_value) => {
+      let found = seek_items(env: seek, value: held_value, input: input, element: element, positions: positions);
     }
     None() => {
     }
@@ -2049,11 +2047,9 @@ fn lpos_finish(client: &Client, seek: &Seek, positions: &Box<Slots<u64>>) -> res
   if seek^.counted {
     reply_array(client: client, count: found);
     for @answers (at in 0_u64..found) {
-      if at < positions^.inner.len {
-        let position = positions^.inner[at];
-        let signed = cvt.wrap::<u64, i64>(position);
-        reply_integer(client: client, value: signed);
-      }
+      let position = positions^.inner[at];
+      let signed = cvt.wrap::<u64, i64>(position);
+      reply_integer(client: client, value: signed);
     }
     return unit;
   }

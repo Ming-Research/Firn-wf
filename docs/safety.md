@@ -1,7 +1,7 @@
 # Firn's safety guarantees
 
-These claims describe Firn built with [its Whitefoot pin](../whitefoot.pin),
-`wf-af7665be672d`: [specification v0.146 at the pinned commit][spec].
+These claims describe Firn built with Whitefoot release `wf-af7665be672d`:
+[specification v0.146 at its commit][spec].
 Whitefoot's [safety claims page][claims] states what its checker claims for an
 accepted program, what it does not claim and what the claims trust; this
 document links to those entries and adds what is Firn's: the boundaries as they
@@ -9,6 +9,13 @@ meet Firn, its resource failures, its evidence and its runtime source census.
 All of it is conditional on the page's [trusted base][claims-tcb]
 ([SCOPE-3][scope]). It does not establish Redis compatibility, durability of
 every acknowledged write, or continuous availability.
+
+[`whitefoot.pin`](../whitefoot.pin) now names `wf-63b7cbb03820` (specification
+v0.165). The specification passages, source-line anchors and runtime census
+below were read at `wf-af7665be672d` and have not been read again at the
+newer release; "the pin" and "pinned" below mean that audited release. Firn
+builds, passes its gate and compiles the safety witnesses under the newer
+release.
 
 The page was added to Whitefoot after the pin, so it is linked at the commit
 that merged it, `4b58ba6`. Compared rule by rule between
@@ -66,8 +73,9 @@ only a comment in one accepted witness and the experiment README, and gate run
 38424251158 passed on `a3253ee`. That run used Whitefoot `d75f318d5631`, an
 earlier pin; accepted executables were **not run**.
 These are specific source-admission examples, not a complete proof of Firn or
-of the current compiler/runtime. The rules above are cited at Firn's current
-pin, except for the claims page, which is linked at `4b58ba6`.
+of the current compiler/runtime. The rules above are cited at the audited
+release, not at the release `whitefoot.pin` now names, except for the claims
+page, which is linked at `4b58ba6`.
 
 The audit also found an accept error that stopped service with status zero;
 firn now logs it and keeps listening ([correction in PR #104][accept-pr]).

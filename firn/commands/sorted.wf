@@ -428,8 +428,8 @@ fn zadd_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "Runs ZADD over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = add_scores(env: client, value: held, adding: &plan^.adding);
+    Some(value: held_value) => {
+      let edited = add_scores(env: client, value: held_value, adding: &plan^.adding);
     }
     None() => {
     }
@@ -556,8 +556,8 @@ fn remove_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(v
           let pair = hash_map_remove::<KeyHash, f64, ceiling>(map: &sorted^.scores, key: &member, env: &keys);
           match move pair {
             Some(value: gone) => {
-              let HashMapPair(key: held, value: score) = move gone;
-              let rank = Rank(score: score, member: move held);
+              let HashMapPair(key: held_value, value: score) = move gone;
+              let rank = Rank(score: score, member: move held_value);
               let unranked = ordered_map_remove::<RankOrder, unit, ceiling>(map: &sorted^.order, key: &rank, env: &keys);
               set removed = removed +wrap 1_u64;
             }
@@ -611,8 +611,8 @@ fn zrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "Runs ZREM over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = remove_ranked(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = remove_ranked(env: client, value: held_value);
     }
     None() => {
     }
@@ -715,23 +715,20 @@ fn rightmost(node: &OrderedNode<Rank, unit>) -> found: Option<Rank> reads(node) 
     return None<Rank>();
   }
   let last = count -wrap 1_u64;
-  if last < node^.entries.len {
-    if node^.entries[last].after.len > 0_u64 {
-      let below = rightmost(node: &node^.entries[last].after[0_u64].inner);
-      match move below {
-        Some(value: rank) => {
-          return Some<Rank>(value: move rank);
-        }
-        None() => {
-        }
+  if node^.entries[last].after.len > 0_u64 {
+    let below = rightmost(node: &node^.entries[last].after[0_u64].inner);
+    match move below {
+      Some(value: rank) => {
+        return Some<Rank>(value: move rank);
+      }
+      None() => {
       }
     }
-    let final = &node^.entries[last].pair.key;
-    let member = copy_key(key: &final^.member);
-    let rank = Rank(score: final^.score, member: move member);
-    return Some<Rank>(value: move rank);
   }
-  return None<Rank>();
+  let final = &node^.entries[last].pair.key;
+  let member = copy_key(key: &final^.member);
+  let rank = Rank(score: final^.score, member: move member);
+  return Some<Rank>(value: move rank);
 }
 
 fn lowest(sorted: &Sorted) -> found: Option<Rank> reads(sorted) {
@@ -862,8 +859,8 @@ fn zpop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "Runs ZPOP over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = pop_ranked(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = pop_ranked(env: client, value: held_value);
     }
     None() => {
     }
@@ -993,8 +990,8 @@ fn zcard_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   doc "Runs ZCARD over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = sorted_size(env: client, value: held);
+    Some(value: held_value) => {
+      let found = sorted_size(env: client, value: held_value);
     }
     None() => {
     }
@@ -1092,8 +1089,8 @@ fn zscore_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "Runs ZSCORE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = member_score(env: client, value: held);
+    Some(value: held_value) => {
+      let found = member_score(env: client, value: held_value);
     }
     None() => {
     }
@@ -1199,8 +1196,8 @@ fn zmscore_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], 
   doc "Runs ZMSCORE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = member_scores(env: client, value: held);
+    Some(value: held_value) => {
+      let found = member_scores(env: client, value: held_value);
     }
     None() => {
     }
@@ -1256,10 +1253,8 @@ fn subtree_size(link: &Slots<Box<OrderedNode<Rank, unit>>, 1>) -> size: u64 read
   let count = node^.entries.len;
   set size = size +wrap count;
   for @entries (index in 0_u64..count) {
-    if index < node^.entries.len {
-      let below = subtree_size(link: &node^.entries[index].after);
-      set size = size +wrap below;
-    }
+    let below = subtree_size(link: &node^.entries[index].after);
+    set size = size +wrap below;
   }
   return size;
 }
@@ -1273,12 +1268,10 @@ fn rank_before(link: &Slots<Box<OrderedNode<Rank, unit>>, 1>, key: &Rank, env: &
   let count = node^.entries.len;
   let position = count;
   for @search (index in 0_u64..count) {
-    if index < node^.entries.len {
-      let order = rank_compare(env: env, left: key, right: &node^.entries[index].pair.key);
-      if order <= 0_i32 {
-        set position = index;
-        break @search;
-      }
+    let order = rank_compare(env: env, left: key, right: &node^.entries[index].pair.key);
+    if order <= 0_i32 {
+      set position = index;
+      break @search;
     }
   }
   if position == 0_u64 {
@@ -1289,15 +1282,11 @@ fn rank_before(link: &Slots<Box<OrderedNode<Rank, unit>>, 1>, key: &Rank, env: &
   set below = below +wrap position;
   let last = position -wrap 1_u64;
   for @whole (index in 0_u64..last) {
-    if index < node^.entries.len {
-      let size = subtree_size(link: &node^.entries[index].after);
-      set below = below +wrap size;
-    }
+    let size = subtree_size(link: &node^.entries[index].after);
+    set below = below +wrap size;
   }
-  if last < node^.entries.len {
-    let partial = rank_before(link: &node^.entries[last].after, key: key, env: env);
-    set below = below +wrap partial;
-  }
+  let partial = rank_before(link: &node^.entries[last].after, key: key, env: env);
+  set below = below +wrap partial;
   return below;
 }
 
@@ -1398,8 +1387,8 @@ fn zrank_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   doc "Runs ZRANK over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = member_rank(env: client, value: held);
+    Some(value: held_value) => {
+      let found = member_rank(env: client, value: held_value);
     }
     None() => {
     }
