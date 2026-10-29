@@ -216,6 +216,41 @@ measurement.
 - **What rejects.** A cell below its threshold stands as measured, with its gap.
   The acceptance row (b) sends it to the owner with the numbers before the merge.
 
+### The fourth version (stated before its runs)
+
+The fourth version is the head that merges. Its runs are A1, A2 and C of the
+table below, dispatched on the head commit that carries this section, with the
+images `base` (`dd8c06c`, the tip of main that the PR last merged), `head` and
+`head-twin`, in the cells, depths, passes and placement stated above.
+
+- **Question.** Does reading Meta's bound in the first statement, in place of
+  the second statement that takes the event hub, bring a push that creates its
+  list where nobody waits back to the rate of `main`; and does trying the stream
+  commands before the blocking ones bring `xadd` at depth 1 back to it?
+- **Prediction (inferred from one profile of the third version, not measured).**
+  The four lock symbols of the third version's second statement, about 12% of
+  the cycles in excess of `base`, are the 14% it lost at depth 16. No client is
+  blocked in A1 or A2, so the bound stays zero and the second statement does not
+  run: `lpush_new` at depth 16 and depth 1 is predicted to lie across 1 with the
+  file off and with it on, and `xadd` at depth 1 across 1.
+- **What rejects it.** `lpush_new` wholly on the slower side in A1 or A2 rejects
+  "the second statement was the cost": the cost is then elsewhere, and the
+  profile of the first `lpush_new 16` pass of `head` is read for the four
+  symbols (a share near that of `base` shows the zero-bound path is the one
+  taken, and the cost is not theirs). `xadd` at depth 1 wholly slower rejects
+  "the name comparisons before the stream commands are the 0.5%". Any other cell
+  wholly on the slower side is a regression by the rule above, and goes to the
+  owner with its numbers.
+- **Not covered.** No cell of A1 or A2 has a client blocked, so they measure the
+  path at bound zero alone. A push that creates a list while some client is
+  blocked takes the third version's two statements (0.857 of `main`'s rate at
+  depth 16 when it ran for every creation), and no cell measures it; C has
+  blocked clients but its pushes only serve them.
+- **C** compares the hand-off with the six competitors as in the third
+  version's run; the registration now also sets the bound, so the run shows
+  whether that moves the numbers. Its result is read against the criteria of
+  question 2 unchanged.
+
 ## The runs
 
 Each is a dispatch of `redis-bench.yml` on the PR's head commit; the runner
