@@ -39,11 +39,15 @@ expected = [
 [ci.fast]
 # Runs only the tests it is given, after only the setup they need.
 workflow = "fast.yml"
-# GitHub's own machines, ubuntu-24.04, which every job of check.yml has always used.
-runner = "github"
-# check.yml gives the jobs of the Redis suite, the network cases and the sync failures 25, 20 and 30 minutes; named
-# together, they run one after the other. A run not complete by then is cancelled, and said as what it found.
-too_long = "2h"
+# The owner's own machine, the self-hosted runner 14900k: an agent waits for this workflow each time it asks for tests,
+# and that machine keeps the checkout, firn's builds and the reference Redis between runs, so a run builds again only
+# what changed. aof-sync-fault needs a device only root can make, so it runs in a job of the same workflow on GitHub's
+# ubuntu-24.04.
+runner = "14900k"
+# check.yml gives the jobs of the Redis suite and the network cases 25 and 20 minutes; named together, they run one
+# after the other on the 14900k, within that job's 60 minutes, while the sync failures run beside them on GitHub's
+# machine. A run not complete by then is cancelled, and said as what it found.
+too_long = "90m"
 
 [ci.full]
 # Every check a merge needs, run once before the merge: the gate and the sync failures (check.yml), and the design
