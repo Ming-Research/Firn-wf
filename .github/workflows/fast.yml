@@ -1,0 +1,184 @@
+# firn's fast workflow (`ci.fast` of wf-agents.toml): what an agent's
+# `run_tests` waits for while a work is under way. It runs only by hand, which
+# only someone who may write to the repository can ask for. The engine of
+# wf-agents always asks for it on main, so that this file as main holds it
+# runs, with the commit to test, a value only its request knows, which the
+# run's name holds, the tests to run and how long one test may run.
+#
+# A test is a target in TESTS of the Makefile, as check.yml and
+# design-readiness.yml name it in their results. This workflow runs only the
+# tests it is given, each by itself, through whitefoot-kit/ci/run-tests.py,
+# after only the setup they need, the same as their jobs in those workflows
+# take: the compiler and its LLVM for any test but the design checks and
+# gate-sync; the reference Redis for the network cases, the Redis suite and
+# the sync failures; Rust for the network cases and the sync failures; and
+# the failing device for the sync failures. A name no test has is said in the
+# log and reported as nothing, which the engine reads as a test that did not
+# run. What became of each test is JUnit XML in the artifact `test-results`.
+name: fast
+run-name: fast ${{ inputs.call }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit to check out and test, pushed to a branch of the repository already
+        required: true
+      call:
+        description: A value only the request that asks for this run knows, which the run's name holds
+        required: true
+      tests:
+        description: The tests to run, each name followed by a line break
+        required: false
+        default: ''
+      test_stop:
+        description: How long one test may run before it is stopped, in whole seconds; empty for no stop but the job's limit
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# No concurrency group: each run is a request an agent waits for, which
+# another request must not cancel.
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-24.04
+    # check.yml gives the jobs of the Redis suite, the network cases and the
+    # sync failures 25, 20 and 30 minutes; named together, they run one after
+    # the other here.
+    timeout-minutes: 90
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+      TESTS_JUNIT: ${{ github.workspace }}/build/test-results/tests.xml
+      TESTS_SUITE: tests
+      TESTS_STOP: ${{ inputs.test_stop }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          submodules: true
+          fetch-depth: 0
+
+      # The names given, one a line, and what they need set up.
+      - name: Read the names
+        id: names
+        env:
+          GIVEN: ${{ inputs.tests }}
+        run: |
+          printf '%s\n' "$GIVEN" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF && !seen[$0]++' \
+            > "$RUNNER_TEMP/names"
+          echo "Named:"
+          cat "$RUNNER_TEMP/names"
+          compiler=false redis=false rust=false device=false
+          while IFS= read -r name; do
+            case "$name" in
+              design-lint|design-ready|pin-ready|gate-sync) ;;
+              *) compiler=true ;;
+            esac
+            case "$name" in
+              test|redis-suite) redis=true ;;
+              aof-sync-fault) redis=true; device=true ;;
+            esac
+            case "$name" in
+              test|aof-sync-fault) rust=true ;;
+            esac
+          done < "$RUNNER_TEMP/names"
+          {
+            echo "compiler=$compiler"
+            echo "redis=$redis"
+            echo "rust=$rust"
+            echo "device=$device"
+          } >> "$GITHUB_OUTPUT"
+
+      # As design-readiness.yml names it, for the design checks.
+      - name: Name main as a local ref
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          git branch -f main origin/main
+
+      # The design checks review the commit as a work branch is reviewed:
+      # against its fork point from main.
+      - name: Select the design review base
+        run: |
+          design_review_base=$(git merge-base refs/remotes/origin/main HEAD)
+          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$design_review_base"
+
+      - name: Install the tests' tools
+        if: steps.names.outputs.redis == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tcl patch strace dmsetup
+
+      - name: Download the pinned compiler
+        if: steps.names.outputs.compiler == 'true'
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        if: steps.names.outputs.compiler == 'true'
+        run: |
+          make toolchain
+          ld.lld --version
+          /usr/bin/clang --version
+
+      - name: Select the Rust toolchain
+        if: steps.names.outputs.rust == 'true'
+        run: rustup default stable && cargo --version
+
+      # The reference Redis 7.2.16, built as check.yml's jobs build it and
+      # cached under the same key.
+      - name: Restore the Redis build
+        id: redis-cache
+        if: steps.names.outputs.redis == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis
+        if: steps.names.outputs.redis == 'true'
+        run: |
+          bin=$(tests/redis-suite/reference.sh)
+          "$bin/redis-server" --version
+          echo "REDIS_SERVER=$bin/redis-server" >> "$GITHUB_ENV"
+
+      - name: Save the Redis build
+        if: steps.names.outputs.redis == 'true' && steps.redis-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      # As check.yml's aof-sync-fault job makes it, and checks that no
+      # periodic writeback reaches it.
+      - name: Make the faulty device
+        if: steps.names.outputs.device == 'true'
+        run: |
+          mount="$RUNNER_TEMP/sync-fault"
+          sudo tests/aof_sync_fault_device.sh setup "$mount" "$(id -u):$(id -g)"
+          echo "FIRN_SYNC_FAULT_MOUNT=$mount" >> "$GITHUB_ENV"
+          sudo tests/aof_sync_fault_device.sh check-writeback "$mount"
+
+      - name: Test
+        run: whitefoot-kit/ci/run-tests.py --names "$RUNNER_TEMP/names"
+
+      - name: Remove the faulty device
+        if: always() && steps.names.outputs.device == 'true'
+        run: sudo tests/aof_sync_fault_device.sh teardown "$RUNNER_TEMP/sync-fault"
+
+      - name: Name the job's end in its results
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ job.status }}
+        run: whitefoot-kit/ci/run-tests.py --end "$STATUS"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: test-results
+          path: build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
