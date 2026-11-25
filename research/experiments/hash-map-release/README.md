@@ -20,7 +20,10 @@ before the runs and the results are in
   measure of noise), and a reading. `python3 run.py selftest` checks the interval
   and the reading.
 
-To run it, with a compiler and language package of each release (`make compiler
+- `probes.py`: the probes of a present-field lookup under the old and the new home
+  function for the test's keys, modelled; no compiler is needed (`python3 -B -I probes.py`).
+
+To run the timing, with a compiler and language package of each release (`make compiler
 PIN=FILE` downloads a release that FILE names into `build/whitefoot/<release>/`):
 
 ```sh

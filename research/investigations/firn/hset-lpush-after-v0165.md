@@ -721,7 +721,13 @@ identical, and `head` reads above `cross` in both runs by 38 and 13 (`hash_map_t
 against 321). So the first run's "+25% instructions in `hash_map_lookup`" is not
 confirmed as a size, only as a sign that two runs repeat; the profile cannot say
 whether the sign is a difference or the spread of sampling, and the program that
-follows counts retired instructions exactly. The cycles of the contended lock
+follows counts retired instructions exactly. The new home function is not a reason
+for more probes: a model of the test's 99,996 keys (FNV-1a of `element:` and twelve
+digits, the 262,144 buckets that 100,000 pairs need under both releases' growth rule,
+linear probing) gives a present key 1.351 probes under `hash % buckets` and 1.288
+under the top bits of `hash * 11400714819323198485`, with 0.789 and 0.815 of the
+keys at their home bucket ([`probes.py`](../../experiments/hash-map-release/probes.py),
+a model of the home function, not a replay of the server's growth). The cycles of the contended lock
 move more: `try_entry` of `hset` was 573 and 639 per request in the first run
 for `cross` and `head` and 599 and 890 in the second. `try_entry` is a `pause`
 spin loop, and its samples measure the other driver's wait, not work.
