@@ -132,10 +132,17 @@ rm -rf "$suite" "$out/logs" "$out/servers" "$out/hung" "$out/data"
 tar -xzf "$archive" -C "$out"
 # Redis's no-argument unsubscribe helpers read no acknowledgments. Preserve
 # those wire commands, but make their tests wait for all known memberships
-# before another connection publishes or the next test starts. The same
-# contextual patch applies to every target; stale or missing hunks stop the run.
-python3 -B "$here/check-pubsub-barriers.py" "$suite" "$here/pubsub-barriers.patch"
+# before another connection publishes or the next test starts. The suite also
+# runs the tests of a unit on one shared connection, which a failed test can
+# leave in RESP3, in raw mode or with unread replies, so that every later test
+# of the unit fails; the second patch gives the test after a failure a fresh
+# connection in the mode the failed one started in. The same contextual
+# patches apply to every target; stale or missing hunks stop the run, and the
+# check also runs two witnesses of the second patch against the pinned
+# redis-server.
+python3 -B "$here/check-pubsub-barriers.py" "$suite" "$here/pubsub-barriers.patch" "$here/connection-reset.patch"
 patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/pubsub-barriers.patch"
+patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/connection-reset.patch"
 # Tests that run the suite's own client tools look for them in src/, as in a
 # built source tree; the 7.2.16 tools built from the same archive stand in
 # for them.
@@ -171,6 +178,7 @@ flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeou
 {
     echo "suite: redis-$version.tar.gz sha256 $sha256"
     echo "suite adjustment: pubsub-barriers.patch waits for and checks all known no-argument unsubscribe acknowledgments"
+    echo "suite adjustment: connection-reset.patch gives the test after a failed test a fresh connection in the mode the failed one started in"
     echo "target: $target"
     case $target in
         redis) echo "server: $(redis-server --version)"
