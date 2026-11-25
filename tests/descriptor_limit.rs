@@ -26,13 +26,16 @@ fn may_raise_hard_limit() -> bool {
 }
 
 /// Starts the server after the shell has set the soft limit to `soft` and the hard limit to `hard`
-/// (the soft limit first, which the kernel needs while it is above the new hard limit).
+/// (the soft limit first, which the kernel needs while it is above the new hard limit). One worker and
+/// one driver keep the descriptors the runtime itself needs well below a limit of 32, as in the
+/// accept-error cases; Redis ignores the settings.
 fn start_limited(binary: &PathBuf, directory: &std::path::Path, hard: u32, soft: u32, arguments: &[&str]) -> ProgramChild {
     let mut command = Command::new("/bin/sh");
     command.current_dir(directory)
         .args(["-c", "ulimit -Sn \"$2\" && ulimit -Hn \"$1\" && shift 2 && exec \"$@\"", "sh"])
         .arg(hard.to_string()).arg(soft.to_string()).arg(binary).args(arguments.iter().map(OsString::from))
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .env("WF_WORKERS", "1").env("WF_DRIVERS", "1")
         .env_remove("WF_REQUIRE_WINDOWS_IOCP");
     ProgramChild::spawn(&mut command).expect("spawn limited subject")
 }
