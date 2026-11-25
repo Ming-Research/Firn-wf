@@ -227,7 +227,9 @@ No run failed. In the gate's history the case ran about 205 times up to
 2026-10-25, on kernel 6.17, and stalled twice; it has run about 25 times
 since, on kernel 7.0, with no stall. At two stalls in 205 runs, 1265 runs
 without one have a probability below one in 100000: what stalled the case on
-the runners of October does not happen on today's.
+the runners of October does not happen on today's. The self-hosted 14900K,
+which runs the network cases for `fast.yml`, has kernel 7.0.0-38-generic
+(job 139304195908 of run 45642368822).
 
 The first run's sample, 5 s after the second publication, shows what every
 run of the case does to the connection (`ss -tinm`, run 45631080163):
@@ -290,6 +292,71 @@ the only program of a QEMU machine that boots a given Ubuntu kernel.
 If 6.17 shows no wait with plain sockets, the stall needs firn's way of
 sending (a send in the ring, re-armed by the kernel's poll), and the next
 comparison is the case itself in the machine under 6.17.
+
+### Results: plain sockets under each kernel
+
+Measured on 2026-11-25 on GitHub's ubuntu-24.04 runners with waits of 35 and
+33 s. The machine is QEMU with KVM, 4 processors and 10 GiB; the kernel
+package is `linux-image-6.17.0-1022-azure_6.17.0-1022.22_amd64.deb` (SHA-256
+909e771d8abc1aecb5df5aa699650a1488ea65fb526f8b648ee6925d71805e60, as apt downloaded and checked it).
+
+| Kernel | Where | Run | Pairs | First frame: reads with a second or more without a byte | Second frame | Longest wait for a byte |
+| --- | --- | --- | --- | --- | --- | --- |
+| 7.0.0-1017-azure | the runner itself | 45642367552 | 551 | 0 | 0 | 4 ms |
+| 7.0.0-1018-aws, the runner's own | the machine | 45642366860 | 494 | 0 | 0 | 2 ms |
+| 6.17.0-1022-azure | the machine, a pair every 2 s | 45642370692 | 493 | none in the first 17 pairs | 19 of the first 24 pairs or more | 20 s or more |
+| 6.17.0-1022-azure | the machine, a pair every 2 s | 45642367793 | 493 | none in the first 17 pairs | 19 of the first 20 pairs or more | 19 s or more |
+| 6.17.0-1022-azure | the machine, a pair every 1 s | 45642366896 | 989 | none in the first 34 pairs | 18 of the first 28 pairs or more | 19 s or more |
+
+For the three runs on 6.17 the table counts the first pairs only: `run.sh`
+then kept the first 400 lines about waits, and these runs printed far more
+(consoles of 13008, 12994 and 16862 lines, against 1003 for the run of the
+same length in which nothing waited). Each run's log holds every pair.
+
+The hypothesis is not rejected: on 6.17 two plain sockets, with no server of
+ours, stop as the case stopped, at the second frame and not the first, as
+soon as the reader has read what its own socket held (0.5 to 2.6 MiB), and
+for longer than the case's 10 s. Under 7.0 the same program in the same
+machine never waits, so the machine is not what makes them wait. Two things
+differ from what was predicted:
+
+- The rate. Nearly every second frame waited among the pairs seen, not one
+  frame in a hundred.
+- The mechanism. The reader does announce the open window, and the sender
+  receives it. What the sender waits for is its own retransmission timer.
+  Before the read, the writer's socket on 6.17 has one segment sent, not
+  acknowledged and marked lost, has retransmitted 9 times and has backed its
+  timer off to 26 s (`unacked=1 lost=1 total_retrans=9 backoff=7
+  rto_us=26368000`); on 7.0 it has nothing outstanding and probes the closed
+  window (`unacked=0 lost=0 total_retrans=2 backoff=7 rto_us=205000`). One
+  second into the read the writer on 6.17 knows the window is open
+  (`snd_wnd=729088`, an acknowledgement 1 s old) and still sends nothing: a
+  window update does not make it retransmit, and its last retransmission was
+  6 s before the read began, so the frame moves again when the timer fires,
+  about 20 s into the read. This is the report to netdev's account: the
+  receiver refuses a segment that the sender then keeps retransmitting. The
+  reader's socket had dropped 16 or 17 packets under both kernels.
+
+### firn as the sender under each kernel
+
+Two things are still open after the runs above. The rate differs from CI's
+history, in which the case stalled in 2 of about 205 gate runs on 6.17. And
+today's runs of the case on 7.0 do not by themselves separate the kernel from
+the server: both failures ran firn built with Whitefoot wf-af7665be672d, the
+pin moved to wf-63b7cbb03820 on 2026-10-24 and the runners' kernel to 7.0 on
+2026-10-26 (`firn/` itself has no change of code since). `run.sh
+firn-reopen-vm` runs the same pairs with a firn of today as each pair's
+sender, started as the case starts it (one driver, the native ring, two
+clients): a second connection publishes the 14 MiB message and the reader is
+the subscriber, which reads as before. firn's socket is not this program's,
+so for a wait it prints that socket's line of `/proc/net/tcp`, whose timer
+field says whether the retransmission timer (1) or the probe of a closed
+window (4) is pending.
+
+| Comparison | Prediction | Rejects it if |
+| --- | --- | --- |
+| firn as the sender, kernel 6.17.0-1022-azure in the machine | some second frames wait a second or more, with the retransmission timer pending on firn's socket; how many is not predicted (CI's history says one in a hundred, the plain sockets nearly all) | no read waits a second in 1000 pairs or more: then today's firn does not meet the kernel's fault, and it does not explain October's stalls |
+| firn as the sender, the runner's kernel 7.0 in the machine | no read waits a second | reads wait: then firn or the machine has a part in it |
 
 ## The gate's failure rate
 

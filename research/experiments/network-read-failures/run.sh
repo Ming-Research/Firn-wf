@@ -13,6 +13,8 @@
 #   run.sh stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX]
 #   run.sh tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX]
 #   run.sh tcp-reopen-vm MINUTES KERNEL INTERVAL_MS WAITS [RECEIVE_MAX]
+#   run.sh firn-reopen MINUTES INTERVAL_MS WAITS
+#   run.sh firn-reopen-vm MINUTES KERNEL INTERVAL_MS WAITS
 #
 # MINUTES bounds a mode from its start, builds included: no pass or run
 # starts that would end after it. INTERVAL is the seconds between two starts
@@ -27,7 +29,9 @@
 # for the runner's own kernel, or the name of an Ubuntu kernel image package,
 # such as linux-image-6.17.0-1022-azure, the kernel of the runners on which
 # the soft-limit case stalled: tcp-reopen-vm runs tcp_window_reopen.rs as the
-# only program of a virtual machine that boots that kernel.
+# only program of a virtual machine that boots that kernel. firn-reopen and
+# firn-reopen-vm are tcp-reopen and tcp-reopen-vm with a firn as each pair's
+# sender, as in the case, in place of a thread's write.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -220,19 +224,39 @@ stall_loop() {
   python3 "$here/soft_summary.py" --loop "$out"
 }
 
-# Runs tcp_window_reopen.rs, which has no server of ours in it, until the
-# bound.
+# Builds the firn the pairs of firn-reopen start, and names it in $server.
+build_server() {
+  make --no-print-directory -C "$root" firn-test > "$out/build.log" 2>&1 || { tail -n 40 "$out/build.log"; exit 1; }
+  server=$build/firn-test
+}
+
+# Runs tcp_window_reopen.rs until the bound: with no server of ours in it, or
+# for firn-reopen with a firn as each pair's sender.
 tcp_reopen() {
   budget=$(( $1 * 60 ))
   begun=$(date +%s)
   receive_max "${4:-}"
+  server=
+  if [ "$sender" = firn ]; then build_server; fi
   rustc --edition 2024 -O -o "$out/tcp_window_reopen" "$here/tcp_window_reopen.rs" || exit 1
-  "$out/tcp_window_reopen" $(( budget - ($(date +%s) - begun) - 20 )) "$2" "$3" > "$out/tcp-reopen.log" 2>&1
+  "$out/tcp_window_reopen" $(( budget - ($(date +%s) - begun) - 20 )) "$2" "$3" $server > "$out/tcp-reopen.log" 2>&1
   status=$?
-  # Every pair's lines stay in the log; what is said is the stalls, the first
-  # pair's sample and the summary.
-  grep -a -E '^(STALL|DUMP|SAMPLE|tcp-window-reopen|thread )|panicked' "$out/tcp-reopen.log" | cut -c 1-1500 | head -n 400
-  echo "tcp-reopen: the program exited with $status; FRAME lines: $(grep -a -c '^FRAME' "$out/tcp-reopen.log")"
+  reopen_report "$out/tcp-reopen.log"
+  echo "tcp-reopen: the program exited with $status"
+}
+
+# Says what a run of tcp_window_reopen.rs printed, shortest first so that the
+# notices keep it: the machine's lines and the summary, then one line for
+# each frame that waited (its last second without a byte), then the kernel's
+# account of the sockets for the first waits. Every pair's lines stay in the
+# file.
+reopen_report() {
+  grep -a -E '^(vm:|tcp-window-reopen)|Linux version' "$1" | cut -c 1-600
+  echo "reopen: FRAME lines: $(grep -a -c '^FRAME' "$1"); STALL lines: $(grep -a -c '^STALL' "$1")"
+  grep -a -A 2 -E '^thread |panicked|Kernel panic' "$1" | cut -c 1-500 | head -n 24
+  grep -a '^STALL' "$1" | awk '{ key = $2 " " $3; if (!(key in last)) keys[++count] = key; last[key] = $0 }
+    END { for (i = 1; i <= count; i++) print "WAITED " substr(last[keys[i]], 7) }' | head -n 150
+  grep -a -E '^(SAMPLE|DUMP)' "$1" | cut -c 1-700 | head -n 16
 }
 
 # Runs tcp_window_reopen.rs under another kernel: as the init of a QEMU
@@ -249,7 +273,19 @@ tcp_reopen_vm() {
   begun=$(date +%s)
   vm=$out/vm
   sudo rm -rf "$vm"
-  mkdir -p "$vm/root/bin" "$vm/root/proc" "$vm/root/sys" "$vm/root/dev" "$vm/package"
+  mkdir -p "$vm/root/bin" "$vm/root/proc" "$vm/root/sys" "$vm/root/dev" "$vm/root/tmp" "$vm/package"
+  server=
+  if [ "$sender" = firn ]; then
+    # The server and the libraries it is linked with, at the paths it finds
+    # them by.
+    build_server
+    cp "$server" "$vm/root/firn-test" || exit 1
+    for library in $(ldd "$server" | grep -o '/[^ ]*'); do
+      mkdir -p "$vm/root$(dirname "$library")" && cp -L "$library" "$vm/root$library" || exit 1
+    done
+    ldd "$server" | cut -c 1-200
+    server=/firn-test
+  fi
   { sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 busybox-static cpio; } \
     > "$out/vm-apt.log" 2>&1 || { tail -n 30 "$out/vm-apt.log"; exit 1; }
   rustup target add x86_64-unknown-linux-musl > "$out/vm-rustup.log" 2>&1 || { tail -n 30 "$out/vm-rustup.log"; exit 1; }
@@ -275,12 +311,14 @@ tcp_reopen_vm() {
 [ -z "$receive" ] || echo "4096 131072 $receive" > /proc/sys/net/ipv4/tcp_rmem
 echo "vm: kernel \$(/bin/busybox uname -r), processors \$(/bin/busybox grep -c ^processor /proc/cpuinfo), \$(/bin/busybox grep MemTotal /proc/meminfo)"
 echo "vm: tcp_rmem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_rmem) tcp_wmem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_wmem) tcp_mem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_mem)"
-/tcp_window_reopen $seconds $interval $waits
+/tcp_window_reopen $seconds $interval $waits $server
 echo "vm: the program exited with \$?"
 /bin/busybox poweroff -f
 INIT
   chmod +x "$vm/root/init"
   sudo mknod "$vm/root/dev/console" c 5 1 || exit 1
+  sudo mknod -m 666 "$vm/root/dev/null" c 1 3 || exit 1
+  sudo mknod -m 444 "$vm/root/dev/urandom" c 1 9 || exit 1
   ( cd "$vm/root" && sudo find . | sudo cpio -o -H newc 2> /dev/null | gzip > "$vm/initramfs.gz" ) || exit 1
   ls -l "$vm/vmlinuz" "$vm/initramfs.gz"
   if [ -e /dev/kvm ]; then accelerator="-accel kvm -accel tcg"; else accelerator="-accel tcg"; fi
@@ -290,10 +328,7 @@ INIT
     -serial stdio < /dev/null > "$out/vm.log" 2>&1
   echo "tcp-reopen-vm: qemu exited with $? after $(( $(date +%s) - begun )) s; the console has $(wc -l < "$out/vm.log") lines"
   tr -d '\r' < "$out/vm.log" > "$out/vm.txt"
-  # Every pair's lines stay in the console's file; what is said is the
-  # machine's own lines, the stalls, the first pair's sample and the summary.
-  grep -a -E '^(vm:|STALL|DUMP|SAMPLE|tcp-window-reopen|thread )|panicked|Kernel panic|Linux version' "$out/vm.txt" | cut -c 1-1500 | head -n 400
-  echo "tcp-reopen-vm: FRAME lines: $(grep -a -c '^FRAME' "$out/vm.txt")"
+  reopen_report "$out/vm.txt"
   if ! grep -a -q '^tcp-window-reopen: pairs' "$out/vm.txt"; then
     echo "tcp-reopen-vm: the program did not reach its summary; the console's last lines:"
     tail -n 40 "$out/vm.txt" | cut -c 1-300
@@ -331,9 +366,9 @@ PYTHON
 
 mode=${1:-}
 case "$mode" in
-  environment | mechanism | suite | soft-limit | stall-loop | tcp-reopen | tcp-reopen-vm) ;;
+  environment | mechanism | suite | soft-limit | stall-loop | tcp-reopen | tcp-reopen-vm | firn-reopen | firn-reopen-vm) ;;
   *)
-    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL [RECEIVE_MAX] | stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX] | tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX] | tcp-reopen-vm MINUTES KERNEL INTERVAL_MS WAITS [RECEIVE_MAX]" >&2
+    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL [RECEIVE_MAX] | stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX] | tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX] | tcp-reopen-vm MINUTES KERNEL INTERVAL_MS WAITS [RECEIVE_MAX] | firn-reopen MINUTES INTERVAL_MS WAITS | firn-reopen-vm MINUTES KERNEL INTERVAL_MS WAITS" >&2
     exit 2
     ;;
 esac
@@ -347,8 +382,10 @@ rm -f "$out/$mode.status"
     suite) suite "$2" ;;
     soft-limit) soft_limit "$2" "$3" "${4:-}" ;;
     stall-loop) stall_loop "$2" "$3" "$4" "${5:-}" ;;
-    tcp-reopen) tcp_reopen "$2" "$3" "$4" "${5:-}" ;;
-    tcp-reopen-vm) tcp_reopen_vm "$2" "$3" "$4" "$5" "${6:-}" ;;
+    tcp-reopen) sender=thread; tcp_reopen "$2" "$3" "$4" "${5:-}" ;;
+    tcp-reopen-vm) sender=thread; tcp_reopen_vm "$2" "$3" "$4" "$5" "${6:-}" ;;
+    firn-reopen) sender=firn; tcp_reopen "$2" "$3" "$4" "" ;;
+    firn-reopen-vm) sender=firn; tcp_reopen_vm "$2" "$3" "$4" "$5" "" ;;
   esac
   echo $? > "$out/$mode.status"
 ) 2>&1 | tee "$out/$mode.out"
