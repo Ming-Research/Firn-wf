@@ -41,8 +41,9 @@ a socket that is bound and never listens. Measured then on GitHub-hosted
 ubuntu-24.04: with the listening lease 67 and 94 of 10000 connections were
 not refused (runs 40112052978, 40112176185), with the bound one 0 of 10000
 (run 40112186246). All eight resets are on commits without e3a1a36
-(`git merge-base --is-ancestor`). What is open: whether any reset still
-occurs with it.
+(`git merge-base --is-ancestor`). Of the 400 runs, 365 are on commits without
+it and 35 on commits with it; none of the 35 has a reset. What is open:
+whether any reset still occurs with it.
 
 ## EINTR: hypothesis
 
@@ -172,7 +173,11 @@ in the test process and so cannot interrupt a read", is wrong.
 
 Both failures stopped receiving the second 14 MiB frame, which firn had held
 for 33 s behind a full socket, on a runner where every other case had already
-ended. firn's output owner sends through `std::net::send_once`
+ended. Each case failed 81.0 s and 81.1 s after it started: its read of the
+second frame begins 70 s after the first publication, so the 10 s without a
+byte began as soon as the client had read what its own socket held. Both ran
+on GitHub's Azure machines with the runner image 20261012.334.1; the image's
+kernel is not in the logs. firn's output owner sends through `std::net::send_once`
 (`firn/server/promoted.wf`), which on this route is an `IORING_OP_SEND` on
 Whitefoot's ring with one driver thread. The candidates:
 
