@@ -10,7 +10,8 @@ which holds the question, the predictions and the results.
 | `trace_summary.py` | Reads a kernel trace of SIGCHLD and says, for the processes named, how many were discarded, queued or already pending, and which threads dequeued one. |
 | `soft-limit-stall.patch` | Changes `tests/pubsub.rs` for the experiment only: the soft-limit case reads its 14 MiB frames with one-second bounds, prints each frame's read time and longest wait, and prints the server's sockets, threads and rings for every second without a byte. It also adds the case `stall_loop`, which repeats the step that stalled (publish 14 MiB to a subscriber that is not reading, wait, read) without the long waits. |
 | `soft_summary.py` | Summarises the runs of the patched case and the rounds of `stall_loop`. |
-| `run.sh` | Runs each experiment: `environment`, `mechanism`, `suite MINUTES`, `soft-limit MINUTES INTERVAL`, `stall-loop MINUTES PROCESSES WAITS`. |
+| `tcp_window_reopen.rs` | Pairs of loopback sockets with no server of ours: a writer writes a 14 MiB frame, the reader leaves it unread for the case's waits and then reads it as the case does, and says how long each read waited for a byte and what the kernel says of both sockets during a wait. |
+| `run.sh` | Runs each experiment: `environment`, `mechanism`, `suite MINUTES`, `soft-limit MINUTES INTERVAL [RECEIVE_MAX]`, `stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX]`, `tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX]`. RECEIVE_MAX sets the most the kernel may grow a TCP receive buffer to for the mode. |
 
 ## How a run is made
 

@@ -9,14 +9,20 @@
 #   run.sh environment
 #   run.sh mechanism
 #   run.sh suite MINUTES
-#   run.sh soft-limit MINUTES INTERVAL
-#   run.sh stall-loop MINUTES PROCESSES WAITS
+#   run.sh soft-limit MINUTES INTERVAL [RECEIVE_MAX]
+#   run.sh stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX]
+#   run.sh tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX]
 #
 # MINUTES bounds a mode from its start, builds included: no pass or run
 # starts that would end after it. INTERVAL is the seconds between two starts
 # of the soft-limit case. PROCESSES is how many loops run side by side, each
 # with a server of its own, and WAITS the milliseconds a round lets the
-# server's send wait, one round after another, separated by commas.
+# server's send wait, one round after another, separated by commas; for
+# tcp-reopen, INTERVAL_MS and WAITS are tcp_window_reopen.rs's. RECEIVE_MAX,
+# where given, is the most bytes the kernel may grow a TCP socket's receive
+# buffer to (the third number of net.ipv4.tcp_rmem) for the mode: 6291456 is
+# Linux's older default, with which a 14 MiB frame does not fit a reader's
+# buffer, and 33554432 the newer one, with which it does.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -51,6 +57,12 @@ trace_take() {
   sudo sh -c "echo 0 > $tracing/tracing_on; cat $tracing/trace" > "$1"
   echo "trace: events lost per CPU buffer: $(sudo sh -c "grep -h overrun $tracing/per_cpu/cpu*/stats" | tr '\n' ' ')"
   sudo sh -c "echo > $tracing/trace; echo 1 > $tracing/tracing_on"
+}
+
+# Sets the most a TCP receive buffer may grow to, when a mode is given one.
+receive_max() {
+  [ -n "${1:-}" ] || return 0
+  sudo sysctl -w net.ipv4.tcp_rmem="4096 131072 $1" || exit 1
 }
 
 environment() {
@@ -156,6 +168,7 @@ soft_limit() {
   budget=$(( $1 * 60 ))
   interval=$2
   begun=$(date +%s)
+  receive_max "${3:-}"
   build_patched
   name=pubsub::soft_output_limit_interval_restarts_after_the_backlog_drains
   echo "soft-limit: built $binary in $(( $(date +%s) - begun )) s; one run starts every $interval s"
@@ -184,6 +197,7 @@ stall_loop() {
   processes=$2
   waits=$3
   begun=$(date +%s)
+  receive_max "${4:-}"
   build_patched
   seconds=$(( budget - ($(date +%s) - begun) - 30 ))
   echo "stall-loop: built $binary in $(( $(date +%s) - begun )) s; $processes loops of $seconds s with waits of $waits ms"
@@ -199,6 +213,21 @@ stall_loop() {
   wait
   echo "stall-loop: ended after $(( $(date +%s) - begun )) s"
   python3 "$here/soft_summary.py" --loop "$out"
+}
+
+# Runs tcp_window_reopen.rs, which has no server of ours in it, until the
+# bound.
+tcp_reopen() {
+  budget=$(( $1 * 60 ))
+  begun=$(date +%s)
+  receive_max "${4:-}"
+  rustc --edition 2024 -O -o "$out/tcp_window_reopen" "$here/tcp_window_reopen.rs" || exit 1
+  "$out/tcp_window_reopen" $(( budget - ($(date +%s) - begun) - 20 )) "$2" "$3" > "$out/tcp-reopen.log" 2>&1
+  status=$?
+  # Every pair's lines stay in the log; what is said is the stalls, the first
+  # pair's sample and the summary.
+  grep -a -E '^(STALL|DUMP|SAMPLE|tcp-window-reopen|thread )|panicked' "$out/tcp-reopen.log" | cut -c 1-1500 | head -n 400
+  echo "tcp-reopen: the program exited with $status; FRAME lines: $(grep -a -c '^FRAME' "$out/tcp-reopen.log")"
 }
 
 # In a job of GitHub Actions, repeats what a mode printed as notices of the
@@ -232,9 +261,9 @@ PYTHON
 
 mode=${1:-}
 case "$mode" in
-  environment | mechanism | suite | soft-limit | stall-loop) ;;
+  environment | mechanism | suite | soft-limit | stall-loop | tcp-reopen) ;;
   *)
-    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL | stall-loop MINUTES PROCESSES WAITS" >&2
+    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL [RECEIVE_MAX] | stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX] | tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX]" >&2
     exit 2
     ;;
 esac
@@ -246,8 +275,9 @@ rm -f "$out/$mode.status"
     environment) environment ;;
     mechanism) mechanism ;;
     suite) suite "$2" ;;
-    soft-limit) soft_limit "$2" "$3" ;;
-    stall-loop) stall_loop "$2" "$3" "$4" ;;
+    soft-limit) soft_limit "$2" "$3" "${4:-}" ;;
+    stall-loop) stall_loop "$2" "$3" "$4" "${5:-}" ;;
+    tcp-reopen) tcp_reopen "$2" "$3" "$4" "${5:-}" ;;
   esac
   echo $? > "$out/$mode.status"
 ) 2>&1 | tee "$out/$mode.out"

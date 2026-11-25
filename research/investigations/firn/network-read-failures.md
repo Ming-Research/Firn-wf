@@ -155,6 +155,7 @@ The suite, `make test` pass after pass with the same trace:
 | --- | --- | --- | --- | --- | --- | --- |
 | as on main | 45611579505 | 7 | 0 | 807 to 819 | 2 to 7 (28 in all) | every one queued: 17 by the first thread, 11 by the thread that started the child |
 | SIGCHLD blocked in every thread, children inheriting the block | 45611579570 | 6 | 0 | 0 | 1 for each test process, 918 to 952 found already pending | 0 |
+| SIGCHLD blocked in every thread, the harness's children given the first mask again before their exec | 45631079729 | 7 | 0 | 0 | 1 for each test process, 806 to 822 found already pending | 0 |
 
 On main, the 28 queued came from children that exit at once: `/bin/kill` 12,
 `/bin/sh` 11, `redis-server` 4 and one `firn-test` that was killed. The 11
@@ -164,7 +165,10 @@ SIGCHLD is queued for the test process a few times and wakes a thread that
 does not block it. The trace does not record which thread was woken, and no
 pass had a read fail: at the rate CI's history shows, 2 in about 400 passes,
 seeing one would need hundreds of passes. With the block no thread is left
-that can be woken, and none dequeued one.
+that can be woken, and none dequeued one. Giving a child its mask again takes
+a function that runs in the child before its exec, with which std starts the
+child by `fork` instead of `posix_spawn`; a pass took 141 to 142 s with it,
+as it took 140 to 142 s on main on the same kind of machine.
 
 The comment above the trace step of `check.yml`, "SIGCHLD ... has no handler
 in the test process and so cannot interrupt a read", is wrong.
