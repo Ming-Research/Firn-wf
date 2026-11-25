@@ -1404,3 +1404,78 @@ a change either, and its median is also 0.6% below 1.
 Taken with C1, `mset` has a shortfall of about 0.5% that shows again in a
 dispatch built for it, whose cause the variant does not isolate; `setmany-tx`
 has one rejection (B1) that the dispatch built for it does not reproduce.
+
+## Measurement of the head that merges Firn-wf#74
+
+Written before the measurement. The earlier measurements of this change
+(above) were made at 9b514d5 and at the merged head 5a0a1b9. Since then the
+branch merged `main` again, which moved the compiler pin to wf-63b7cbb03820
+and changed `firn/server/`, `firn/store/` and the tests, so the head that
+merges is measured again, once, after the gate passes on it. A later commit
+that changes only documents, the design tree or the research record does not
+change the binary and is not measured again; a commit that changes `firn/`
+is.
+
+The owner's rulings that this section follows:
+
+- `mset` and `setmany-tx` are accepted as they measure. Their sizes are
+  reported and not judged. The same code built twice differed by 1.7% on
+  `hset` (0.9835, 0.9765-0.9970 in one dispatch and 0.9914, 0.9502-1.0840 in
+  the other, in the first measurement above), so the 0.5% of `mset` is not
+  shown to come from this change. This acceptance covers these two cells and
+  this change only; it is not a precedent for accepting a slowdown later.
+- Every other cell is judged by the rules below, which are those of the
+  earlier measurements, stated again, with two differences: a cell whose
+  twin interval excludes 1 is no longer passed for that reason, and a handshake
+  shortfall smaller than the noise is no longer passed as undecided; both are
+  met or not met.
+
+Images: `head` and `head-twin` are the commit under measurement; `base` is
+`origin/main` at the dispatch, which the commit contains, so that `base` and
+`head` differ only by this change (checked at the dispatch with `git diff
+origin/main HEAD -- firn/`). Machine, placement and depth as in the first
+measurement: the i9-14900K, server CPUs 2 and 4 for the commands and as the
+workloads' own settings say for the others, load clients on CPUs 16-31, depth
+1, profiling off.
+
+- Run A, mode `compare`: the 20 tests of `SUITE_DEFAULT` in `redis-bench.sh`
+  (the 19 of the first measurement and `xadd`, which `main` supports), 5
+  seconds, 18 passes.
+- Run B1, mode `workloads`, firn only: `limiter-tx` (`MULTI`, `INCRBY`,
+  `PTTL`, `EXEC`) and `setmany-tx` (`MULTI`, one `MSET` of three keys, three
+  `EXPIRE`, `EXEC`), 50 connections, 10 seconds, 18 passes.
+- Run B2, mode `workloads`, images `head` and `head-twin` and the newest
+  stable Redis, Valkey, Dragonfly and Garnet at the dispatch: `handshake` and
+  `client-list`, 50 connections, 10 seconds, 12 passes.
+
+The criteria. A cell is a test and a server CPU count, or a workload.
+
+1. Commands supported before (Runs A and B1). H is the 95% interval of
+   head/base over the passes (the mean log ratio, Student's t). The cell is
+   met when H is not wholly under 1, and not met when it is. `mset` and
+   `setmany-tx` are the two cells that are reported with their H and not
+   judged. T is the interval of twin/head, the noise of one binary measured
+   twice. When T excludes 1 the cell's later passes are added one at a time,
+   up to all 18, and the cell is judged at the end; one whose H is then wholly
+   under 1 is not met whatever its T. A cell whose H contains 1 but is wider
+   than T is reported and does not block, since `base` and `head` are two
+   binaries whose build difference T does not carry.
+2. Handshake against the fastest competitor, as `summary.py workloads` gives
+   it. Met when firn's median rate is not below that competitor's median rate
+   and its p99 is not above that competitor's p99. A cell is client-limited
+   when the median client work fraction in `workload-limited.csv` of firn or of
+   that competitor is above 0.90; it asks only that firn's median rate is not
+   below the competitor's, and its p99 is reported and not judged. A shortfall
+   smaller than the twin's half-width gets passes added up to 12; a median
+   still below the competitor's at 12 passes is not met.
+3. `client-list` is judged against Redis, Valkey and Dragonfly as in 2, each
+   one by itself, and reported against Garnet with the multiple of rate and of
+   p99, not judged.
+
+A cell that is not met is reported as not met with its size and is brought to
+the owner; the rules are not changed after the results are seen. Rejecting
+the change needs a cell not met; accepting it needs none, the two accepted
+cells excepted.
+
+Expected time on the 14900K from the earlier measurements: about 99 minutes
+for Run A, 25 for Run B1 and 45 for Run B2.

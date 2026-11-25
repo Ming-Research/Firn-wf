@@ -3,7 +3,7 @@
 How firn queues a transaction's commands under MULTI and runs them at EXEC.
 
 ### decision exec-runs-queue-in-one-statement
-EXEC runs the queued commands in order by their command parts in one atomic statement holding every key and Meta, and the event hub when needed, with one time for them all.
+EXEC runs the queued commands in order, a CLIENT subcommand by its shared body, in one atomic statement holding every key, Meta, the client table and, if needed, the event hub, with one time for all.
 - rejected: an agent proposed running each queued command through the network path in a statement of its own; the owner rejected it, because Redis lets no other client's command come between a transaction's commands.
 - rejected: an agent proposed queueing every known command and running those without parts outside the statement; the owner rejected it, because such a transaction is no longer atomic, which is what the selected consumers rely on.
 
@@ -27,3 +27,11 @@ A write or PING refused for a saved file error dirties an open MULTI, and EXEC d
 ### decision transactions-have-no-watch
 firn has no WATCH or UNWATCH: WATCH outside a transaction is answered as an unknown command, and inside one it is refused as Redis refuses it.
 - rejected: an agent proposed WATCH and UNWATCH now; the owner rejected it, because no selected consumer sends them.
+
+### decision exec-runs-client-subcommands-in-the-queue
+EXEC runs a queued CLIENT subcommand through the same non-waiting body as the network path, inside its statement, and passes the queue's length for the multi field.
+- rejected: an agent proposed refusing a transaction that queues a CLIENT subcommand with EXECABORT; the owner rejected it, because Redis 7.2.16's CLIENT descriptors omit NO_MULTI and execCommand runs each queued command, so a refusal loses replies and connection changes Redis applies.
+
+### decision exec-publishes-connection-facts-before-releasing
+EXEC publishes its connection's changed facts to the client table before its atomic statement ends.
+- rejected: an agent proposed publishing them afterward in the network loop; the owner rejected it, because another connection could then see the transaction's new keys with the connection's old name or library facts.
