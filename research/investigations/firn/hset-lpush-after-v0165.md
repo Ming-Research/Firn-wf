@@ -657,7 +657,7 @@ with the message `the control failed: 2 busy loops on 2 4 of 13 other CPUs read
 the other CPUs busy; a control that asked only for a loaded reading above T would
 have held here, and the rise the loops make (0.0004 against at least 0.077)
 is what failed it. `compare-runs.csv` is empty: no image ran. The commit is
-reverted by `a443e2a`, which leaves `redis-bench.sh` as it was in `bc0c257`.
+reverted by `01b91e6`, which leaves `redis-bench.sh` as it was in `bc0c257`.
 
 ## Second profile run, stated before measuring
 
