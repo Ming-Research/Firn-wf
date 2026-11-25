@@ -362,7 +362,8 @@ window while the receive queue is not empty (`tcp_sequence`,
 `SKB_DROP_REASON_TCP_INVALID_END_SEQUENCE`). So a reader that is not reading
 refuses a segment, closes its window, and then drops every retransmission of
 that segment until it has read its queue empty; by then the sender's timer is
-tens of seconds long. v6.19 still counts the segment's length. v7.0 refuses a
+tens of seconds long. v6.18 and v6.19 keep the check, counting the segment's
+length. v7.0 refuses a
 segment only when the queue's memory alone exceeds the buffer (`return rmem
 <= sk->sk_rcvbuf;`), the change of commit 026dfef287c0, "tcp: give up on
 stronger sk_rcvbuf checks (for now)" (`Fixes: 1d2fbaad7cd8`,
