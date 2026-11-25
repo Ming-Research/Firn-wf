@@ -105,9 +105,11 @@ mechanism() {
   "$out/sigchld_eintr" child-mask blocked
 }
 
-# Runs the gate's network target, `make test`, pass after pass, and says for
-# each pass how it ended, what its failing cases said, and what became of the
-# SIGCHLD of the test processes.
+# Runs the gate's network target as check.yml's step does,
+# `whitefoot-kit/ci/run-tests.py test`, which runs `make test` in a session of
+# its own with its output in a pipe, pass after pass, each with a JUnit file
+# of its own, and says for each pass how it ended, what its failing cases
+# said, and what became of the SIGCHLD of the test processes.
 suite() {
   budget=$(( $1 * 60 ))
   begun=$(date +%s)
@@ -127,12 +129,13 @@ suite() {
     if [ $pass -gt 0 ] && [ $(( now - begun + last )) -gt $budget ]; then break; fi
     pass=$((pass + 1))
     : > "$out/pids.sampled"
-    make --no-print-directory -C "$root" test > "$out/pass-$pass.log" 2>&1
+    ( cd "$root" && whitefoot-kit/ci/run-tests.py --junit "$out/pass-$pass.xml" --suite "pass $pass" test ) \
+      > "$out/pass-$pass.log" 2>&1
     status=$?
     last=$(( $(date +%s) - now ))
     sort -u "$out/pids.sampled" > "$out/pids-$pass"
     trace_take "$out/trace-$pass"
-    echo "pass $pass: make test exited with $status after $last s"
+    echo "pass $pass: run-tests.py test exited with $status after $last s"
     grep -a '^test result' "$out/pass-$pass.log" | sed "s/^/pass $pass: /"
     if [ $status -ne 0 ]; then
       failed=$((failed + 1))

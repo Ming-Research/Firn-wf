@@ -366,9 +366,12 @@ window (4) is pending.
 
 ## The gate's failure rate
 
-`run.sh suite` runs `make test`, the gate's network target, pass after pass
-on the gate's kind of runner and says how each pass ended and what each
-failing case said.
+`run.sh suite` runs the gate's network target pass after pass on the gate's
+kind of runner and says how each pass ended and what each failing case said.
+For the passes of this section and of the EINTR results above it ran `make
+test`; since then it runs each pass as check.yml's step does, through
+`whitefoot-kit/ci/run-tests.py test`, which starts `make test` in a session
+of its own with its output in a pipe.
 
 The 13 passes above all passed (140 s a pass on one runner, 153 s on the
 other), as did the gate's own run of main that day (run 45610525110). CI's
