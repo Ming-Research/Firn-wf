@@ -1083,7 +1083,9 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   would take the slot again and again.
 - **Reuse.** After a complete append the pending buffer is cleared when its
   capacity is at most 1 MiB and replaced with 64 KiB otherwise, so that one
-  burst does not keep a large buffer for the life of the process.
+  burst does not keep a large buffer for the life of the process; Redis
+  7.2.16 likewise frees an AOF buffer of 4000 bytes or more after a write and
+  reuses a smaller one (`aof.c:1227-1234`).
 - **Placement.** The desk is a `Shared<AofDesk>` of its own, handed to
   `serve`, `serve_promoted`, `output_promoted`, `write_log` and `main`, each
   of which closes its handle; inside `Keyspace` it would make every holder of
