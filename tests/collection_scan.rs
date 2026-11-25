@@ -904,7 +904,10 @@ fn rewrite_commit_sequence(client: &mut TcpStream, protocol: u8) -> u64 {
 #[test]
 fn a_script_fallback_between_scan_calls_loses_no_member() {
     for protocol in [2, 3] {
-        let (child, mut client) = start_with(protocol, &[b"--appendonly", b"yes", b"--appendfilename", b"scan-fallback.aof"]);
+        // The cases of this binary share one working directory, so each protocol
+        // gets its own file: a second server must not replay the first one's writes.
+        let file = format!("scan-fallback-{protocol}.aof");
+        let (child, mut client) = start_with(protocol, &[b"--appendonly", b"yes", b"--appendfilename", file.as_bytes()]);
         for (scan, width) in [("SSCAN", 1), ("HSCAN", 2), ("ZSCAN", 2)] {
             let key = format!("fallback:{scan}");
             change_many(&mut client, scan, &key, true, "m", 0..1000);
