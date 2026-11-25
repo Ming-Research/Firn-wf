@@ -892,29 +892,52 @@ cell of the 19 default tests at depths 16 and 1 wholly on the slower side of
   and `lpush` 16 2.4% slower and `set` 16, `lpop` 16, `get` 1 and `lrange_600`
   1 faster (the pin record's verdict); Firn-wf#145 looks for the cause of the
   two that are slower.
-- **Settings.** As G: the 14900K, servers on CPUs 2 and 4, clients on CPUs
-  16-31, 2 server CPUs, the 19 tests at depths 16 and 1, 8 interleaved passes
-  of 5 s, no `reference` line, and no profile: the workflow's `profile` input
-  is on unless the dispatch sets it off. G's measuring step took 106 minutes.
-  The images of H and H2 (`head-nops` below included) are built first by one
-  run of the workflow's `build` mode, and H and H2 name that run as
-  `images_run`, so that no build runs in the window that must be quiet.
-- **The host.** The 14900K carries several runner instances of this
-  repository (`14900k-4`, `14900k-6` and `14900k-8` ran jobs on 2026-11-25),
-  and the `fast.yml` jobs of other works run on them beside a measurement. In
-  run 45607701747 (another item's, the same compare mode) the `base` image's
-  `hset` 16 rate fell from about 3.8 million requests a second in pass 5 to 2.2
-  and 1.1 million in passes 6 and 7, from 12:05 UTC; a `fast.yml` job started
-  on `14900k-4` at 12:07:52, and the run ended at 12:07:58 with exit code 143.
-  A run of H or H2 counts only if no other job of this repository ran on a
-  `14900k` runner during its measuring step, as the jobs' start and end times
-  read after the run show; jobs of other repositories on the machine are not
-  visible to this check. A run that does not count is not read, and is
-  dispatched again.
+- **Settings.** As G, but one run for each depth: the 14900K, servers on CPUs
+  2 and 4, clients on CPUs 16-31, 2 server CPUs, no `reference` line, and no
+  profile (the workflow's `profile` input is on unless the dispatch sets it
+  off). H is two runs, one after the other, each of the 19 tests at one depth
+  with a target of 8 clean interleaved passes of 5 s. Under the rule below a
+  pass is void when any of its runs sees other load, so a pass of one depth
+  (19 tests and 4 images, about 6.5 minutes of samples) comes out clean more
+  often than G's pass of both depths (about 13 minutes), and 8 clean passes of
+  one depth leave time for void ones before the 115 minutes after which no
+  attempt starts. The images of H and H2 (`head-nops` below included) are built
+  by one run of the workflow's `build` mode, which H and H2 name as
+  `images_run`.
+- **Other jobs on the machine.** The 14900K runs the other works' jobs beside a
+  measurement. In run 45607701747 (another item's, the same compare mode) the
+  `base` image's `hset` 16 rate fell from about 3.8 million requests a second
+  in pass 5 to 2.2 and 1.1 million in passes 6 and 7. H and H2 use, unchanged,
+  the rule of `redis-bench.sh` that Firn-wf#145 introduced (decision
+  `benchmark-voids-passes-run-beside-other-jobs`), with the parameters its
+  record states:
+  - The other CPUs are every online CPU outside the server and client CPUs and
+    the profiler's CPU 0, here 1, 3 and 5-15. Each client run's mean busy
+    fraction over them is kept.
+  - A pass attempt is void, and run again, when any of its runs reads above
+    T = 0.05. If the control at the start reads the idle machine above 0.02, T
+    is that reading plus 0.03.
+  - Before each attempt the run waits while the other CPUs are busy, at most
+    600 s for one wait and 2700 s in all, and no attempt starts 115 minutes
+    after the session began.
+  - A run with fewer than 8 clean passes is dispatched again, and the clean
+    passes of both runs are pooled. A run of H2 with 8 to 15 clean passes is
+    judged with them.
+  - After each run, the 14900K jobs that overlapped it are read from GitHub's
+    records. If a client run that overlaps a heavy step reads above T′ (the
+    highest reading of the clean runs that overlap no heavy step, plus 0.02)
+    and at most T, then T′ replaces T, and the voiding is decided again from
+    the readings alone.
+
+  The script is the one at the commit each run reports: main's if Firn-wf#145
+  has merged by then, that item's branch otherwise. This record makes no copy
+  of the rule. The rule cannot see a job on a server or client CPU, so this
+  work never runs two of its measurements at once.
 - **Measure.** As G: `summary.py ratios` on the rate and with `--metric cpu`,
+  over the clean passes (the attempts `compare-void.csv` lists are left out),
   for `head`/`before`, `head`/`main`, `main`/`before` and `head-twin`/`head`.
   A cell whose clients average over 90% busy (`client_busy_mean`, median over
-  the passes, in any image) is client-limited: reported and not judged.
+  the clean passes, in any image) is client-limited: reported and not judged.
 - **Reading.** A judged cell counts only if `head-twin`/`head` holds 1. A
   judged cell whose `head`/`before` interval is wholly on the slower side, or
   whose twin does not hold 1, is measured again in H2.
@@ -932,12 +955,13 @@ Written before H runs, so that its reading does not follow H's numbers.
   comparisons of `pubsub_command` at the head of `held_arity`, so
   `head`/`head-nops` is what publish/subscribe still costs an ordinary command
   on this program, less those two comparisons.
-- **Settings.** The tests of the cells H flagged, at both depths (the depth is
-  a setting of the whole run), 16 interleaved passes of 5 s, the placement of
-  H. With k tests the measuring step is about k x 2 x 5 x 16 x 5 s, and G2 took
-  75 minutes for 7 tests and 4 images. Its images come from H's build run.
-- **Profile.** After the passes, each image is profiled under each flagged
-  test at depth 16 (`profile_test`, 4999 Hz, flat), with the instructions of
+- **Settings.** The tests of the cells H flagged, in one run for each depth
+  that has a flagged cell, a target of 16 clean interleaved passes of 5 s, the
+  placement and the rule of H for other jobs. With k tests a clean pass is
+  about k x 5 x 5 s of samples. Its images come from H's build run.
+- **Profile.** In the run at depth 16, after the passes, each image is
+  profiled under each flagged test (`profile_test`, 4999 Hz, flat; the profiled
+  runs wait and are voided by the rule's own terms), with the instructions of
   `serve`'s and of the ordinary instance of `execute_client`'s resume symbols
   annotated. The workflow annotates a symbol by its exact name, and P5's
   annotation matched nothing because it gave the source names; the names are
