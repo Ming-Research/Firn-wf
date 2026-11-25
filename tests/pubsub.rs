@@ -1304,7 +1304,7 @@ fn client_text(reply: Vec<u8>) -> String {
 /// and getClientType lists a connection pubsub while pubsub.c holds the flag,
 /// normal after the last membership goes. firn gives the caller's own line
 /// every field and another connection's the fields it sets itself and the
-/// subscription counts the event hub keeps (design/firn/reported-facts.md).
+/// subscription counts the event hub keeps (decision client-list-other-connections-show-only-the-facts-they-set).
 /// Before the change firn wrote sub=0 psub=0 ssub=0 for every other connection and
 /// listed it normal.
 #[test]

@@ -4713,7 +4713,7 @@ fn firn_keeps_transactions_as_redis_does() {
 // https://github.com/Ming-Research/Firn-wf/actions/runs/38396764389
 // Batch 0 is RESP2 without AOF; batch 1 is RESP3 with appendonly yes.
 // Machine-dependent values are checked by their Redis format and relationship.
-// Unmeasured fields are omitted under design/firn/reported-facts.md; CLIENT and
+// Unmeasured fields are omitted under decision reported-facts-real-fixed-or-absent; CLIENT and
 // Clients field coverage belongs to the separate client-handshake work.
 const INFO_AUDIT_DEFAULT: &[&str] = &[
     "Server", "Clients", "Memory", "Persistence", "Stats", "Replication",
@@ -13019,7 +13019,7 @@ fn firn_refuses_client_commands_from_scripts_as_redis_does() {
 /// getAllClientsInfoString, catClientInfoString): every connection's line in
 /// the order of the connections, a connection's own line carrying the
 /// per-interaction fields idle, flags, multi and cmd=client|list, the others
-/// leaving those four out (design/firn/reported-facts.md), addr and laddr the
+/// leaving those four out (decision client-list-other-connections-show-only-the-facts-they-set), addr and laddr the
 /// addresses the Rust client sees, the name, library name and protocol a
 /// connection set showing in the other connection's list; TYPE normal lists
 /// them all, none holding a subscription (tests/pubsub.rs covers pubsub), and
@@ -13301,7 +13301,8 @@ fn firn_executes_client_subcommands_in_transactions_as_redis_does() {
         ]);
         // A second connection observes the old name and library: the queued
         // setters have not run. Other-client volatile fields are omitted by
-        // design/firn/reported-facts.md, so do not invent an observer flag.
+        // decision client-list-other-connections-show-only-the-facts-they-set,
+        // so do not invent an observer flag.
         observer.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("inspect queued setters");
         let line = bulk_reply(&mut observer, "client before EXEC");
         fields(&line, &["id=1", "name=", "lib-name="]);
