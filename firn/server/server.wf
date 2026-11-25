@@ -1080,7 +1080,7 @@ const option_rewrite_percentage: Array<u8, 27> = "AUTO-AOF-REWRITE-PERCENTAGE";
 
 const option_rewrite_min_size: Array<u8, 25> = "AUTO-AOF-REWRITE-MIN-SIZE";
 
-fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Clock, wall_clock: WallClock, stops: StopSignals, memory_meter: MemoryMeter, cwd: DirectoryRead, cwd_write: DirectoryWrite, log: &ServerLog) -> status: ExitStatus pure waits {
+fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Clock, wall_clock: WallClock, stops: StopSignals, memory_meter: MemoryMeter, cwd: DirectoryRead, cwd_write: DirectoryWrite, log: &ServerLog) -> status: ExitStatus reads(log) waits {
   doc "Starts the server once the invocation is read: raises the open-files limit, replays the append-only file, listens and serves until the stop, and returns the status firn ends with. Everything it logs is queued on log, which the caller closes after run returns.";
   log_line(log: log, role: 67_u8, level: 2_u64, word: &log_starting[0_u64..44_u64]);
   if options.configured {
@@ -1390,6 +1390,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
     let writer_sink = LogSink::Stream(output: move stdout);
     spawn serverlog_run(log: move writer_log, factory: move writer_factory, sink: move writer_sink);
   } else {
+    release::<OutputStream>(value: move stdout);
     match logfile_open(factory: &handles, paths: &paths, base: &cwd, path: &options.logfile.inner[0_u64..logfile_length]) {
       Ok(value: file) => {
         let writer_log = serverlog_share(log: &log);
@@ -1412,6 +1413,6 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   let code = run(options: move options, handles: move handles, stderr: move stderr, clock: move clock, wall_clock: move wall_clock, stops: move stops, memory_meter: move memory_meter, cwd: move cwd, cwd_write: move cwd_write, log: &log);
   serverlog_close(log: &log);
-  return code;
+  return move code;
 }
 

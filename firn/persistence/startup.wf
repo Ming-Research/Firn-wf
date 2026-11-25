@@ -244,8 +244,8 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
       return Err<WriteFile, AofStartError>(error: refusal);
     }
   }
-  let present = manifest^.parts.inner.len;
-  if present > 0_u64 {
+  let manifest_parts = manifest^.parts.inner.len;
+  if manifest_parts > 0_u64 {
     let loaded_at = std::time::now(clock: clock);
     let loading = std::time::nanoseconds_from(earlier: began, later: loaded_at);
     event_loaded(store: store, nanoseconds: loading);
