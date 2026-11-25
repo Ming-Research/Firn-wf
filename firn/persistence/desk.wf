@@ -5,8 +5,8 @@ alias Keyspace = pkg::store::Keyspace;
 fn aof_desk_new() -> desk: Shared<AofDesk> pure {
   doc "A desk with no slot, which no context waits at; aof_desk_open puts the active file on it.";
   let empty = None<AofSlot>();
-  let held = False();
-  let state = AofDesk(slot: move empty, taken: held, covered: 0_u64, ready: 18446744073709551615_u64);
+  let untaken = False();
+  let state = AofDesk(slot: move empty, taken: untaken, covered: 0_u64, ready: 18446744073709551615_u64);
   return shared_new::<AofDesk>(value: move state);
 }
 
@@ -131,8 +131,8 @@ fn aof_lead(store: &Keyspace, factory: &HandleFactory, slot: &AofSlot) -> covere
       None() => {
       }
     }
-    let held = bor(failing, retained);
-    if held {
+    let blocked = bor(failing, retained);
+    if blocked {
       set covered = pkg::store::aof_covered(meta: m);
     } else {
       swap(first: &m^.log, second: &slot^.pending);
