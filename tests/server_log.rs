@@ -274,3 +274,39 @@ fn a_logfile_that_is_a_symbolic_link_is_refused_at_startup() {
     assert!(stderr.starts_with("\n*** FATAL CONFIG FILE ERROR (Redis 7.2.16) ***\nCan't open the log file: "), "{output:?}");
     assert_eq!(std::fs::read_to_string(&target).expect("read target"), "", "nothing is written through the link");
 }
+
+/// An append-only file whose last command is cut short is cut after its last whole command, and Redis logs
+/// the short read, the truncation with its offset and that the file was loaded anyway, in that order, as
+/// warnings. The file name is the one the manifest gives.
+#[test]
+fn a_cut_append_only_tail_is_logged_as_redis_logs_it() {
+    let fixture = fixture_directory();
+    for (label, binary) in servers() {
+        let directory = fixture.path().join(label.replace(' ', "-"));
+        let aof = directory.join("appendonlydir");
+        std::fs::create_dir_all(&aof).expect("create the append-only directory");
+        let whole = resp(&["SET", "a", "1"]);
+        let partial = resp(&["SET", "b", "2"]);
+        std::fs::write(aof.join("appendonly.aof.1.base.aof"), resp(&["SET", "base", "1"])).expect("write the base");
+        std::fs::write(aof.join("appendonly.aof.1.incr.aof"), [whole.clone(), partial[..12].to_vec()].concat())
+            .expect("write the increment");
+        std::fs::write(aof.join("appendonly.aof.manifest"),
+            "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n")
+            .expect("write the manifest");
+        let (stdout, _) = run_and_stop(&binary, &directory, &["--appendonly", "yes"]);
+        let events = messages(&stdout);
+        let name = "appendonly.aof.1.incr.aof";
+        let expected = [
+            format!("!!! Warning: short read while loading the AOF file {name}!!!"),
+            format!("!!! Truncating the AOF {name} at offset {} !!!", whole.len()),
+            format!("AOF {name} loaded anyway because aof-load-truncated is enabled"),
+        ];
+        let positions: Vec<usize> = expected.iter().map(|line| {
+            events.iter().position(|(mark, text)| *mark == '#' && text == line)
+                .unwrap_or_else(|| panic!("{label}: {line:?} is not a warning of {stdout}"))
+        }).collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{label}: the lines are out of order in {stdout}");
+        let kept = std::fs::read(aof.join(name)).expect("read the increment");
+        assert!(kept.starts_with(&whole), "{label}: the whole command stays in the file");
+    }
+}

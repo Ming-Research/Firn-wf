@@ -150,8 +150,10 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
           if loaded_count != total {
             return Err<unit, AofStartError>(error: failed);
           }
+          event_cutting(store: store, name: name, offset: loaded.kept);
           let cut = aof_cut(factory: factory, writable: writable, name: name, kept: loaded.kept);
           if cut {
+            event_cut_loaded(store: store, name: name);
             set size = loaded.kept;
           } else {
             return Err<unit, AofStartError>(error: failed);

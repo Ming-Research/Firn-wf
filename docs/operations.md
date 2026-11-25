@@ -148,7 +148,9 @@ fewer, stops firn with status 1 and the line `Your current 'ulimit -n' of N is
 not enough for the server to start. Please increase your open file limit to at
 least M. Exiting.` `CONFIG SET maxclients` adjusts the limit the same way and,
 when the host cannot support the number, answers Redis's error naming the
-number it can and keeps the old value. firn can change only the soft limit:
+number it can and keeps the old value; where the limit has fallen to 32 or
+fewer it answers `try with 0` and writes no `Exiting.` line, since firn, unlike
+Redis, goes on serving. firn can change only the soft limit:
 where the hard limit is below the request, the limit it reaches equals
 Redis's for a process that may not raise its hard limit, but the host's reason
 in the second warning is the text the host gives firn, and Redis lowers the
@@ -317,7 +319,10 @@ the host's local time and a mark for the level: `.` debug, `-` verbose,
 all of them. The lines come from these events, with Redis's message:
 the start, the configuration loaded (or the warning that none was given), the
 open-files limit, `Running mode=standalone, port=N.`, `Server initialized`,
-`DB loaded from append only file: S seconds`, `Ready to accept connections
+`DB loaded from append only file: S seconds`, the three warnings for a cut tail
+of an append-only file (`!!! Warning: short read while loading the AOF file F!!!`,
+`!!! Truncating the AOF F at offset N !!!` and `AOF F loaded anyway because
+aof-load-truncated is enabled`), `Ready to accept connections
 tcp`, the start and the end of an append-only file rewrite, a failed append
 (`Error writing to the AOF file: reason` or `Short write while writing to the
 AOF file: (nwritten=N, expected=M)`, at most one in thirty seconds), `AOF write
@@ -334,8 +339,9 @@ because firn rewrites in a thread, `pidfile` and `syslog-enabled` are refused,
 `CONFIG SET dir` answers the unknown-option error where Redis answers `can't
 set protected config` or, with `enable-protected-configs` set, changes the
 directory, and Redis's other messages do not appear: those of features firn
-does not have, the lines that name the append-only files Redis creates, opens
-and removes, and the logo Redis prints instead of `Running mode=...` on a
+does not have, `Revert incomplete MULTI/EXEC transaction` and the lines for a
+truncation that fails, and the lines that name the append-only files Redis
+creates, opens and removes, and the logo Redis prints instead of `Running mode=...` on a
 terminal. The lines above are not all that firn writes: it also logs `Reading
 config from stdin`, `Unable to obtain the current NOFILE limit`, `Fatal error,
 can't open config file` and `Fatal error loading the DB`. A write that fails

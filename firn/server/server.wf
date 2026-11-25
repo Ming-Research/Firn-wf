@@ -1119,7 +1119,8 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
   let seed = cvt.wrap::<i64, u64>(calendar);
   let quiet = False();
   let startup = read_time(wall: &wall_clock);
-  let adjusted = fdlimit_adjust(factory: &handles, log: log, maxclients: options.maxclients);
+  let leaving = True();
+  let adjusted = fdlimit_adjust(factory: &handles, log: log, maxclients: options.maxclients, exiting: leaving);
   if adjusted.fatal {
     close_directory_write(factory: &handles, directory: move cwd_write);
     close_directory(factory: &handles, directory: move cwd);

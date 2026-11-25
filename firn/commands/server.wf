@@ -919,7 +919,8 @@ fn config_adjust_maxclients(store: &Keyspace, client: &Client, wanted: u64) -> g
   doc "Raises the open-files limit for wanted clients as Redis's updateMaxclients does through adjustOpenFilesLimit, and answers the clients the limit supports, wanted when it supports them all. A client with no handle factory, which no server configured, asks for nothing.";
   match client^.factory {
     Some(value: factory) => {
-      let outcome = pkg::fdlimit::fdlimit_adjust(factory: factory, log: &store^.log, maxclients: wanted);
+      let staying = False();
+      let outcome = pkg::fdlimit::fdlimit_adjust(factory: factory, log: &store^.log, maxclients: wanted, exiting: staying);
       if outcome.fatal {
         return 0_u64;
       }

@@ -68,7 +68,7 @@ fn fd_step(factory: &HandleFactory, best: u64) -> step: u64 reads(factory) {
   return step;
 }
 
-fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles: u64, old: u64) -> outcome: Adjusted reads(log), writes(factory) waits {
+fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles: u64, old: u64, exiting: Bool) -> outcome: Adjusted reads(log), writes(factory) waits {
   doc "Redis's loop from adjustOpenFilesLimit that tries maxfiles and then lower limits until the host accepts one above the old soft limit, and the log lines for what came out.";
   let best = maxfiles;
   let sound = False();
@@ -106,12 +106,14 @@ fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles:
     return Adjusted(maxclients: maxclients, fatal: sound);
   }
   if best <= 32_u64 {
-    fd_text(message: &message, word: &fd_start_head[0_u64..28_u64]);
-    log_message_number(message: &message, number: old);
-    fd_text(message: &message, word: &fd_start_mid[0_u64..89_u64]);
-    log_message_number(message: &message, number: maxfiles);
-    fd_text(message: &message, word: &fd_start_tail[0_u64..10_u64]);
-    serverlog_write(log: log, role: 77_u8, level: level_warning, message: &message);
+    if exiting {
+      fd_text(message: &message, word: &fd_start_head[0_u64..28_u64]);
+      log_message_number(message: &message, number: old);
+      fd_text(message: &message, word: &fd_start_mid[0_u64..89_u64]);
+      log_message_number(message: &message, number: maxfiles);
+      fd_text(message: &message, word: &fd_start_tail[0_u64..10_u64]);
+      serverlog_write(log: log, role: 77_u8, level: level_warning, message: &message);
+    }
     let unfit = True();
     return Adjusted(maxclients: 0_u64, fatal: unfit);
   }
@@ -146,7 +148,7 @@ fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles:
   return Adjusted(maxclients: reduced, fatal: sound);
 }
 
-fn fdlimit_adjust(factory: &HandleFactory, log: &ServerLog, maxclients: u64) -> outcome: Adjusted reads(log), writes(factory) waits {
+fn fdlimit_adjust(factory: &HandleFactory, log: &ServerLog, maxclients: u64, exiting: Bool) -> outcome: Adjusted reads(log), writes(factory) waits {
   let reserved_sum = maxclients +sat 32_u64;
   let maxfiles = reserved_sum % 4294967296_u64;
   let sound = False();
@@ -162,7 +164,7 @@ fn fdlimit_adjust(factory: &HandleFactory, log: &ServerLog, maxclients: u64) -> 
     }
     Ok(value: limits) => {
       if limits.soft < maxfiles {
-        set outcome = fd_raise(factory: factory, log: log, maxclients: maxclients, maxfiles: maxfiles, old: limits.soft);
+        set outcome = fd_raise(factory: factory, log: log, maxclients: maxclients, maxfiles: maxfiles, old: limits.soft, exiting: exiting);
       }
     }
   }

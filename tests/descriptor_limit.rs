@@ -173,3 +173,33 @@ fn config_set_maxclients_raises_the_limit_or_answers_redis_error_and_keeps_the_o
         stop(lease.port(), child);
     }
 }
+
+/// Redis exits with status 1 when the limit leaves no room for a client; firn goes on serving after a
+/// `CONFIG SET maxclients` that meets such a limit, so it answers the error and must not log that it exits.
+/// Only firn is run: Redis would exit.
+#[test]
+fn config_set_maxclients_with_no_room_left_answers_the_error_and_does_not_claim_to_exit() {
+    if may_raise_hard_limit() {
+        return;
+    }
+    let fixture = fixture_directory();
+    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let child = start_limited(&binary, fixture.path(), 4096, 1024,
+        &["--bind", "127.0.0.1", "--port", &port, "--maxclients", "500"]).with_port(&lease);
+    let pid = child.id();
+    let mut client = connect_when_ready(lease.port(), &child);
+    let status = Command::new("prlimit").arg("--nofile=24:24").arg("--pid").arg(pid.to_string())
+        .status().expect("run prlimit");
+    assert!(status.success(), "prlimit: {status:?}");
+    client.write_all(&resp(&["CONFIG", "SET", "maxclients", "100"])).expect("set maxclients");
+    expect_replies(&mut client,
+        b"-ERR CONFIG SET failed (possibly related to argument 'maxclients') - The operating system is not able to handle the specified number of clients, try with 0\r\n",
+        "no room left");
+    assert_eq!(maxclients(&mut client), "500", "the old value stays");
+    drop(client);
+    let output = stop(lease.port(), child);
+    let bodies = log_bodies(&String::from_utf8_lossy(&output.stdout));
+    assert!(!bodies.iter().any(|body| body.contains("Exiting.")), "firn keeps serving, so it must not log an exit: {bodies:?}");
+}

@@ -11,6 +11,20 @@ const event_loaded_head: Array<u8, 33> = "DB loaded from append only file: ";
 
 const event_loaded_tail: Array<u8, 8> = " seconds";
 
+const event_cut_head: Array<u8, 51> = "!!! Warning: short read while loading the AOF file ";
+
+const event_cut_tail: Array<u8, 3> = "!!!";
+
+const event_truncating_head: Array<u8, 23> = "!!! Truncating the AOF ";
+
+const event_truncating_mid: Array<u8, 11> = " at offset ";
+
+const event_truncating_tail: Array<u8, 4> = " !!!";
+
+const event_anyway_head: Array<u8, 4> = "AOF ";
+
+const event_anyway_tail: Array<u8, 52> = " loaded anyway because aof-load-truncated is enabled";
+
 const event_dot: Array<u8, 1> = ".";
 
 const event_zero: Array<u8, 1> = "0";
@@ -62,6 +76,33 @@ fn event_loaded(store: &Keyspace, nanoseconds: u64) -> result: unit reads(store)
   log_message_number(message: &message, number: fraction);
   log_message_append(message: &message, source: &event_loaded_tail[0_u64..8_u64]);
   serverlog_write(log: &store^.log, role: 77_u8, level: level_notice, message: &message);
+  return unit;
+}
+
+fn event_cutting(store: &Keyspace, name: &[u8], offset: u64) -> result: unit reads(store), reads(name) waits {
+  doc "Queues Redis's two warnings for an append-only file whose tail is cut after the replay, named as the file is named in the manifest and with the offset it is cut at.";
+  let first = log_message_new();
+  log_message_append(message: &first, source: &event_cut_head[0_u64..51_u64]);
+  log_message_append(message: &first, source: name);
+  log_message_append(message: &first, source: &event_cut_tail[0_u64..3_u64]);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &first);
+  let second = log_message_new();
+  log_message_append(message: &second, source: &event_truncating_head[0_u64..23_u64]);
+  log_message_append(message: &second, source: name);
+  log_message_append(message: &second, source: &event_truncating_mid[0_u64..11_u64]);
+  log_message_number(message: &second, number: offset);
+  log_message_append(message: &second, source: &event_truncating_tail[0_u64..4_u64]);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &second);
+  return unit;
+}
+
+fn event_cut_loaded(store: &Keyspace, name: &[u8]) -> result: unit reads(store), reads(name) waits {
+  doc "Queues Redis's warning that an append-only file was loaded after its tail was cut.";
+  let message = log_message_new();
+  log_message_append(message: &message, source: &event_anyway_head[0_u64..4_u64]);
+  log_message_append(message: &message, source: name);
+  log_message_append(message: &message, source: &event_anyway_tail[0_u64..52_u64]);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &message);
   return unit;
 }
 
