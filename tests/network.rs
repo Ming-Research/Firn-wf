@@ -4,6 +4,7 @@
 
 mod support;
 mod config;
+mod operations;
 mod memory_limit;
 mod aof_write_errors;
 mod aof_sync_fault;
@@ -14,6 +15,8 @@ mod write_meta;
 mod collection_scan;
 mod pubsub;
 mod durability;
+mod streams;
+mod accept_errors;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};

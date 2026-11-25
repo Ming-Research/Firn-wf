@@ -17,7 +17,7 @@ server and to expose what it still lacks. It began as the subset of Redis
 that `redis-benchmark`'s default suite needs and is growing toward
 standalone application workloads: cache and session storage and scripted
 conditional updates, used by existing applications through their ordinary
-clients ([design](design/firn.md)).
+clients ([design](design/decisions/milestones.md)).
 
 ## Status
 
@@ -31,11 +31,15 @@ clients ([design](design/firn.md)).
 - **Performance:** measured with `redis-benchmark` against Redis, Valkey,
   Dragonfly and Garnet ([measurements](research/investigations/firn/DESIGN.md)).
 - **Not yet:** scripts' and transactions' commands beyond those
-  `firn/README.md` lists, `WATCH`, memory limits and eviction, replication
+  `firn/README.md` lists, `WATCH`, replication
   and clustering, among the gaps the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip) lists. firn
   is a research server, not a production database.
 
 ## Build and run
+
+For a prebuilt Linux x86-64 program or Docker image, follow the
+[quickstart](docs/quickstart.md). It covers download, startup, client commands
+and an AOF restart; the release workflow checks those commands before publishing.
 
 On Linux x86-64 or macOS arm64, with `git`, `curl`, Python 3,
 `/usr/bin/clang` and, on Linux, LLD, both of the LLVM major the pinned
@@ -54,6 +58,9 @@ names and builds the server; [firn/README.md](firn/README.md#build-and-run)
 explains its arguments and options. `make check` is the gate every change
 passes.
 
+The [operator's guide](docs/operations.md) covers service startup,
+configuration refusals, connection limits, persistence, backup and restore.
+
 ## Repository
 
 - `firn/`: the server, one Whitefoot module program (`firn/modules.wfg`).
@@ -61,10 +68,11 @@ passes.
   `whitefoot-kit/`, a submodule of
   [Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit), fetches
   and checks it.
-- `design/`: the decisions firn is built on, and their change log;
+- `design/`: the decisions firn is built on (`design/decisions/`), its
+  constitution, and the change log of the tree's older form (`log.md`);
   `design/skill/`, a submodule of
   [Design-skill](https://github.com/Ming-Research/Design-skill), holds the
-  tree's lint.
+  older form's lint.
 - `research/`: the server's design and measurements
   (`research/investigations/firn/`) and the instruments behind them
   (`research/experiments/`).
