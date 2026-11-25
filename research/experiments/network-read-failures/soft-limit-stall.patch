@@ -1,5 +1,5 @@
 diff --git a/tests/pubsub.rs b/tests/pubsub.rs
-index 139a6aa..b830d2b 100644
+index 139a6aa..ca4e96c 100644
 --- a/tests/pubsub.rs
 +++ b/tests/pubsub.rs
 @@ -29,6 +29,112 @@ fn start_for(connections: usize, drivers: &str, limit: Duration) -> (ProgramChil
@@ -157,3 +157,57 @@ index 139a6aa..b830d2b 100644
      assert_eq!(
          request(&mut publisher, &["PUBSUB", "NUMSUB", "soft"]),
          b"*2\r\n$4\r\nsoft\r\n:1\r\n",
+@@ -1035,6 +1154,53 @@ fn soft_output_limit_interval_restarts_after_the_backlog_drains() {
+     assert_eq!(finished(child).0, 0);
+ }
+ 
++/// Experiment only (research/experiments/network-read-failures): the step in
++/// which the soft-limit case stalled, repeated without its long waits. Each
++/// round publishes 14 MiB to a subscriber that is not reading, waits one of
++/// the given times while the server's send waits for room, on every other
++/// cycle of the times asks the server a question on the publisher's
++/// connection, and then reads the frame with `stall::read_watched`. It runs
++/// only when FIRN_STALL_SECONDS says for how long.
++#[test]
++fn stall_loop() {
++    let Some(seconds) = std::env::var("FIRN_STALL_SECONDS").ok().and_then(|text| text.parse::<u64>().ok()) else {
++        return;
++    };
++    let waits: Vec<u64> = std::env::var("FIRN_STALL_WAITS_MS")
++        .unwrap_or_else(|_| "300".to_owned())
++        .split(',')
++        .map(|text| text.parse().expect("a wait in milliseconds"))
++        .collect();
++    let (child, mut publisher, port) = start_for(2, "1", Duration::from_secs(seconds + 120));
++    *stall::SERVER.lock().expect("server") = Some((child.id(), port));
++    let mut subscriber = connect_when_ready(port, &child);
++    assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "soft"]), acknowledgment(2, "subscribe", Some("soft"), 1));
++    let payload = "x".repeat(14 * 1024 * 1024);
++    let expected = message(2, "message", "soft", &payload).len();
++    let publish = resp(&["PUBLISH", "soft", &payload]);
++    let begun = Instant::now();
++    let mut round = 0_usize;
++    while begun.elapsed() < Duration::from_secs(seconds) {
++        let wait = waits[round % waits.len()];
++        let asked = (round / waits.len()) % 2 == 0;
++        publisher.write_all(&publish).expect("publish");
++        assert_eq!(frame(&mut publisher), b":1\r\n");
++        std::thread::sleep(Duration::from_millis(wait));
++        if asked {
++            assert_eq!(request(&mut publisher, &["PUBSUB", "NUMSUB", "soft"]), b"*2\r\n$4\r\nsoft\r\n:1\r\n");
++        }
++        eprintln!("LOOP round={round} wait_ms={wait} asked={asked}");
++        assert_eq!(frame(&mut subscriber).len(), expected, "the frame arrives whole");
++        // The sender releases the frame's charge once its last byte is
++        // accepted, which is before this side has read it; the pause keeps
++        // the next publication after that release.
++        std::thread::sleep(Duration::from_millis(20));
++        round += 1;
++    }
++    drop((publisher, subscriber));
++    assert_eq!(finished(child).0, 0);
++}
++
+ /// A subscribed RESP3 connection writes the append-only file as any other
+ /// connection does: the lazy-expiry DELs a command makes before its own
+ /// effect, and a command with more than one effect, are wrapped in MULTI and

@@ -8,9 +8,9 @@ which holds the question, the predictions and the results.
 | --- | --- |
 | `sigchld_eintr.rs` | One process in which a thread starts `/bin/true` children while another waits in timed reads on an idle connection; it counts the reads that end interrupted, with SIGCHLD open or blocked in every thread. |
 | `trace_summary.py` | Reads a kernel trace of SIGCHLD and says, for the processes named, how many were discarded, queued or already pending, and which threads dequeued one. |
-| `soft-limit-stall.patch` | Changes `tests/pubsub.rs` for the experiment only: the soft-limit case reads its 14 MiB frames with one-second bounds, prints each frame's read time and longest wait, and prints the server's sockets, threads and rings for every second without a byte. |
-| `soft_summary.py` | Summarises the runs of the patched case. |
-| `run.sh` | Runs each experiment: `environment`, `mechanism`, `suite MINUTES`, `soft-limit MINUTES INTERVAL`. |
+| `soft-limit-stall.patch` | Changes `tests/pubsub.rs` for the experiment only: the soft-limit case reads its 14 MiB frames with one-second bounds, prints each frame's read time and longest wait, and prints the server's sockets, threads and rings for every second without a byte. It also adds the case `stall_loop`, which repeats the step that stalled (publish 14 MiB to a subscriber that is not reading, wait, read) without the long waits. |
+| `soft_summary.py` | Summarises the runs of the patched case and the rounds of `stall_loop`. |
+| `run.sh` | Runs each experiment: `environment`, `mechanism`, `suite MINUTES`, `soft-limit MINUTES INTERVAL`, `stall-loop MINUTES PROCESSES WAITS`. |
 
 ## How a run is made
 

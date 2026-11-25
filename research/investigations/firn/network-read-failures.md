@@ -120,6 +120,16 @@ also prints how long each frame took and the longest wait within it for every
 run. If no run stalls, the cause stays unknown, and the bound on its rate is
 what the number of runs gives.
 
+`run.sh stall-loop` repeats the step that stalled without the case's long
+waits: publish 14 MiB to a subscriber that is not reading, wait 50 ms to 3 s
+while the server's send waits for room, on every other cycle ask the server
+`PUBSUB NUMSUB` on the publisher's connection as the case does before its
+second read, then read the frame the same way. It separates two readings. If
+the stall comes from how the runtime resumes a waiting send, the loop shows
+it within thousands of rounds, and shows whether the question before the read
+matters. If the loop never waits long and only the case with its 33 s wait
+does, the length of the wait is part of the cause.
+
 ## The gate's failure rate
 
 `run.sh suite` runs `make test`, the gate's network target, pass after pass

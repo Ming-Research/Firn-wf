@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Summarises the runs of the soft-limit case that run.sh's `soft-limit` mode made.
+"""Summarises the runs that run.sh's `soft-limit` and `stall-loop` modes made.
 
     soft_summary.py DIRECTORY
+    soft_summary.py --loop DIRECTORY
 
-DIRECTORY holds, for each run N, soft-N.log (the case's output with soft-limit-stall.patch applied) and soft-N.status
-(its exit status). It prints how many runs there were and how many failed, the spread of the time each 14 MiB frame
-took to read and of the longest wait for a byte within it, every run that waited a second or more, with what the case
-printed about the server during the wait, and every failed run's output.
+DIRECTORY holds, for each run N of the soft-limit case, soft-N.log (the case's output with soft-limit-stall.patch
+applied) and soft-N.status (its exit status). It prints how many runs there were and how many failed, the spread of the
+time each 14 MiB frame took to read and of the longest wait for a byte within it, every run that waited a second or
+more, with what the case printed about the server during the wait, and every failed run's output.
+
+With --loop it reads loop-N.log and loop-N.status, of the patch's stall_loop case, and prints the same spreads for its
+rounds, grouped by how long the server's send had waited and by whether the server was asked a question before the
+read.
 """
 
 import glob
@@ -30,7 +35,74 @@ def spread(values):
     )
 
 
+LOOP = re.compile(r"^LOOP round=(\d+) wait_ms=(\d+) asked=(true|false)")
+
+
+def read_runs(directory, prefix):
+    runs = {}
+    for path in glob.glob(os.path.join(directory, f"{prefix}-*.log")):
+        number = int(re.search(r"-(\d+)\.log$", path).group(1))
+        with open(path, encoding="utf-8", errors="replace") as log:
+            lines = log.read().splitlines()
+        try:
+            with open(path[: -len(".log")] + ".status", encoding="utf-8") as status:
+                code = int(status.read().strip() or -1)
+        except (OSError, ValueError):
+            code = -1
+        runs[number] = (code, lines)
+    return runs
+
+
+def show(runs, numbers):
+    shown = 0
+    for number in numbers:
+        code, lines = runs[number]
+        print(f"---- run {number}, exit status {code}, {len(lines)} lines ----")
+        for index, line in enumerate(lines):
+            if shown >= SHOWN * 6:
+                print("(no more shown)")
+                return
+            near_stall = any(other.startswith("STALL") for other in lines[index : index + 3])
+            if line.startswith(("STALL", "DUMP", "STEP", "SAMPLE", "thread ", "test ")) or "panicked" in line or near_stall:
+                print(line[:1500])
+                shown += 1
+
+
+def loop(directory):
+    runs = read_runs(directory, "loop")
+    failed = sorted(number for number, (code, _) in runs.items() if code != 0)
+    groups = {}
+    stalled = []
+    rounds = 0
+    for number, (code, lines) in sorted(runs.items()):
+        pending = None
+        for line in lines:
+            found = LOOP.match(line)
+            if found:
+                pending = (int(found.group(2)), found.group(3) == "true")
+                continue
+            body = BODY.match(line)
+            if body and pending is not None:
+                took, longest = groups.setdefault(pending, ([], []))
+                took.append(int(body.group(2)))
+                longest.append(int(body.group(3)))
+                rounds += 1
+                pending = None
+        if any(line.startswith("STALL ") for line in lines):
+            stalled.append(number)
+    print(f"stall-loop: processes={len(runs)} failed={len(failed)} {failed} rounds={rounds}")
+    for (wait, asked), (took, longest) in sorted(groups.items()):
+        slow = sum(1 for value in longest if value >= 200)
+        print(f"stall-loop: wait {wait} ms, asked={asked}: read ms: {spread(took)}")
+        print(f"stall-loop: wait {wait} ms, asked={asked}: longest wait for a byte ms: {spread(longest)}; 200 ms or more: {slow}")
+    print(f"stall-loop: processes with a wait of a second or more for a byte: {len(stalled)} {stalled}")
+    show(runs, sorted(set(stalled) | set(failed)))
+    return 0
+
+
 def main():
+    if sys.argv[1] == "--loop":
+        return loop(sys.argv[2])
     directory = sys.argv[1]
     runs = {}
     for path in glob.glob(os.path.join(directory, "soft-*.log")):

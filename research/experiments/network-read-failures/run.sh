@@ -10,10 +10,13 @@
 #   run.sh mechanism
 #   run.sh suite MINUTES
 #   run.sh soft-limit MINUTES INTERVAL
+#   run.sh stall-loop MINUTES PROCESSES WAITS
 #
 # MINUTES bounds a mode from its start, builds included: no pass or run
 # starts that would end after it. INTERVAL is the seconds between two starts
-# of the soft-limit case.
+# of the soft-limit case. PROCESSES is how many loops run side by side, each
+# with a server of its own, and WAITS the milliseconds a round lets the
+# server's send wait, one round after another, separated by commas.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -128,14 +131,20 @@ suite() {
 # again, each run a process of its own with its own server, a new one every
 # INTERVAL seconds, and summarises them. The first run also prints a sample of
 # a send that waits for its reader.
-soft_limit() {
-  budget=$(( $1 * 60 ))
-  interval=$2
-  begun=$(date +%s)
+# Builds the network cases with soft-limit-stall.patch applied and names the
+# test program in $binary.
+build_patched() {
   make --no-print-directory -C "$root" firn-test > "$out/build.log" 2>&1 || { tail -n 40 "$out/build.log"; exit 1; }
   git -C "$root" apply "$here/soft-limit-stall.patch" || exit 1
   cargo test --manifest-path "$root/tests/Cargo.toml" --locked --no-run > "$out/cargo.log" 2>&1 || { tail -n 60 "$out/cargo.log"; exit 1; }
   binary=$(ls -t "$root"/tests/target/debug/deps/network-* | grep -v '\.d$' | head -n 1)
+}
+
+soft_limit() {
+  budget=$(( $1 * 60 ))
+  interval=$2
+  begun=$(date +%s)
+  build_patched
   name=pubsub::soft_output_limit_interval_restarts_after_the_backlog_drains
   echo "soft-limit: built $binary in $(( $(date +%s) - begun )) s; one run starts every $interval s"
   number=0
@@ -155,13 +164,39 @@ soft_limit() {
   python3 "$here/soft_summary.py" "$out"
 }
 
+# Runs the patch's stall_loop case in PROCESSES processes side by side until
+# the bound, and summarises the rounds by how long the send waited and by
+# whether the server was asked a question before the read.
+stall_loop() {
+  budget=$(( $1 * 60 ))
+  processes=$2
+  waits=$3
+  begun=$(date +%s)
+  build_patched
+  seconds=$(( budget - ($(date +%s) - begun) - 30 ))
+  echo "stall-loop: built $binary in $(( $(date +%s) - begun )) s; $processes loops of $seconds s with waits of $waits ms"
+  number=0
+  while [ $number -lt "$processes" ]; do
+    number=$((number + 1))
+    (
+      FIRN=$build/firn-test FIRN_STALL_SECONDS=$seconds FIRN_STALL_WAITS_MS=$waits \
+        "$binary" --exact pubsub::stall_loop --nocapture > "$out/loop-$number.log" 2>&1
+      echo $? > "$out/loop-$number.status"
+    ) &
+  done
+  wait
+  echo "stall-loop: ended after $(( $(date +%s) - begun )) s"
+  python3 "$here/soft_summary.py" --loop "$out"
+}
+
 case "${1:-}" in
   environment) environment ;;
   mechanism) mechanism ;;
   suite) suite "$2" ;;
   soft-limit) soft_limit "$2" "$3" ;;
+  stall-loop) stall_loop "$2" "$3" "$4" ;;
   *)
-    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL" >&2
+    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL | stall-loop MINUTES PROCESSES WAITS" >&2
     exit 2
     ;;
 esac
