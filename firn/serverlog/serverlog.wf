@@ -248,8 +248,7 @@ fn serverlog_stamped(clock: &WallClock, pid: u64, role: u8, level: u64, message:
     set positive = 0_i64;
   }
   let millis = positive / 1000000_i64;
-  let seconds = positive / 1000000000_i64;
-  let offset = match std::time::local_offset_seconds(clock: clock, at: seconds) {
+  let offset = match std::time::local_offset_seconds(clock: clock, at: positive) {
     Some(value: found) => {
       give found;
     }
