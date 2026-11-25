@@ -268,6 +268,88 @@ judge nothing, and they are shown only as a lead:
 library map with `unit` values, does not; the next run measures `hget` as a
 cell of its own.
 
+## The machine's other jobs, stated before the sample run
+
+Since 2026-11-24 every project's agents run their tests on the 14900K, so a
+measurement shares it with other jobs, as the
+[disturbed run](#results-disturbed-and-stopped-no-profile) showed (of its six
+finished passes only passes 4 and 5 had twin ratios within 3% of 1). The owner chose that the measurement script
+protects itself (decision `benchmark-voids-passes-run-beside-other-jobs`),
+without a change to a workflow. The rules below are fixed before any result of
+the sample run or the four-image run is read, and decide only from the CPUs
+the measurement does not use, never from rates.
+
+- **The CPUs.** `PERF_CPU` is the lowest online CPU of `/proc/stat` outside the
+  server CPUs and the client CPUs, and every `perf` command of the
+  comparison runs on it. The other CPUs are every online CPU outside the
+  server, the client and the profiler's CPU. With servers 2,4 and clients
+  16-31 on the 14900K's 32 CPUs: the profiler on CPU 0, the other CPUs 1,3,5-15
+  (13 CPUs, the sibling threads 3 and 5 of the server cores among them).
+- **The reading.** The mean over the other CPUs of the share of ticks that are
+  neither idle nor iowait (the `cpu_busy` reading, role `other`), kept for
+  every client run in `compare-runs.csv` with the run's start and end in epoch
+  seconds. A reading is busy when it is above the threshold T, never when it
+  is at it.
+- **The threshold T is 0.05**: five percentage points of the other CPUs'
+  mean, 0.65 of one CPU among 13. A run of two busy loops on two of the 13
+  reads 2/13 = 0.154. The sample run reads the idle level of the machine in
+  its control; if that idle reading is above 0.02, T becomes that reading plus
+  0.03, and the record says so before the four-image run is dispatched.
+- **The control.** At the start of the session, before any image starts, the
+  other CPUs are read for 2 s idle, then two busy loops are started, each on one
+  of the first two other CPUs, and they are read for 2 s again; the loops are
+  stopped by their pids. The run fails unless the loaded reading is above T and
+  above the idle one by at least half of loops over other CPUs (0.077 for two
+  loops on 13 CPUs), and when there is no other CPU. The second condition keeps
+  a machine that is busy anyway from passing the control without the loops
+  being seen. `compare-control.csv` has both readings.
+- **Passes.** Attempts at passes go on until 16 are clean. An attempt is void
+  when any of its runs read busy: it stays in `compare.csv` (whose pass column
+  numbers the attempts), is listed in `compare-void.csv`, and `summary.py
+  ratios` leaves it out and says how many. An attempt's image order follows
+  the number of the clean pass it would become (odd forward, even reversed), so
+  a replacement runs in the order of the attempt it replaces. No new attempt
+  starts 115 minutes after the session began.
+- **Waiting.** Before each attempt, and before the control, the other CPUs are
+  read for 2 s; while busy the run waits 10 s and reads again, one wait at most
+  600 s and all the waits of the session at most 2700 s; then it goes on and the
+  void rule decides.
+- **Profiled runs.** Each waits as above for at most 120 s (not counted in the
+  2700 s). One that reads busy is run once more; one that reads busy again, or
+  has no time to be repeated, is listed in `profile-void.csv` and the profile
+  rule does not use it. From 140 minutes after the session began a profiled run
+  neither waits nor is repeated. The Measure step ends at 150 minutes.
+- **Clean passes short of 16.** With 8 to 15 clean passes the split rule
+  judges with them, and the record states the count (the pin comparison's
+  first run judged with 8). With fewer than 8 the same images are dispatched
+  again and the clean passes of both runs are pooled, as the confirmation run
+  pooled.
+- **The check against GitHub's records.** After the four-image run, every
+  14900K job of the five projects' repositories that overlapped it is read
+  (`gh run list` and each job's steps, with their start and end). A heavy step
+  is one that is not set-up, checkout or download. Each client run of
+  `compare-runs.csv` is compared with the heavy steps' spans.
+  T' is the highest reading among the client runs that overlap no heavy step
+  and are not void, plus 0.02; those runs read at most T, so T' is at most T +
+  0.02.
+  - A run that overlaps a heavy step and reads at most min(T, T') is not void
+    and does not show T too high: a step that only waits on the network loads
+    the machine no more than quiet.
+  - A run that overlaps a heavy step and reads above T' and at most T shows
+    T was too high. Then the threshold becomes T', and voiding is decided again
+    from the recorded readings alone, without looking at rates. No run that
+    overlaps no heavy step is voided by this, since they all read at most T'.
+    If clean passes then fall short, the rule above applies.
+  - A void run that overlaps no job is load from outside GitHub, and the
+    record says so.
+  - If no client run overlaps any job, the record says that the four-image
+    run gives no evidence for the void path, and that the evidence for it is
+    the fixtures of `placement-selftest` and `summary.py selftest`.
+
+The reading cannot see a job that runs on a server or client CPU, which is
+the one case the rule leaves to the twin: `base-twin` over `base`, a clean
+pass's noise, shows it.
+
 ## Four-image run, stated before measuring
 
 **Question.** Is each of `hset`, `lpush` and `hget` at depth 16 slower
@@ -283,10 +365,12 @@ alike, and `cross` and `base` have the same compiler.
 
 **Run.** `redis-bench.yml`, mode `compare`, on the 14900K with the placement
 of the pin comparison (2 server CPUs on P-cores 2 and 4, clients on CPUs
-16-31); tests `hset lpush rpush hget sismember` at depth 16, 16 interleaved
-passes of 5 seconds; then one profiled run of `hset`, `lpush` and `hget` for
-each image, recording cycles and retired instructions. How passes run beside
-other jobs on the machine is settled before dispatch and added here.
+16-31); tests `hset lpush rpush hget sismember` at depth 16, 16 clean
+interleaved passes of 5 seconds; then one profiled run of `hset`, `lpush` and
+`hget` for each image (`profile_test` `hset 16;lpush 16;hget 16`), recording
+cycles and retired instructions, each table in the image's `profile-*.txt`.
+The passes and profiled runs beside other jobs on the machine follow the rules
+of [the section above](#the-machines-other-jobs-stated-before-the-sample-run).
 
 **Split rule, for each of `hset`, `lpush` and `hget`.** The intervals are
 those of the pin comparison: the 95% interval of the mean log ratio of the

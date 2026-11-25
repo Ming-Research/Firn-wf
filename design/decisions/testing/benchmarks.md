@@ -1,6 +1,6 @@
 # Benchmarks
 
-How a Redis benchmark runs on the shared self-hosted machine: what it stops when it ends, which CPUs servers and clients take, and how each firn image is started.
+How a Redis benchmark runs on the shared self-hosted machine: what it stops when it ends, which CPUs servers, clients and the profiler take, which passes and profiled runs it voids and runs again for other load on the machine, and how each firn image is started.
 
 ### decision benchmark-session-stops-only-what-it-registered
 A measurement stops its session whole while the session's leader runs, and after that only the servers it registered, each through a pidfd, TERM and then KILL.
@@ -21,3 +21,8 @@ Benchmark servers take one thread per physical performance core in topology orde
 The benchmark starts each firn image in the startup format its own revision's source has, config if it holds `firn/server/config.wf` and positional if not, and records it.
 - rejected: an agent proposed one invocation for every image; the owner rejected it, because one comparison can hold revisions of both startup formats.
 - rejected: an agent proposed inferring the format from merge ancestry; the owner rejected it, because a branch revision can carry a format before it merges.
+
+### decision benchmark-voids-passes-run-beside-other-jobs
+A comparison pass or profiled run during which the CPUs outside the server, client and profiler CPUs averaged busier than the threshold its record states is void and is run again.
+- rejected: an agent proposed that the owner keep the 14900K free of other jobs for each measurement; the owner rejected it, because it needs the owner at every measurement, stops other works for about 45 minutes, and protects no later measurement.
+- rejected: an agent proposed a machine lock in Whitefoot-kit that every project's 14900K tests share and a measurement takes alone; the owner rejected it, because it needs a separate kit item this work would wait for, and every agent's tests would queue for up to an hour during a measurement.
