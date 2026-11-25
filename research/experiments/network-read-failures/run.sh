@@ -128,12 +128,24 @@ suite() {
 }
 
 # Builds the network cases with soft-limit-stall.patch applied and names the
-# test program in $binary.
+# test program in $binary. The path is the one cargo reports: where it puts a
+# test program differs between cargo releases.
 build_patched() {
   make --no-print-directory -C "$root" firn-test > "$out/build.log" 2>&1 || { tail -n 40 "$out/build.log"; exit 1; }
   git -C "$root" apply "$here/soft-limit-stall.patch" || exit 1
-  cargo test --manifest-path "$root/tests/Cargo.toml" --locked --no-run > "$out/cargo.log" 2>&1 || { tail -n 60 "$out/cargo.log"; exit 1; }
-  binary=$(ls -t "$root"/tests/target/debug/deps/network-* | grep -v '\.d$' | head -n 1)
+  cargo test --manifest-path "$root/tests/Cargo.toml" --locked --no-run --message-format=json \
+    > "$out/cargo.json" 2> "$out/cargo.log" || { tail -n 60 "$out/cargo.log"; exit 1; }
+  binary=$(python3 -c '
+import json, sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        message = json.loads(line)
+    except ValueError:
+        continue
+    if message.get("reason") == "compiler-artifact" and message.get("executable") and message["target"]["name"] == "network":
+        print(message["executable"])
+' "$out/cargo.json" | tail -n 1)
+  [ -x "$binary" ] || { echo "no test program among cargo's artifacts"; tail -n 20 "$out/cargo.log"; exit 1; }
 }
 
 # Runs the soft-limit case, with soft-limit-stall.patch applied, again and

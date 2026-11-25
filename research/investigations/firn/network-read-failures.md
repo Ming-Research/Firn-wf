@@ -104,6 +104,70 @@ none is dequeued in the test process. The hypothesis is rejected for the
 suite if no SIGCHLD is ever dequeued by a test's thread without the block, or
 if one still is with it.
 
+### Results
+
+Measured on 2026-11-25 on GitHub's ubuntu-24.04 runner (4 processors, kernel
+7.0.0-1014-aws, glibc 2.39, rustc 1.100.0), with no trace event lost in any
+run.
+
+`sigchld_eintr.rs`, 3 s a configuration (run 45611579505):
+
+| First thread | Spawner | SIGCHLD | Children | SIGCHLD queued | Reads interrupted |
+| --- | --- | --- | --- | --- | --- |
+| reads | does not wait | open | 24293 | 20379 | 9812 |
+| reads | waits for each child | open | 9386 | 0 | 0 |
+| reads | does not wait, fork and exec | open | 14105 | 0 | 0 |
+| waits | does not wait | open | 23664 | 19881 | 6484 |
+| starts threads | does not wait | open | 18800 | 16570 | 7466 |
+| starts threads | waits for each child | open | 9080 | 4 | 4 |
+| starts threads | does not wait, fork and exec | open | 9759 | 0 | 0 |
+| reads | does not wait | blocked | 25437 | 1 | 0 |
+| starts threads | does not wait | blocked | 18801 | 1 | 0 |
+| starts threads | does not wait, fork and exec | blocked | 9827 | 1 | 0 |
+
+The hypothesis holds: a child's exit is queued when its parent thread blocks
+signals, a queued SIGCHLD ends another thread's timed read with EINTR, and
+with SIGCHLD blocked in every thread one signal stays pending for the life of
+the process and no read is interrupted. Three results differ from what was
+predicted or add to it:
+
+- A waiting first thread does not protect the others (6484 reads interrupted,
+  where none was predicted). A thread that has been woken for a signal and has
+  not run yet does not want the next one (`wants_signal`), so a second SIGCHLD
+  queued within that time goes to the next thread, which then stays the
+  target.
+- A child that exits at once is queued even when its parent waits for it
+  (4 of 9080): it can exit after its exec and before its parent has restored
+  its mask at the end of `posix_spawn`.
+- std's `fork` path queued none, with or without waiting: the window is
+  `posix_spawn`'s. It is no fix by itself, because a thread also blocks every
+  signal while it starts a thread, as the harness does to drain a child's
+  output just after starting the child.
+
+A child inherits its parent's mask on both paths: with SIGCHLD blocked in the
+parent, `/proc/PID/status` of the child after its exec shows `SigBlk:
+0000000000010000`, by `posix_spawn` and by `fork`; with it open, zero.
+
+The suite, `make test` pass after pass with the same trace:
+
+| Test process | Run | Passes | Failed | SIGCHLD per pass: discarded | queued | dequeued |
+| --- | --- | --- | --- | --- | --- | --- |
+| as on main | 45611579505 | 7 | 0 | 807 to 819 | 2 to 7 (28 in all) | every one queued: 17 by the first thread, 11 by the thread that started the child |
+| SIGCHLD blocked in every thread, children inheriting the block | 45611579570 | 6 | 0 | 0 | 1 for each test process, 918 to 952 found already pending | 0 |
+
+On main, the 28 queued came from children that exit at once: `/bin/kill` 12,
+`/bin/sh` 11, `redis-server` 4 and one `firn-test` that was killed. The 11
+that the starting thread dequeued itself were dequeued 7 to 123 µs after they
+were queued, which is that thread restoring its mask. So in every pass a
+SIGCHLD is queued for the test process a few times and wakes a thread that
+does not block it. The trace does not record which thread was woken, and no
+pass had a read fail: at the rate CI's history shows, 2 in about 400 passes,
+seeing one would need hundreds of passes. With the block no thread is left
+that can be woken, and none dequeued one.
+
+The comment above the trace step of `check.yml`, "SIGCHLD ... has no handler
+in the test process and so cannot interrupt a read", is wrong.
+
 ## The 10 s read stall: hypotheses
 
 Both failures stopped receiving the second 14 MiB frame, which firn had held
@@ -141,3 +205,15 @@ does, the length of the wait is part of the cause.
 `run.sh suite` runs `make test`, the gate's network target, pass after pass
 on the gate's kind of runner and says how each pass ended and what each
 failing case said.
+
+The 13 passes above all passed (140 s a pass on one runner, 153 s on the
+other), as did the gate's own run of main that day (run 45610525110). CI's
+history is the measure of the rate: the 400 runs hold 10 read failures, of
+which 7 were the port lease's, which leaves 3 in about 400 passes, under 1%.
+At that rate 100 passes without a failure have a probability of about 47%
+with nothing fixed, so a loop of 100 passes cannot by itself show a cause
+removed; what shows it is, for each cause, an observation that tells the
+fixed state from the unfixed one. Every pass also runs
+`leased_port_refuses_connections_while_a_concurrent_spawn_runs`, which
+connects to 10000 leased ports and fails if one is not refused: 130000
+connections in the 13 passes, none accepted.
