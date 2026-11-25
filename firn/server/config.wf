@@ -301,6 +301,102 @@ fn config_ingest(buffer: &Text, ingest: &ConfigIngest, source: &[u8]) -> result:
   return unit;
 }
 
+fn config_is_directory(problem: &IoError) -> is_directory: Bool reads(problem) {
+  doc "Whether the host says the path names a directory. Redis opens an included directory with fopen, which succeeds, and fgets reads nothing from it, so such an include adds no line and startup goes on.";
+  match problem^ {
+    NotFound(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    PermissionDenied(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AlreadyExists(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NotDirectory(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    IsDirectory(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    DirectoryNotEmpty(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ReadOnly(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ResourceBusy(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    InvalidInput(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    InvalidPath(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    Unsupported(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    TimedOut(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    DeadlinePassed() => {
+      return False();
+    }
+    Cancelled() => {
+      return False();
+    }
+    BrokenPipe(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    WriteZero(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    UnexpectedEnd(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionRefused(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionReset(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionAborted(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NotConnected(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AddressInUse(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AddressUnavailable(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ResourceExhausted(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    FileTooLarge(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NoSpace(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    QuotaExceeded(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    CrossDevice(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    DeviceFailure(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    Other(code: native_code, origin: native_origin) => {
+      return False();
+    }
+  }
+}
+
 fn config_read_file(factory: &HandleFactory, file: std::fs::ReadFile, output: &OutputStream, buffer: &Text) -> success: Bool writes(factory), writes(output), writes(buffer) waits {
   let chunk = array_filled::<u8, 4096>(value: 0_u8);
   let offset = 0_u64;
@@ -334,12 +430,15 @@ fn config_read_file(factory: &HandleFactory, file: std::fs::ReadFile, output: &O
           ReadEnd() => {
           }
           ReadFailed(error: problem) => {
-            let message = config_buffer();
-            config_append(buffer: &message, source: &config_read_error[0_u64..33_u64]);
-            config_description(buffer: &message, problem: &problem);
-            config_byte(buffer: &message, byte: 10_u8);
-            config_emit(factory: factory, output: output, text: &message);
-            set success = False();
+            if config_is_directory(problem: &problem) {
+            } else {
+              let message = config_buffer();
+              config_append(buffer: &message, source: &config_read_error[0_u64..33_u64]);
+              config_description(buffer: &message, problem: &problem);
+              config_byte(buffer: &message, byte: 10_u8);
+              config_emit(factory: factory, output: output, text: &message);
+              set success = False();
+            }
           }
         }
         break;
@@ -429,6 +528,9 @@ fn config_load(options: &Options, name: &[u8], factory: &HandleFactory, paths: &
       return config_read_file(factory: factory, file: move file, output: output, buffer: buffer);
     }
     Err(error: problem) => {
+      if config_is_directory(problem: &problem) {
+        return True();
+      }
       config_open_error(options: options, factory: factory, paths: paths, base: root, stdout: stdout, wall: wall, name: name, problem: &problem);
       return False();
     }

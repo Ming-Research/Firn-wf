@@ -64,8 +64,8 @@ paths relative to the working directory, as Redis does: `firn
 /etc/redis/redis.conf` starts with the same file Redis reads. `dir` changes
 the directory that later relative paths, `include`, `logfile` and the
 append-only directory, start from, and an `include` reads its file where the
-directive stands, with line numbers of its own. These differences from Redis
-remain:
+directive stands, with line numbers of its own; one that names a directory
+adds no line, as in Redis. These differences from Redis remain:
 
 - An `include` path holding `*`, `?` or `[` is refused with a reason that
   names wildcards; Redis expands it with `glob(3)`, and skips one that
