@@ -882,6 +882,15 @@ fn a_set_of_integers_is_whole_up_to_512_members() {
     }
 }
 
+/// The sequence of the AOF's rewrite commits from INFO persistence, which is a
+/// bulk string in RESP2 and a verbatim string in RESP3.
+#[cfg(target_os = "linux")]
+fn rewrite_commit_sequence(client: &mut TcpStream, protocol: u8) -> u64 {
+    client.write_all(&resp(&["INFO", "persistence"])).expect("INFO request");
+    info_field(&info_reply(client, protocol), "firn_aof_rewrite_commit_seq")
+        .expect("rewrite sequence field").parse().expect("u64 sequence")
+}
+
 /// A script that writes a large collection and then reads an undeclared key is
 /// run again after a fallback that restores the collection from a logical copy.
 /// A client's scan that spans such scripts still returns every member present
@@ -904,7 +913,7 @@ fn a_script_fallback_between_scan_calls_loses_no_member() {
                 "HSCAN" => "local r=redis.call('HINCRBY',KEYS[1],ARGV[1],1); redis.call('GET','undeclared:'..KEYS[1]); return r",
                 _ => "local r=redis.call('ZINCRBY',KEYS[1],1,ARGV[1]); redis.call('GET','undeclared:'..KEYS[1]); return r",
             };
-            let before = script_fallback_sequence(&mut client);
+            let before = rewrite_commit_sequence(&mut client, protocol);
             let mut cursor = "0".to_string();
             let mut seen = std::collections::HashSet::new();
             let (mut step, mut scripts) = (0, 0usize);
@@ -924,7 +933,7 @@ fn a_script_fallback_between_scan_calls_loses_no_member() {
                 assert!(step < 100_000, "{scan}: no end in sight");
             }
             assert!(scripts >= 10, "{scan}: {scripts} scripts ran between calls");
-            assert_eq!(script_fallback_sequence(&mut client), before + scripts as u64, "{scan}: one sequence for each script");
+            assert_eq!(rewrite_commit_sequence(&mut client, protocol), before + scripts as u64, "{scan}: one sequence for each script");
             for index in 0..1000 {
                 let name = format!("m{index:05}");
                 // A member the scripts removed may or may not have been returned.
