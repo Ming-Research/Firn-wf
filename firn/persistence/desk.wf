@@ -212,12 +212,7 @@ fn aof_reply_wait(store: &Keyspace, desk: &Shared<AofDesk>, factory: &HandleFact
   } else {
     return unit;
   }
-  if client^.aof_unnoted {
-    let seen = pkg::store::aof_seen(store: store);
-    set client^.aof_dependency = imax(client^.aof_dependency, seen.commit);
-    set client^.aof_covered = imax(client^.aof_covered, seen.covered);
-    set client^.aof_unnoted = False();
-  }
+  set client^.aof_unnoted = False();
   let dependency = client^.aof_dependency;
   let saturated = dependency == 18446744073709551615_u64;
   if bnot(saturated) {
