@@ -1,0 +1,331 @@
+name: release
+
+on:
+  pull_request:
+    paths:
+      - packaging/**
+      - docs/quickstart.md
+      - .github/workflows/release.yml
+      - Makefile
+      - whitefoot.pin
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+    inputs:
+      check_latest:
+        description: Check the public latest quickstart without building or publishing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and check release packages
+    if: github.event_name != 'workflow_dispatch' || !inputs.check_latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      package-tag: ${{ steps.package-tag.outputs.tag }}
+      prerelease: ${{ steps.package-tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Select the package tag
+        id: package-tag
+        run: |
+          set -euo pipefail
+          package_tag=v-ci
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            package_tag="$GITHUB_REF_NAME"
+          fi
+          if [[ ! "$package_tag" =~ ^v[A-Za-z0-9_.-]*$ ]] || (( ${#package_tag} > 128 )); then
+            echo "Release tags must start with v, use only Docker tag characters and contain at most 128 characters." >&2
+            exit 1
+          fi
+          echo "PACKAGE_TAG=$package_tag" >> "$GITHUB_ENV"
+          echo "tag=$package_tag" >> "$GITHUB_OUTPUT"
+          prerelease=true
+          if [[ "$package_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            prerelease=false
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Build firn with full LTO
+        run: make firn-lto
+
+      - name: Require a formal compiler pin
+        run: make pin-ready
+
+      - name: Record the binary architecture and runtime dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p build/release
+          file build/firn-lto > build/release/binary-format.txt
+          cat build/release/binary-format.txt
+          grep -Eq 'ELF 64-bit LSB.*x86-64' build/release/binary-format.txt
+          readelf --version-info build/firn-lto > build/release/symbol-versions.txt
+          grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' build/release/symbol-versions.txt | sort -Vu
+          ldd build/firn-lto > build/release/host-ldd.txt
+          cat build/release/host-ldd.txt
+          if grep -q 'not found' build/release/host-ldd.txt; then
+            exit 1
+          fi
+          # A build toolchain must not hide an extra tarball runtime dependency.
+          readelf --dynamic build/firn-lto > build/release/dynamic.txt
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          root = pathlib.Path('build/release')
+          needed = set(re.findall(r'\(NEEDED\).*\[([^\]]+)\]', (root / 'dynamic.txt').read_text()))
+          allowed = {'libc.so.6', 'libm.so.6', 'libpthread.so.0', 'libdl.so.2',
+                     'librt.so.1', 'libresolv.so.2', 'libutil.so.1', 'libanl.so.1',
+                     'libgcc_s.so.1', 'ld-linux-x86-64.so.2'}
+          if needed - allowed:
+              raise SystemExit(f'Unpackaged runtime libraries: {sorted(needed - allowed)}')
+          versions = re.findall(r'GLIBC_(\d+(?:\.\d+)+)', (root / 'symbol-versions.txt').read_text())
+          if any(tuple(map(int, version.split('.'))) > (2, 39) for version in versions):
+              raise SystemExit('The tarball exceeds the documented Ubuntu 24.04 glibc baseline')
+          print(f'Tarball runtime libraries: {sorted(needed)}')
+          PY
+
+      - name: Make the tarball and Docker build context
+        run: |
+          set -euo pipefail
+          package_name="firn-${PACKAGE_TAG}-linux-x86_64"
+          package_dir="build/release/$package_name"
+          mkdir -p "$package_dir/commands" "$package_dir/licenses/halo-wf"
+          install -m 0755 build/firn-lto "$package_dir/firn"
+          cp LICENSE "$package_dir/LICENSE"
+          cp firn/commands/redis-license.txt "$package_dir/commands/redis-license.txt"
+          for notice in LICENSE lib/fpconv/dtoa/LICENSE.md lib/halo/compile/LICENSE.md lib/halo/heap/LICENSE.md lib/halo/vm/LICENSE.md; do
+            destination="$package_dir/licenses/halo-wf/$notice"
+            mkdir -p "$(dirname "$destination")"
+            cp "deps/halo-wf/$notice" "$destination"
+          done
+          cat > "$package_dir/README.md" <<EOF
+          # Firn $PACKAGE_TAG
+
+          Linux x86-64 release built on Ubuntu 24.04; requires glibc 2.39 or newer
+          and the GNU runtime library (libgcc_s.so.1).
+          Run ./firn to listen on 127.0.0.1:6379 without persistence.
+          Full startup, persistence, configuration and compatibility instructions:
+          https://github.com/Ming-Research/Firn-wf/blob/$GITHUB_SHA/docs/quickstart.md
+
+          LICENSE, commands/redis-license.txt and licenses/halo-wf contain the
+          project and ported-code notices, including Halo's Arm kernels.
+          EOF
+          tar -C build/release -czf "build/release/$package_name.tar.gz" "$package_name"
+          (cd build/release && sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256")
+          mkdir -p build/release/docker-context
+          cp -a "$package_dir/firn" "$package_dir/LICENSE" "$package_dir/commands" "$package_dir/licenses" build/release/docker-context/
+
+      - name: Build the runtime image
+        run: docker build --platform linux/amd64 --file packaging/Dockerfile --tag firn-release:checked build/release/docker-context
+
+      - name: Check runtime image dependencies
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint ldd firn-release:checked /usr/local/bin/firn > build/release/image-ldd.txt
+          cat build/release/image-ldd.txt
+          if grep -q 'not found' build/release/image-ldd.txt; then
+            exit 1
+          fi
+
+      - name: Install the quickstart's host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl python3 redis-tools
+
+      - name: Check the tarball quickstart
+        run: packaging/quickstart-check.sh tarball "build/release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz"
+
+      - name: Check the image quickstart
+        run: packaging/quickstart-check.sh image firn-release:checked
+
+      - name: Require a broken persistence instruction to fail
+        run: |
+          set -euo pipefail
+          broken_doc="$RUNNER_TEMP/quickstart-no-aof.md"
+          failure_log="$RUNNER_TEMP/quickstart-no-aof.log"
+          python3 - "$broken_doc" <<'PY'
+          import pathlib
+          import sys
+
+          source = pathlib.Path('docs/quickstart.md').read_text()
+          if '--appendonly yes' not in source:
+              raise SystemExit('The persistence mutation has no instruction to change')
+          pathlib.Path(sys.argv[1]).write_text(source.replace('--appendonly yes', '--appendonly no'))
+          PY
+          status=0
+          QUICKSTART_DOC="$broken_doc" packaging/quickstart-check.sh tarball \
+            "build/release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz" >"$failure_log" 2>&1 || status=$?
+          cat "$failure_log"
+          [[ $status -ne 0 ]]
+          grep -Fq 'quickstart GET expected survives-restart' "$failure_log"
+
+      - name: Save the tested image
+        run: |
+          set -euo pipefail
+          docker save firn-release:checked | gzip > build/release/firn-image.tar.gz
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: firn-release
+          if-no-files-found: error
+          path: |
+            build/release/firn-${{ steps.package-tag.outputs.tag }}-linux-x86_64.tar.gz
+            build/release/firn-${{ steps.package-tag.outputs.tag }}-linux-x86_64.tar.gz.sha256
+            build/release/firn-image.tar.gz
+
+  publish:
+    name: publish the checked tag
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: firn-publish
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: write
+      packages: write
+    env:
+      PACKAGE_TAG: ${{ needs.build.outputs.package-tag }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # No source checkout or build runs in the job with publication access.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: firn-release
+          path: release
+
+      # Serialize both absence checks through publication so workflow reruns
+      # cannot race a version check or interleave the two latest references.
+      - name: Require a new version in GitHub Releases and GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum --check "firn-${PACKAGE_TAG}-linux-x86_64.tar.gz.sha256")
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          def fetch(url, headers):
+              request = urllib.request.Request(url, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, response.read()
+              except urllib.error.HTTPError as error:
+                  return error.code, error.read()
+              except urllib.error.URLError as error:
+                  raise SystemExit(f'Cannot verify publication state: {error.reason}')
+
+          tag = urllib.parse.quote(os.environ['PACKAGE_TAG'], safe='')
+          token = os.environ['GH_TOKEN']
+          status, _ = fetch(f'https://api.github.com/repos/{os.environ["GH_REPO"]}/releases/tags/{tag}',
+                            {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'})
+          if status == 200:
+              raise SystemExit('Refusing to replace an existing GitHub release')
+          if status != 404:
+              raise SystemExit(f'Cannot verify GitHub release absence: HTTP {status}')
+
+          credentials = base64.b64encode(f'{os.environ["GITHUB_ACTOR"]}:{token}'.encode()).decode()
+          status, body = fetch('https://ghcr.io/token?service=ghcr.io&scope=repository:ming-research/firn:pull',
+                               {'Authorization': f'Basic {credentials}'})
+          if status != 200:
+              raise SystemExit(f'Cannot authenticate the GHCR version check: HTTP {status}')
+          response = json.loads(body)
+          bearer = response.get('token') or response.get('access_token')
+          if not isinstance(bearer, str) or not bearer:
+              raise SystemExit('GHCR did not supply a registry token')
+          status, body = fetch(f'https://ghcr.io/v2/ming-research/firn/manifests/{tag}',
+                               {'Authorization': f'Bearer {bearer}',
+                                'Accept': 'application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json'})
+          if status == 200:
+              raise SystemExit('Refusing to replace an existing GHCR version tag')
+          if status != 404:
+              raise SystemExit(f'Cannot verify GHCR version absence: HTTP {status}')
+          errors = json.loads(body).get('errors')
+          if not isinstance(errors, list) or not errors or any(
+                  not isinstance(error, dict) or error.get('code') not in {'MANIFEST_UNKNOWN', 'NAME_UNKNOWN'}
+                  for error in errors):
+              raise SystemExit('GHCR did not confirm an unknown manifest or repository')
+          print('Both versioned publication targets are absent')
+          PY
+
+      - name: Publish the tested image to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          gzip -dc release/firn-image.tar.gz | docker load
+          docker tag firn-release:checked "ghcr.io/ming-research/firn:$PACKAGE_TAG"
+          docker push "ghcr.io/ming-research/firn:$PACKAGE_TAG"
+          if [[ "$PRERELEASE" != true ]]; then
+            docker tag firn-release:checked ghcr.io/ming-research/firn:latest
+            docker push ghcr.io/ming-research/firn:latest
+          fi
+
+      - name: Publish the tarball and checksum to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tarball="release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz"
+          release_flags=(--latest)
+          if [[ "$PRERELEASE" == true ]]; then
+            release_flags=(--prerelease --latest=false)
+          fi
+          gh release create "$PACKAGE_TAG" "$tarball" "$tarball.sha256" --verify-tag \
+            --title "Firn $PACKAGE_TAG" \
+            --notes "Linux x86-64 tarball and SHA-256 checksum. Docker: ghcr.io/ming-research/firn:$PACKAGE_TAG. Quickstart: https://github.com/Ming-Research/Firn-wf/blob/$GITHUB_SHA/docs/quickstart.md" \
+            "${release_flags[@]}"
+
+  published-quickstart:
+    name: check the public latest quickstart
+    needs: [build, publish]
+    if: ${{ always() && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.publish.result == 'success' && needs.build.outputs.prerelease == 'false') || (github.event_name == 'workflow_dispatch' && inputs.check_latest)) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Install the quickstart's host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl python3 redis-tools
+
+      - name: Check the public tarball quickstart
+        env:
+          QUICKSTART_EXPECTED_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: packaging/quickstart-check.sh tarball
+
+      - name: Check the public image quickstart
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/firn-public-docker
+        run: packaging/quickstart-check.sh image
