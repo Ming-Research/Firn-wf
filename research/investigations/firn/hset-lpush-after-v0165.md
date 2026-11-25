@@ -1006,10 +1006,10 @@ images cannot split them. What the profiles and listings add:
 
 So the cause of `hset` and `hget` is the release, and not firn's or Halo's code;
 which part of the release (the map's code or layout, the runtime's lock, or how
-either sits in the server) the evidence does not tell. The Whitefoot item that this
-work hands to the owner states the firn numbers with their run ids and the listings'
-differences, says that the library-only program does not reproduce it, and asks
-Whitefoot to look at the pair on a quiet machine. Nothing in firn is changed for it
+either sits in the server) the evidence does not tell. Whitefoot#355, filed by the
+owner from this work's observation, states the firn numbers with their run ids and
+the listings' differences, says that the library-only program does not reproduce
+it, and asks Whitefoot to look at the pair on a quiet machine. Nothing in firn is changed for it
 (constitution, article 4).
 
 **`lpush` (and `sismember`): the source edits.** `cross` against `base` is 0.9793
