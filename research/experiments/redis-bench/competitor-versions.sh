@@ -379,6 +379,7 @@ compare_versions() (
                 cv_archive_status=verified
             else
                 [ -n "$cv_receipt_status" ] || cv_receipt_status=check-failed
+                cv_archive_status=verified
             fi
         fi
         {
