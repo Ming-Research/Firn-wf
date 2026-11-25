@@ -61,8 +61,8 @@ fn access_frequency(stamp: u32, client: &Client) -> counter: u32 reads(client) {
     let wide = cvt::<u32, u64>(elapsed);
     set periods = wide / client^.lfu_decay_time;
   }
-  let held = cvt::<u32, u64>(counter);
-  let decayed = held -sat periods;
+  let held_value = cvt::<u32, u64>(counter);
+  let decayed = held_value -sat periods;
   return cvt.wrap::<u64, u32>(decayed);
 }
 

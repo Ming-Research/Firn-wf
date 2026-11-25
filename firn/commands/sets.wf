@@ -287,17 +287,15 @@ fn pick_member(members: &HashMap<Key, unit, ceiling>, start: u64) -> found: Opti
   for @scan (step in 0_u64..buckets) {
     let offset = first +wrap step;
     let index = offset % buckets;
-    if index < members^.cells.inner.len {
-      let slot = &members^.cells.inner[index];
-      match slot^ {
-        HashMapFilled(key: member, value: nothing) => {
-          let copied = copy_key(key: member);
-          return Some<Key>(value: move copied);
-        }
-        HashMapVacant() => {
-        }
-        HashMapDeleted() => {
-        }
+    let slot = &members^.cells.inner[index];
+    match slot^ {
+      HashMapFilled(key: member, value: nothing) => {
+        let copied = copy_key(key: member);
+        return Some<Key>(value: move copied);
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
       }
     }
   }
@@ -510,7 +508,7 @@ fn member_seen(env: &Membership, key: &Key, value: &unit) -> result: u64 writes(
   return 1_u64;
 }
 
-fn set_holds(members: &HashMap<Key, unit, ceiling>, member: &Key, keys: &KeyEnv) -> held: Bool reads(members), reads(member), reads(keys) {
+fn set_holds(members: &HashMap<Key, unit, ceiling>, member: &Key, keys: &KeyEnv) -> held_value: Bool reads(members), reads(member), reads(keys) {
   doc "Whether a set holds a member.";
   let absent = False();
   let probe = Membership(found: absent);
@@ -535,8 +533,8 @@ fn members_known(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
       loop @members {
         if env^.items.inner.len > 0_u64 {
           let member = take_back(window: &env^.items.inner);
-          let held = set_holds(members: set_of, member: &member, keys: &keys);
-          if held {
+          let held_value = set_holds(members: set_of, member: &member, keys: &keys);
+          if held_value {
             reply_integer(client: env, value: 1_i64);
           } else {
             reply_integer(client: env, value: 0_i64);
@@ -657,22 +655,20 @@ fn random_members(env: &Client, value: &Entry) -> kind: u64 reads(value), writes
           if remaining == 0_u64 {
             break @buckets;
           }
-          if index < set_of^.cells.inner.len {
-            let slot = &set_of^.cells.inner[index];
-            match slot^ {
-              HashMapFilled(key: member, value: nothing) => {
-                set env^.random = next_random(state: env^.random);
-                let draw = env^.random % remaining;
-                if draw < needed {
-                  reply_text(client: env, text: &member^.bytes);
-                  set needed = needed -wrap 1_u64;
-                }
-                set remaining = remaining -wrap 1_u64;
+          let slot = &set_of^.cells.inner[index];
+          match slot^ {
+            HashMapFilled(key: member, value: nothing) => {
+              set env^.random = next_random(state: env^.random);
+              let draw = env^.random % remaining;
+              if draw < needed {
+                reply_text(client: env, text: &member^.bytes);
+                set needed = needed -wrap 1_u64;
               }
-              HashMapVacant() => {
-              }
-              HashMapDeleted() => {
-              }
+              set remaining = remaining -wrap 1_u64;
+            }
+            HashMapVacant() => {
+            }
+            HashMapDeleted() => {
             }
           }
         }
@@ -682,8 +678,8 @@ fn random_members(env: &Client, value: &Entry) -> kind: u64 reads(value), writes
         let chosen = hash_map_new::<Key, unit, ceiling>(capacity: magnitude);
         let keys = env^.keys;
         loop @draws {
-          let held = hash_map_len::<Key, unit, ceiling>(map: &chosen);
-          if held >= magnitude {
+          let held_value = hash_map_len::<Key, unit, ceiling>(map: &chosen);
+          if held_value >= magnitude {
             break @draws;
           }
           set env^.random = next_random(state: env^.random);
@@ -748,12 +744,12 @@ fn run_srandmember(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
 fn set_kind(slot: &Option<Entry>, now: u64) -> kind: u64 reads(slot) {
   doc "What an entry holds for a set command naming several keys: entry_none for no value, entry_lapsed for one whose expiry has been reached at now, entry_wanted for a live set and entry_other for a live value of another kind.";
   match slot^ {
-    Some(value: held) => {
-      let reached = expired(expires: held^.expires, now: now);
+    Some(value: held_value) => {
+      let reached = expired(expires: held_value^.expires, now: now);
       if reached {
         return entry_lapsed;
       }
-      match held^.value {
+      match held_value^.value {
         Members(members: set_of) => {
           return entry_wanted;
         }
@@ -783,7 +779,7 @@ fn set_kind(slot: &Option<Entry>, now: u64) -> kind: u64 reads(slot) {
 fn entry_present(slot: &Option<Entry>) -> present: Bool reads(slot) {
   doc "Whether an entry holds a value, its expiry reached or not.";
   match slot^ {
-    Some(value: held) => {
+    Some(value: held_value) => {
       return True();
     }
     None() => {
@@ -795,8 +791,8 @@ fn entry_present(slot: &Option<Entry>) -> present: Bool reads(slot) {
 fn entry_size(slot: &Option<Entry>) -> size: u64 reads(slot) {
   doc "How many members the set an entry holds has, 0 for an entry holding no set.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Members(members: set_of) => {
           let size = hash_map_len::<Key, unit, ceiling>(map: set_of);
           return size;
@@ -824,15 +820,15 @@ fn entry_size(slot: &Option<Entry>) -> size: u64 reads(slot) {
   }
 }
 
-fn entry_holds(slot: &Option<Entry>, member: &Key, keys: &KeyEnv, now: u64) -> held: Bool reads(slot), reads(member), reads(keys) {
+fn entry_holds(slot: &Option<Entry>, member: &Key, keys: &KeyEnv, now: u64) -> held_value: Bool reads(slot), reads(member), reads(keys) {
   doc "Whether the live set an entry holds has the member; false for an entry holding no live set.";
   match slot^ {
-    Some(value: held) => {
-      let reached = expired(expires: held^.expires, now: now);
+    Some(value: held_value) => {
+      let reached = expired(expires: held_value^.expires, now: now);
       if reached {
         return False();
       }
-      match held^.value {
+      match held_value^.value {
         Members(members: set_of) => {
           let found = set_holds(members: set_of, member: member, keys: keys);
           return found;
@@ -863,8 +859,8 @@ fn entry_holds(slot: &Option<Entry>, member: &Key, keys: &KeyEnv, now: u64) -> h
 fn drop_member(slot: &Option<Entry>, member: &Key, client: &Client) -> removed: Bool reads(member), writes(slot), writes(client) {
   doc "Removes a member from the set an entry holds and returns whether the set held it, leaving how many members the set keeps in the client's number; false for an entry holding no set.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Members(members: set_of) => {
           let keys = client^.keys;
           let pair = hash_map_remove::<KeyHash, unit, ceiling>(map: set_of, key: member, env: &keys);
@@ -904,14 +900,14 @@ fn drop_member(slot: &Option<Entry>, member: &Key, client: &Client) -> removed: 
 fn place_member(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Option<Entry>, member: Key, keys: &KeyEnv) -> result: unit reads(client), reads(keys), writes(sequence), writes(slot) {
   doc "Adds a member to the set an entry holds, creating the set, without an expiry, for an entry holding none; an entry holding another kind, which the caller has refused, drops it.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Members(members: set_of) => {
           let before = hash_map_len::<Key, unit, ceiling>(map: set_of);
           let put = hash_map_put::<KeyHash, unit, ceiling>(map: set_of, key: move member, value: unit, env: keys);
           let after = hash_map_len::<Key, unit, ceiling>(map: set_of);
           if after > before {
-            pkg::store::sequence_entry(sequence: sequence, value: held);
+            pkg::store::sequence_entry(sequence: sequence, value: held_value);
           }
           return unit;
         }
@@ -1086,7 +1082,7 @@ fn survey(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::Acc
   return found;
 }
 
-fn held_by_others(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, skip: u64, member: &Key, env: &KeyEnv, now: u64, every: Bool) -> held: Bool reads(slots), reads(keys), reads(ranks), reads(positions), reads(member), reads(env) {
+fn held_by_others(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, skip: u64, member: &Key, env: &KeyEnv, now: u64, every: Bool) -> held_value: Bool reads(slots), reads(keys), reads(ranks), reads(positions), reads(member), reads(env) {
   doc "Whether every set the operation names but the one at skip holds the member (every), or else whether any of them does; a key holding no live set holds nothing.";
   for @others (at in 0_u64..keys^.len) {
     if at != skip {
@@ -1095,13 +1091,13 @@ fn held_by_others(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>
       if named != 0_u64 {
         let rank = key_position(positions: ranks, index: at);
         if rank < slots^.len {
-          let held = entry_holds(slot: &slots^[rank], member: member, keys: env, now: now);
+          let held_value = entry_holds(slot: &slots^[rank], member: member, keys: env, now: now);
           if every {
-            if held {
+            if held_value {
             } else {
               return False();
             }
-          } else if held {
+          } else if held_value {
             return True();
           }
         }
@@ -1118,44 +1114,42 @@ fn combine(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, posit
   if rank < slots^.len {
     let source = &slots^[rank];
     match source^ {
-      Some(value: held) => {
-        match held^.value {
+      Some(value: held_value) => {
+        match held_value^.value {
           Members(members: set_of) => {
             let buckets = set_of^.cells.inner.len;
             for @buckets (index in 0_u64..buckets) {
-              if index < set_of^.cells.inner.len {
-                let slot = &set_of^.cells.inner[index];
-                match slot^ {
-                  HashMapFilled(key: member, value: nothing) => {
-                    let taken = False();
-                    if wanted {
-                      let others = held_by_others(slots: slots, keys: keys, ranks: ranks, positions: positions, skip: from, member: member, env: env, now: now, every: every);
-                      if every {
-                        set taken = others;
-                      } else {
-                        set taken = bnot(others);
-                      }
+              let slot = &set_of^.cells.inner[index];
+              match slot^ {
+                HashMapFilled(key: member, value: nothing) => {
+                  let taken = False();
+                  if wanted {
+                    let others = held_by_others(slots: slots, keys: keys, ranks: ranks, positions: positions, skip: from, member: member, env: env, now: now, every: every);
+                    if every {
+                      set taken = others;
                     } else {
-                      let known = set_holds(members: result, member: member, keys: env);
-                      set taken = bnot(known);
+                      set taken = bnot(others);
                     }
-                    if taken {
-                      set count = count +wrap 1_u64;
-                      if keep {
-                        let copied = copy_key(key: member);
-                        let put = hash_map_put::<KeyHash, unit, ceiling>(map: result, key: move copied, value: unit, env: env);
-                      }
-                      if limit != 0_u64 {
-                        if count >= limit {
-                          return count;
-                        }
+                  } else {
+                    let known = set_holds(members: result, member: member, keys: env);
+                    set taken = bnot(known);
+                  }
+                  if taken {
+                    set count = count +wrap 1_u64;
+                    if keep {
+                      let copied = copy_key(key: member);
+                      let put = hash_map_put::<KeyHash, unit, ceiling>(map: result, key: move copied, value: unit, env: env);
+                    }
+                    if limit != 0_u64 {
+                      if count >= limit {
+                        return count;
                       }
                     }
                   }
-                  HashMapVacant() => {
-                  }
-                  HashMapDeleted() => {
-                  }
+                }
+                HashMapVacant() => {
+                }
+                HashMapDeleted() => {
                 }
               }
             }
@@ -1225,8 +1219,8 @@ fn store_members(sequence: &pkg::store::WriteSequence, client: &Client, slot: &O
   pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
   pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Members(members: set_of) => {
           swap(first: set_of, second: members);
         }
@@ -1320,8 +1314,8 @@ fn sadd_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "SADD over one entry, preserving its member traversal and random draws.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = add_members(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = add_members(env: client, value: held_value);
     }
     None() => {
     }
@@ -1378,8 +1372,8 @@ fn srem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "SREM over one entry, preserving its member traversal and random draws.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = remove_members(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = remove_members(env: client, value: held_value);
     }
     None() => {
     }
@@ -1443,8 +1437,8 @@ fn spop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "SPOP over one entry, preserving its member traversal and random draws.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = pop_members(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = pop_members(env: client, value: held_value);
     }
     None() => {
     }
@@ -1499,8 +1493,8 @@ fn scard_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   doc "SCARD over one entry, preserving its member traversal and random draws.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = set_size(env: client, value: held);
+    Some(value: held_value) => {
+      let found = set_size(env: client, value: held_value);
     }
     None() => {
     }
@@ -1531,8 +1525,8 @@ fn smembers_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8],
   doc "SMEMBERS over one entry, preserving its member traversal and random draws.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = members_out(env: client, value: held);
+    Some(value: held_value) => {
+      let found = members_out(env: client, value: held_value);
     }
     None() => {
     }
@@ -1570,8 +1564,8 @@ fn sismember_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8]
   doc "SISMEMBER over one entry, preserving its member traversal and random draws.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = members_known(env: client, value: held);
+    Some(value: held_value) => {
+      let found = members_known(env: client, value: held_value);
     }
     None() => {
     }
@@ -1637,8 +1631,8 @@ fn srandmember_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u
   doc "SRANDMEMBER over one entry, preserving its member traversal and random draws.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = random_members(env: client, value: held);
+    Some(value: held_value) => {
+      let found = random_members(env: client, value: held_value);
     }
     None() => {
     }
@@ -1796,8 +1790,8 @@ fn smove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
     if source < slots^.len {
       if client^.items.inner.len > 0_u64 {
         let keys_env = client^.keys;
-        let held = entry_holds(slot: &slots^[source], member: &client^.items.inner[0_u64], keys: &keys_env, now: client^.now);
-        if held {
+        let held_value = entry_holds(slot: &slots^[source], member: &client^.items.inner[0_u64], keys: &keys_env, now: client^.now);
+        if held_value {
           set client^.number = 1_u64;
         }
       }
@@ -1881,13 +1875,11 @@ fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64
       at in 0_u64..removed^.inner.len,
       invariant log_extent: log^.inner.len >= log_initial_length
     ) {
-      if at < removed^.inner.len {
-        let position = removed^.inner[at];
-        let place = key_bounds(input: input, args: args, index: position);
-        let key = &input^[place.start..place.end];
-        log_removal(log: log, key: key, budget: budget);
-        set appended = appended +wrap 1_u64;
-      }
+      let position = removed^.inner[at];
+      let place = key_bounds(input: input, args: args, index: position);
+      let key = &input^[place.start..place.end];
+      log_removal(log: log, key: key, budget: budget);
+      set appended = appended +wrap 1_u64;
     }
     if changed {
       log_command(log: log, input: input, args: args, budget: budget);
