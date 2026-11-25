@@ -160,9 +160,10 @@ fn seed(client: &mut TcpStream) -> BTreeMap<String, String> {
     expected
 }
 
-// everysec may acknowledge before appending. This is a process-crash test,
-// not a power-cut or fsync test: wait for the exact last acknowledged record
-// in an authoritative increment before killing, without claiming durability.
+// Both servers append a record before they acknowledge it. This is a
+// process-crash test, not a power-cut or fsync test: find the exact last
+// acknowledged record in an authoritative increment before killing, without
+// claiming durability.
 fn appended(directory: &Path, key: &str, value: &str) {
     let record = resp(&["SET", key, value]);
     let deadline = Instant::now() + Duration::from_secs(20);
