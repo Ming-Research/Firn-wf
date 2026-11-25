@@ -60,8 +60,9 @@
 #                                 perf report), and with PERF_C2C set a perf c2c
 #                                 report of the cache lines cores contend for;
 #                                 every perf command runs on PERF_CPU;
-#                                 on Linux it records each server and client
-#                                 CPU's busy fraction per sample; each image
+#                                 it records each server, client and other
+#                                 CPU's busy fraction per sample, from
+#                                 /proc/stat, which it needs; each image
 #                                 runs with as many Whitefoot drivers as server
 #                                 CPUs, or IMAGE_DRIVERS when it is set
 #                                 with COMPARE_MAXMEMORY set to a byte count
