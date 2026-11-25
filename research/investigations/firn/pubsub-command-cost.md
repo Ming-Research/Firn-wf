@@ -1,0 +1,869 @@
+# Ordinary-command cost of publish/subscribe
+
+## The question
+
+Firn-wf#100 (publish/subscribe) made `redis-benchmark`'s ordinary commands
+slower: in the before/after comparison of
+[pubsub-throughput.md](pubsub-throughput.md#before-and-after-publishsubscribe)
+(run 39573904480), 15 of 38 cells were wholly on the slower side, 13 of them at
+depth 16, with medians from 0.947 to 0.991 and 0.889 for `lrange_100` at depth
+16. Which part of Firn-wf#100 costs the time, and what removes the cost? The
+run had no profile, so no cause has been measured.
+
+## What the source shows
+
+Read from the diff of `00e2bd1` (before) and `10c20af` (after); nothing here is
+measured. A connection that never subscribes pays, for every command:
+
+| segment | where | added work per command |
+|---|---|---|
+| S1 | `command_kind` (`commands/script.wf`) and the head of `execute` (`commands/dispatch.wf`) | `pubsub_kind` runs twice: one length comparison for a name under six bytes, and up to nine `name_is` calls (each rejecting at once on a different length, or on the first byte) for `LRANGE`, `ZPOPMIN` and other longer names |
+| S2 | `execute_client` (`commands/transaction.wf`), `admission_arity` and `command_denyoom` (`commands/admission.wf`) | `kind == 193`, `subscriber_mode`, `subscriber_refused` (a call that reads `client^.resp` and the three subscription counts), and a few more comparisons |
+| S3 | `serve` (`server/server.wf`) | `client.pubsub_id != 0` after every command, the `promoted` flag, and the code that hands the connection to `serve_promoted` in the same function |
+| S4 | `main` (`server/server.wf`) | two tasks, `dispatch` and `timer`, spawned at start; each waits in an `atomic ... when` statement on the event hub |
+| S5 | `Client` (`protocol/module.wfm`), `Keyspace` (`store/module.wfm`) | four `u64` fields (`pubsub_id`, `sub`, `psub`, `ssub`) before `name`, which moves the offsets of every field after `id`, among them `name`, `authenticated`, `locked` and `resp`; and a `pubsub` handle in `Keyspace` |
+| S6 | the whole program | `execute`, `serve` and `execute_client` grow; the compiler's inlining and the code layout under `make firn-lto` may change in ways no segment above names |
+
+The cost shows at depth 16 and not at depth 1 (deduction from the run above):
+a server does the most command work between its reads at depth 16, so a cost
+per command shows there, while a cost per wake-up or per read would show at
+depth 1 as well.
+
+## Criteria, stated before measuring
+
+The compiler pin is the same in all images (`wf-af7665be672d` at `00e2bd1`,
+`10c20af` and `7f8b4f8`).
+
+### Run P1: profile
+
+- **Images.** `before` (`00e2bd1`), `after` (`10c20af`), `main` (`7f8b4f8`, the
+  main line when the item started, which holds the changes merged after
+  Firn-wf#100) and `main-twin` (`7f8b4f8` again, the noise control), by the
+  compare mode of `redis-bench.yml`.
+- **Settings.** The 14900K, 2 server CPUs, placement as in AGENTS.md, depth 16,
+  the tests `get`, `lrange_100` and `ping_mbulk`, 4 interleaved passes of 5 s;
+  a profile with call stacks (`perf record --call-graph dwarf`, 999 Hz, the
+  workflow's `callers` input) of each image under `get` and under `lrange_100`
+  at depth 16.
+- **Comparison.** The server CPU time per request (`compare.csv`) and the rate
+  of `after`, `main` and `main-twin` against `before`; per symbol, the cycles
+  per request, which is the symbol's share of the profile's samples times the
+  CPU time per request of the profiled test.
+- **What it decides.** A symbol counts as grown when its cycles per request in
+  `after` exceed those in `before` by more than `main` and `main-twin` differ
+  in the same symbol. The deduction above (a cost per command, in firn's own
+  command code) is rejected if the extra cycles per request of `after` stand in
+  the kernel or in the runtime's scheduling and locking symbols
+  (`wf_executor_loop`, `wf_shared_acquire_as`, the TCP send path) instead; then
+  S4 and S5 are tested before S1 to S3. If `main` runs as fast as `before` in
+  this run, the slowdown is not reproduced and the cause cannot be located by
+  this comparison. P1 also says whether the main line still carries the whole
+  slowdown, which the acceptance row of the item measures.
+
+### Run P2: reverting segments
+
+Written after P1 (below) and before P2 runs. The question: which of S1 to S5
+makes an ordinary command cost more, and do they account for all of it?
+
+- **Images.** `before` (`00e2bd1`), `main` (`7f8b4f8`), `main-twin` (`7f8b4f8`
+  again) and six images that remove the segments from `main` one after another,
+  each on top of the one before (the branch `firn-pubsub-cmd-regression-exp`,
+  where the experiment images are commits that no pull request merges):
+  `v1` has no publish/subscribe dispatch at the head of `execute` (S1, the
+  second `pubsub_kind` call); `v2` also none in `command_kind` (S1, the first
+  call); `v3` also none of the subscriber checks of `execute_client`,
+  `admission_arity` and `command_denyoom` (S2); `v4` also nothing of the
+  promotion to the subscriber loop in `serve` (S3); `v5` also does not spawn the
+  two event hub tasks (S4); `v6` also keeps the four subscription fields after
+  the rest of `Client` (S5). Publish/subscribe commands do not work in these
+  images and the run sends none; the correctness pass of the compare mode still
+  checks their replies to the commands it sends.
+- **Settings.** The 14900K with the placement of AGENTS.md set by hand, servers
+  on CPUs 2 and 4 and clients on CPUs 16-31 (P1's automatic placement put the
+  clients on P-cores, where `lrange_100` was client-limited), 2 server CPUs,
+  depth 16, the tests `get`, `set`, `ping_mbulk` and `lrange_100`, 8
+  interleaved passes of 5 s; a flat profile of `get` at depth 16 for every image
+  with the instructions of `execute` and `execute_client` annotated.
+- **Measure.** The ratio, pass by pass, of the server CPU time per request
+  of the image it is compared with to that of the image compared (`summary.py
+  ratios --metric cpu`; below 1 is slower, as for the rate), with the 95%
+  interval of the mean log over the 8 passes; the rate ratio beside it. CPU time
+  per request is the measure because it does not depend on the client, which
+  limits the rate of a test whose client is busy.
+- **Reading.** A segment is a cause when the image without it, against the image
+  with it (`v1`/`main`, `v2`/`v1`, ..., `v6`/`v5`), has an interval wholly on
+  the faster side, and `main-twin` against `main` has an interval holding 1. The
+  hypothesis that S1 to S5 are the whole cost is rejected if `v6` against
+  `before` is still wholly on the slower side for `get` or `ping_mbulk`; the
+  cost left then belongs to what the compiler does with the larger functions
+  (S6) or to other changes of Firn-wf#100, and the annotated profiles are read
+  for where. Because the images are cumulative, a segment's cost may depend on
+  the ones removed before it; the table reports what was measured, not a sum.
+
+## Results
+
+### P1: the profile
+
+Run 39902843039 (`compare`, 4 passes of 5 s, depth 16, 2 server CPUs; the
+placement chosen by the script: servers on CPUs 2 and 4, clients on P-cores
+6-15, not the placement of AGENTS.md, which P2 sets). 15 of the 16 samples of
+`lrange_100` are client-limited (client busy fraction up to 0.96), so its rates
+are the client's; `get` and `ping_mbulk` are not (at most 0.27). Server CPU time
+per request, mean of 4 passes, and its ratio to `before` as `summary.py ratios
+--metric cpu` gives it (median of the per-pass ratios, 95% interval; below 1 is
+slower):
+
+| test | before | after | main | main-twin | after/before | main/before | main-twin/main |
+|---|---|---|---|---|---|---|---|
+| `get` | 0.2520 us | 0.2678 us | 0.2700 us | 0.2718 us | 0.940 (0.934-0.949) | 0.931 (0.908-0.959) | 0.989 (0.975-1.012) |
+| `ping_mbulk` | 0.2290 us | 0.2440 us | 0.2482 us | 0.2475 us | 0.937 (0.925-0.952) | 0.920 (0.908-0.937) | 1.000 (0.981-1.025) |
+| `lrange_100` | 1.1458 us | 1.3228 us | 1.1745 us | 1.1778 us | 0.864 (0.848-0.885) | 0.977 (0.967-0.984) | 0.997 (0.982-1.012) |
+
+- The slowdown is in the server and still on the main line: `main` costs 7% more
+  CPU per request than `before` on `get` and 8% on `ping_mbulk`, as `after`
+  did; `main-twin` is within 1% of `main`. The 15% extra of `after` on
+  `lrange_100` is gone in `main` (2.5% extra left), so the main line has
+  changed that cost without anyone aiming at it.
+- Profiles with call stacks (flat shares times CPU time per request, nanoseconds
+  per request; `get`; 8-9K samples each, so a symbol under about 0.5 ns
+  is within sampling noise): the kernel's share is the same (114.4 `before`,
+  115.9 `after`, 116.6 `main`, 117.3 `main-twin`), and the rise is in firn's
+  code, 137.0 `before`, 150.8 `after`, 152.4 `main`, 153.5 `main-twin`, 14 ns
+  of the 16 ns. In `after` against `before`: `execute_client` and
+  `admission_writes` together +3.4 (45.3 to 48.7; `admission_writes`, 22.6 ns,
+  stands as a symbol of its own in `after` and was inlined into `execute_client`
+  in `before`), `execute` +4.1 (8.1 to 12.2), `subscriber_refused` +0.9,
+  `pubsub_kind` +0.4, and about 5 ns spread thinly over `access_existing_entry`,
+  `record_memory_peak`, `wf_context_allocate` and others. The two background
+  tasks of S4 and the runtime's executor and locking symbols show no rise.
+  The same symbols rise in `main` and `main-twin`.
+- For `lrange_100` the profile differs: `try_entry` (the entry lock in the
+  runtime) is 363.6 ns per request in `before`, 497.4 in `after`, 385.8 in
+  `main` and 373.8 in `main-twin`, and accounts for 134 of the 177 ns the
+  request gained in `after`. Nothing in the diff of Firn-wf#100 touches that
+  function, so it is the layout or inlining of the program (S6), which the main
+  line lost again.
+- The deduction of the question (a cost per command in firn's own code) holds;
+  it is not rejected. The cost is spread over `execute`, `execute_client` and
+  what the compiler did to the functions around them, so P2 is run.
+
+### P2: reverting the segments
+
+Run 39906790106 (`compare`, 8 interleaved passes of 5 s, depth 16, 2 server CPUs
+on CPUs 2 and 4, clients on CPUs 16-31; no sample is client-limited, the
+largest client busy fraction is 0.64; the images are those of the criteria
+above, built from the commits `33a5ef1` to `fa0dcb4`). Server CPU time per
+request in microseconds, mean of the 8 passes:
+
+| test | before | main | main-twin | v1 | v2 | v3 | v4 | v5 | v6 |
+|---|---|---|---|---|---|---|---|---|---|
+| `get` | 0.2575 | 0.2742 | 0.2736 | 0.2690 | 0.2558 | 0.2546 | 0.2526 | 0.2521 | 0.2526 |
+| `set` | 0.3021 | 0.3185 | 0.3177 | 0.3130 | 0.3115 | 0.3056 | 0.3029 | 0.3019 | 0.3023 |
+| `ping_mbulk` | 0.2345 | 0.2521 | 0.2514 | 0.2449 | 0.2339 | 0.2305 | 0.2299 | 0.2300 | 0.2295 |
+| `lrange_100` | 1.1869 | 1.2043 | 1.2106 | 1.2075 | 1.1827 | 1.1954 | 1.1889 | 1.1775 | 1.1829 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 8 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` | `ping_mbulk` | `lrange_100` |
+|---|---|---|---|---|
+| main / before | 0.936 (0.933-0.945) | 0.950 (0.939-0.959) | 0.929 (0.923-0.937) | 0.984 (0.978-0.994) |
+| main-twin / main | 1.002 (0.997-1.007) | 0.998 (0.993-1.012) | 1.002 (0.996-1.010) | 1.002 (0.984-1.006) |
+| v1 / main (S1, `execute`) | 1.020 (1.016-1.023) | 1.018 (1.006-1.030) | 1.027 (1.023-1.036) | 0.998 (0.990-1.004) |
+| v2 / v1 (S1, `command_kind`) | 1.053 (1.045-1.058) | 1.003 (0.996-1.014) | 1.045 (1.040-1.054) | 1.021 (1.016-1.026) |
+| v3 / v2 (S2) | 1.000 (0.998-1.011) | 1.020 (1.014-1.025) | 1.015 (1.004-1.026) | 0.990 (0.985-0.994) |
+| v4 / v3 (S3) | 1.008 (1.001-1.015) | 1.008 (1.002-1.017) | 1.000 (0.995-1.010) | 1.008 (0.997-1.014) |
+| v5 / v4 (S4) | 1.002 (0.996-1.008) | 1.003 (0.994-1.013) | 1.002 (0.993-1.006) | 1.006 (1.002-1.018) |
+| v6 / v5 (S5) | 1.000 (0.990-1.007) | 1.003 (0.989-1.009) | 1.002 (0.994-1.011) | 0.990 (0.988-1.003) |
+| v6 / before (all removed) | 1.020 (1.011-1.028) | 0.998 (0.992-1.007) | 1.022 (1.011-1.033) | 1.005 (0.997-1.010) |
+
+- The hypothesis that S1 to S5 are the whole cost is not rejected: `v6`
+  against `before` is nowhere wholly on the slower side.
+- S1, the two `pubsub_kind` calls, is most of it for the cheap commands: 7% of
+  the CPU per request on `get` and 7% on `ping_mbulk`, 2% on `set` and 2% on
+  `lrange_100`. S2 costs `set` 2% and `ping_mbulk` 1.5%, S3 about 1% on `get`
+  and `set`. S4 (the two tasks) and S5 (the field order) cost nothing that
+  twin-wide intervals show. `set` is back at `before` only when S1, S2 and S3
+  are all removed (`v2`/`before` 0.973 (0.963-0.977), `v3`/`before` 0.990
+  (0.983-0.994), `v6` at 0.998 (0.992-1.007)): S2 and S3 are the subscriber features
+  themselves and can be made cheap, not removed.
+- Where it goes, `get` (flat profiles of the first pass, nanoseconds per
+  request, 4300-8200 samples per function): `execute_client` with
+  `admission_writes` 44.1 `before`, 51.0 `main`, 49.3 `v1`, 43.9 `v2`, 43.0
+  `v3`; `execute` 8.8, 11.7, 10.9, 8.8, 8.7; `subscriber_refused` 1.4 in
+  `main` and 0 in `v3`. In `before` the compiler had inlined `admission_writes`
+  into `execute_client`; in `main` and `v1` it stands as a function of its own,
+  and in `v2` and later it does too, at 18.9 and 18.0 ns against 23.0 in
+  `main`: the same loop costs 4 ns more in `main`.
+- The loops dominate. The instructions the profile annotates show that, in
+  `before`, 41% and 23% of the cycles of `execute_client` (18.3 and 10.2 ns)
+  are two loops that compare the command's kind with each entry of a list, the
+  longer being the 61-entry scan of `command_writes` and the shorter the
+  34-entry scan of `command_denyoom` (the two loops' cycles are in the ratio
+  1.79, as the entries are), and that every command runs to the end of both, since
+  `GET`, `SET` and `PING` are not in the lists that decide a refusal. In
+  `main` the same two scans cost 22.3 and 10.8 ns: about 33 ns of the 274 ns
+  a `get` costs, and 28.5 ns of 257 ns in `before`.
+
+## Cause
+
+The cost of a command's admission is a scan of two lists, 95 comparisons for
+every command that is on neither list, about 30 ns, which is 11% of the CPU a
+`get` takes. The scans were there before Firn-wf#100 and their cost depends on
+what the compiler does with the functions around them; Firn-wf#100 changed
+that twice: it put the names of nine publish/subscribe commands, compared by
+nine inlined `name_is` loops, at the head of `command_kind` and of `execute`,
+which grows the functions every command passes through (S1: 7%), and it added
+the subscriber checks (S2) and the promotion check in `serve` (S3), 1-2% each,
+which are the subscriber feature and cannot go, only be made cheap. The slowdown of the cheap commands is the sum; the larger
+cost of `lrange_100` in `after` that the main line lost again (see P1) is
+probably the same kind of effect, in the runtime's entry lock (deduced, not
+tested).
+
+The root is that a decision of constant cost is made with a scan whose cost
+changes with the code around it; any later change that grows a hot function can
+move it by several percent again.
+
+## The fix
+
+1. `command_writes` and `command_denyoom` read a 256-byte table indexed by the
+   command's kind instead of scanning a list (`commands/admission.wf`). The
+   tables are generated from the lists they replace and checked equal for
+   kinds 0 to 999; the subscription kinds that `command_denyoom` listed in code
+   are in the table. Expected: about 30 ns less per command on every command,
+   more than the 18 ns of the slowdown.
+2. `command_kind` and `execute` try the publish/subscribe names last, after the
+   names that are not publish/subscribe do not match, so that no other command
+   pays for them (S1). A publish/subscribe command pays the chain of the other
+   names first: `execute` reaches `run_pubsub` after its chain of comparisons
+   and the two lookups after it instead of at its head. The delivery path
+   costs nanoseconds there against microseconds for a delivery
+   (pubsub-throughput.md: 350 thousand deliveries a second), but a later
+   change that makes a publication cheap should classify once and route by
+   kind.
+3. S2: `execute_client` checks subscriber mode only in the promoted owner's
+   instance (`promoted` is a compile-time argument), and `admission_arity`
+   tries the publish/subscribe kinds after the ordinary ones, as
+   `command_kind` does. The ordinary owner hands a connection over at its first
+   successful subscription (`design/firn/connection-ownership.md`), so no
+   connection it serves holds a subscription when it executes a command and
+   the check could never be true there. Added after P3 (below), which found
+   `set` still wholly on the slower side with S1 and the tables fixed.
+4. S3 stays. P4 found it costs `set` 2%; P5 (below) found about 1% of that in
+   the check after every command and the rest not in any segment. The check is
+   the only route that hands a connection over whatever subscribed it (a
+   subscription command, `EXEC` running one, any later path), so a check
+   restricted to some commands, or made once per read, would drop a
+   subscription the loop does not name.
+
+### Run P3: the fix, probe
+
+Written before P3 runs. The question: does the fix bring the ordinary commands
+to the rate of `before`, and which of its parts does it?
+
+- **Images.** `before` (`00e2bd1`), `main` (`7f8b4f8`), `main-twin`, `f1`
+  (`bc7489e`, the tables only) and `f123` (`7a584d4`, the tables and the
+  classification order).
+- **Settings and measure.** As P2: CPUs 2 and 4 for the servers, 16-31 for the
+  clients, depth 16, `get`, `set`, `ping_mbulk` and `lrange_100`, 6 passes of
+  5 s, no profile; the ratio of server CPU time per request.
+- **Reading.** The fix works when `f123`/`before` is wholly on the faster side
+  or holds 1 for every test. It is rejected as insufficient when that interval
+  is wholly on the slower side for any test; S2 and S3 would then need work of
+  their own. `f1`/`main` and `f123`/`f1` give the part of each step; a part
+  whose interval holds 1 does nothing measurable and is questioned in review.
+
+### P3 results
+
+Run 39925638103 (`compare`, the images of the criteria above, 6 passes of 5 s,
+depth 16, servers on CPUs 2 and 4, clients on 16-31; the check workflow was
+green on `a822d89`, run 39910958865). No sample was client-limited (client busy
+fraction at most 0.64). Server CPU time per request, mean of 6 passes, in
+microseconds:
+
+| test | before | main | main-twin | f1 | f123 |
+|---|---|---|---|---|---|
+| `get` | 0.2560 | 0.2742 | 0.2747 | 0.2358 | 0.2338 |
+| `set` | 0.3007 | 0.3162 | 0.3183 | 0.3102 | 0.3110 |
+| `ping_mbulk` | 0.2333 | 0.2523 | 0.2522 | 0.2112 | 0.2105 |
+| `lrange_100` | 1.1857 | 1.1997 | 1.2077 | 1.1665 | 1.1693 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 6 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` | `ping_mbulk` | `lrange_100` |
+|---|---|---|---|---|
+| main / before | 0.933 (0.927-0.940) | 0.951 (0.941-0.962) | 0.925 (0.921-0.929) | 0.986 (0.980-0.997) |
+| main-twin / main | 0.998 (0.994-1.002) | 0.995 (0.985-1.001) | 0.998 (0.992-1.010) | 0.994 (0.988-0.999) |
+| f1 / main (tables) | 1.161 (1.157-1.168) | 1.018 (1.013-1.025) | 1.192 (1.185-1.205) | 1.029 (1.020-1.037) |
+| f123 / f1 (names last) | 1.009 (1.002-1.015) | 0.997 (0.993-1.001) | 1.005 (0.996-1.011) | 0.997 (0.996-0.9995) |
+| f1 / before | 1.085 (1.077-1.094) | 0.969 (0.962-0.976) | 1.104 (1.099-1.111) | 1.016 (1.010-1.023) |
+| f123 / before | 1.094 (1.087-1.103) | 0.968 (0.957-0.977) | 1.110 (1.104-1.113) | 1.013 (1.010-1.018) |
+
+- By the criterion written above the fix is insufficient: `f123`/`before` is
+  wholly on the slower side for `set` (3.2% more CPU per request than
+  `before`), and wholly on the faster side for the other three. The rate ratio
+  agrees: `set` 0.969 (0.951-0.981), `get` 1.099 (1.063-1.115), `ping_mbulk`
+  1.109 (1.103-1.113), `lrange_100` 1.005 (0.984-1.025).
+- The tables carry almost all of the gain: `get` and `ping_mbulk` are 8% and
+  10% below `before` in CPU per request with the tables alone; the order of the
+  names adds 0.9% on `get` and nothing measurable elsewhere (the 0.3% on
+  `lrange_100` is inside `main-twin`/`main`, 0.6%). The tables gain `set` only
+  1.8%, against the 5% that `main` lost, of which P2 put 2.0% in S2 and 0.8%
+  in S3: what is left of `set` is S2 and S3.
+- Noise: `main-twin`/`main` holds 1 for three tests, and is 0.6% slower for
+  `lrange_100`.
+
+### Run P4: S2 reduced, probe
+
+Written before P4 runs. The question: does gating the subscriber checks by
+the owner (fix item 3) bring `set` to the rate of `before`, and is S3, which
+stays, what is left if it does not?
+
+- **Images.** `before` (`00e2bd1`), `main` (`7f8b4f8`), `main-twin`, `f123`
+  (`7a584d4`, the tables and the order of the names: P3's last image) and `f4`
+  (the head of the pull request: also the S2 change); and `f4s3`, an
+  experiment image that no pull request merges: `f4` without the promotion to
+  the subscriber loop in `serve` (the change of V4), on the branch
+  `firn-pubsub-cmd-regression-exp2`, to locate S3 should `f4` fall short.
+- **Settings and measure.** As P3.
+- **Reading.** The fix works when `f4`/`before` is wholly on the faster side
+  or holds 1 for every test. If it is wholly on the slower side for any test,
+  `f4s3`/`f4` says how much of it S3 is: an interval wholly on the faster side
+  places the rest in S3 (and `f4s3`/`before` must then hold 1 or be faster,
+  or the rest is not S3 either); one that holds 1 leaves the rest unlocated
+  and the profile of `set` is read for where. `f4`/`f123` gives the part of the
+  S2 change: P2 measured S2 at 2.0% for `set` and 1.5% for `ping_mbulk`, so an
+  interval of `f4`/`f123` that holds 1 for `set` means the change does nothing
+  measurable and is questioned in review. `main-twin`/`main` is the noise of
+  the run, as before.
+
+### P4 results
+
+Run 39930789009 (`compare`, the images of the criteria above, 6 passes of 5 s,
+depth 16, servers on CPUs 2 and 4, clients on 16-31; the check workflow was
+green on `b71c081`, run 39928190575, and built `e811c01`, the base of
+`f4s3`). No sample was client-limited (client busy fraction at most 0.65).
+Server CPU time per request, mean of 6 passes, in microseconds:
+
+| test | before | main | main-twin | f123 | f4 | f4s3 |
+|---|---|---|---|---|---|---|
+| `get` | 0.2580 | 0.2743 | 0.2745 | 0.2360 | 0.2320 | 0.2313 |
+| `set` | 0.3032 | 0.3173 | 0.3173 | 0.3137 | 0.3100 | 0.3045 |
+| `ping_mbulk` | 0.2340 | 0.2530 | 0.2523 | 0.2135 | 0.2095 | 0.2063 |
+| `lrange_100` | 1.1900 | 1.2070 | 1.2072 | 1.1720 | 1.1623 | 1.1585 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 6 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` | `ping_mbulk` | `lrange_100` |
+|---|---|---|---|---|
+| main / before | 0.943 (0.934-0.947) | 0.957 (0.946-0.965) | 0.925 (0.919-0.931) | 0.985 (0.983-0.989) |
+| main-twin / main | 1.000 (0.993-1.006) | 1.000 (0.987-1.013) | 1.002 (0.999-1.006) | 0.998 (0.990-1.010) |
+| f123 / before | 1.098 (1.079-1.107) | 0.965 (0.956-0.978) | 1.117 (1.044-1.153) | 1.016 (1.010-1.021) |
+| f4 / f123 (S2) | 1.013 (1.008-1.026) | 1.013 (1.005-1.019) | 1.000 (0.970-1.069) | 1.007 (1.000-1.017) |
+| f4 / before | 1.112 (1.107-1.117) | 0.977 (0.971-0.985) | 1.117 (1.111-1.123) | 1.024 (1.018-1.029) |
+| f4s3 / f4 (S3) | 1.002 (0.999-1.007) | 1.021 (1.004-1.032) | 1.012 (1.001-1.030) | 1.001 (0.999-1.008) |
+| f4s3 / before | 1.115 (1.107-1.123) | 0.992 (0.978-1.013) | 1.130 (1.122-1.147) | 1.027 (1.025-1.030) |
+
+- By the criterion written above `f4` is still insufficient: `f4`/`before` is
+  wholly on the slower side for `set` (2.3% more CPU per request; the rate
+  ratio is 0.984 (0.969-0.993)) and wholly on the faster side for the other
+  three. `f4s3`/`f4` is wholly on the faster side for `set` (2.1%), and
+  `f4s3`/`before` holds 1: what `f4` still lacks on `set` is in what `f4s3`
+  removes.
+- The S2 change gains `set` 1.3% (P2 measured S2 at 2.0%) and `get` 1.3%;
+  `ping_mbulk` holds 1 with a wide interval (the `f123` samples of that test
+  spread more in this run).
+- What `f4s3` removes is more than the check in `serve`: without the
+  promotion `serve_promoted` has no caller, so the link drops it and
+  everything only it reaches (the promoted owner, its command path and the
+  event hub's delivery code) from the program. The 2.1% is either the check
+  that runs after every command, or the presence and the inlining of that
+  code, which P2's `v4` also removed with the check. The two are separated by
+  run P5.
+
+### Run P5: what in S3 costs `set`
+
+Written before P5 runs. The question: of the 2.1% that `f4s3` recovers on
+`set`, how much is the check `client.pubsub_id != 0` after every command, and
+how much is the promoted code being in the program?
+
+- **Images.** `before` (`00e2bd1`), `f4` (`b71c081`), `f4-twin`, `f4s3`
+  (`e811c01`, no promotion, as in P4) and `f4c` (`6263405`, on the branch
+  `firn-pubsub-cmd-regression-exp3`, no pull request merges it): `f4` with the
+  check taken out of the loop over the commands and made once per read after
+  it, so that `serve_promoted` stays reachable and the program holds the
+  promoted code. `f4c` hands a connection over wrongly when commands follow a
+  subscription in the same read; the run sends no subscription.
+- **Settings and measure.** As P3, but the tests `set` and `get`, and a flat
+  profile of `set` at depth 16 for every image (`profile_test` `set 16`) with
+  the instructions of `serve` and `execute_client` annotated.
+- **Reading.** `f4c`/`f4` wholly on the faster side for `set` with
+  `f4s3`/`f4c` holding 1: the cost is the check after every command, and the
+  fix takes it out of the loop. `f4c`/`f4` holding 1 with `f4s3`/`f4c` wholly
+  on the faster side: the cost is the presence of the promoted code, the check
+  is innocent, and the profile says whether it is `serve` (inlined code,
+  spills) or the layout of other functions. Both intervals wholly on the faster
+  side: both. `get` is the control: `f4s3`/`f4` held 1 for it in P4, so an
+  interval of `f4c`/`f4` for `get` that does not hold 1 is questioned.
+  `f4-twin`/`f4` is the noise of the run. The profile is read per symbol (cycles
+  per request) and, in `serve` and `execute_client`, per instruction between
+  `before`, `f4` and `f4s3`, for the instructions that gained cycles.
+
+### P5 results
+
+Run 39934594064 (`compare`, `set` and `get`, 6 passes of 5 s, depth 16,
+servers on CPUs 2 and 4, clients on 16-31, a flat profile of `set` for every
+image). No sample was client-limited (client busy fraction at most 0.27). The
+run was started with the profile on and every image's absolute times, `get`
+most, are about 20% above those of P4 (`before` 0.3052 against 0.2580 us); only
+the ratios inside the run are read. Server CPU time per request, mean of 6
+passes, in microseconds:
+
+| test | before | f4 | f4-twin | f4s3 | f4c |
+|---|---|---|---|---|---|
+| `get` | 0.3052 | 0.2790 | 0.2785 | 0.2758 | 0.2762 |
+| `set` | 0.2998 | 0.3098 | 0.3083 | 0.3037 | 0.3048 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 6 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` |
+|---|---|---|
+| f4 / before | 1.094 (1.081-1.107) | 0.966 (0.959-0.976) |
+| f4-twin / f4 | 0.998 (0.992-1.012) | 1.005 (0.993-1.017) |
+| f4c / f4 | 1.007 (0.999-1.021) | 1.011 (1.004-1.029) |
+| f4s3 / f4 | 1.007 (1.002-1.022) | 1.022 (1.009-1.032) |
+| f4s3 / f4c | 1.000 (0.996-1.006) | 1.005 (0.994-1.014) |
+| f4c / before | 1.105 (1.096-1.114) | 0.987 (0.976-0.992) |
+| f4s3 / before | 1.107 (1.099-1.114) | 0.987 (0.981-0.994) |
+
+- By the reading written above, the cost in S3 is the check after every
+  command: `f4c`/`f4` is wholly on the faster side for `set` (1.1%, 3.4 ns) and
+  `f4s3`/`f4c` holds 1, so removing the promoted code as well adds nothing
+  measurable. For `get` `f4c`/`f4` holds 1, the control behaves.
+- The profile does not say where the 3.4 ns go. The annotation inputs
+  `serve execute_client` matched no symbol (the symbols are
+  `wf_server.serve.resume` and `wf_commands.execute_client$instance$...resume`),
+  so no instruction was annotated; the flat profiles, in nanoseconds per
+  request (share of samples times the mean CPU per request), give
+  `execute_client` 14.7 `before`, 14.8 `f4`, 14.4 `f4c`, and `serve.resume`
+  11.4, 10.8, 10.9. The total per request is 298.5 (`before`), 307.9 (`f4`),
+  302.9 (`f4c`) and 302.1 (`f4s3`); the 9.4 ns of `f4` is spread over many
+  symbols of the runtime and the kernel, each within what `f4-twin` differs
+  from `f4` in the same symbol (about 1 ns): the check does not show as an
+  instruction cost of its own, and 3.4 ns is more than a load, a comparison and
+  a branch take, so it is probably an effect of code placement and of the
+  coroutine frame (deduced, not tested).
+- Even `f4s3` and `f4c` stay 1.3% above `before` for `set` here (0.992
+  (0.978-1.013) in P4): a floor that no segment of Firn-wf#100 explains, which
+  the images' own placement can produce.
+
+### Run F: the formal comparison
+
+Written before F runs. The question: with the fix as it stands (tables for the
+admission flags, publish/subscribe names last, the subscriber checks only in
+the promoted owner), is any cell of the 19 default tests of `redis-benchmark`
+at depths 16 and 1 still wholly on the slower side of the main revision before
+Firn-wf#100 merged, the comparison that found the cost (run 39573904480,
+[pubsub-throughput.md](pubsub-throughput.md#before-and-after-publishsubscribe))?
+
+- **Images.** `before` (`00e2bd1fa230`), `main` (`7f8b4f84658b`, what the branch
+  starts from), `head` (the branch head built by the run) and `head-twin`
+  (`head` again). `main` is in the run so that a cell that stays slower than
+  `before` can be told from a cell that the fix did not change: `head`/`main`
+  wholly on the faster side supports that the fix, not something else, moved it
+  (the check that could refute the attribution).
+- **Settings.** The 14900K with the placement of AGENTS.md set by hand, servers
+  on CPUs 2 and 4 and clients on CPUs 16-31, 2 server CPUs, the 19 tests at
+  depths 16 and 1, 6 interleaved passes of 5 s, no profile, no `reference`
+  line. As in run 39573904480 the 19 tests are 20 rows of the suite: the
+  `LRANGE` tests' list fill is the 20th.
+- **Measure.** `summary.py ratios` for `head`/`before`, `head`/`main` and
+  `head-twin`/`head`: the median of the per-pass ratios of the rate and its
+  95% interval of the mean log over the 6 passes (above 1 is faster). A
+  competitor's rate does not change between the images of one run, so the
+  ratio of the rate is the change in firn's multiple of the fastest
+  competitor. The ratio of the server CPU time per request (`--metric cpu`)
+  is reported beside it for every cell, and it is the one read for a cell
+  whose client is busy more than 90% of the time, where the client sets the
+  rate.
+- **Reading.** The run counts only if `head-twin`/`head` holds 1 in every cell
+  that is not client-limited; a cell where it does not is measured again. The
+  criterion of the item is met if no cell that is not client-limited has its
+  `head`/`before` interval wholly on the slower side. A cell that is wholly
+  slower is measured again alone with 12 passes (more pairs of the same
+  comparison, not a new question, as chance puts about one of the 38 cells
+  there at 95%) and stands only if it is wholly slower again; it then goes
+  to the board as a size and a reason for the owner to accept or to ask for a
+  further fix. The proposal is rejected for a cell that stands.
+
+### F results
+
+Run 40023129550 (`compare`, 19 tests at depths 16 and 1, 6 interleaved passes
+of 5 s, servers on CPUs 2 and 4, clients on 16-31, no profile, no `reference`
+line). The images: `before` (`00e2bd1fa230`), `main` (`7f8b4f84658b`), `head`
+(`560c86da024a`, whose firn is that of `47ae0e65022c`: the commits differ in
+this record alone) and `head-twin`; all built with the same pinned compiler
+release (`wf-af7665be672d`). `lrange_500` at depth 16 is flagged
+client-limited (client busy fraction above 0.90) in all 24 samples (0.911 to
+0.929) and `lrange_600` at depth 16 in 23 of 24 (0.913 to 0.953; the one
+sample not flagged, 0.721, is `before`'s); no other sample is flagged and the
+busiest of them is 0.884. These two cells are reported and not judged: 36
+cells are judged. Rate ratios are the median of the 6 per-pass
+ratios of `head` to `before` (above 1 is faster) with the 95% interval of the
+mean log; `cpu` is the median ratio of the server CPU time per request;
+`head/main` is the rate ratio of `head` to `main`. The column "twin/head
+interval" is the 95% interval of `head-twin` over `head`, the run's noise in
+the cell.
+
+| test | depth | head/before | 95% interval | verdict | twin/head interval | cpu head/before | head/main | verdict |
+|---|---|---|---|---|---|---|---|---|
+| get | 16 | 1.0931 | 1.0847-1.1022 | faster | 0.9943-1.0141 | 1.0877 | 1.1640 | faster |
+| get | 1 | 1.0059 | 1.0012-1.0135 | faster | 0.9834-1.0133 | 1.0040 | 1.0161 | no change |
+| hset | 16 | 1.0311 | 1.0046-1.0494 | faster | 0.9695-1.0077 | 1.0318 | 1.0752 | faster |
+| hset | 1 | 0.9898 | 0.9793-1.0043 | no change | 0.9790-1.0133 | 0.9888 | 1.0173 | no change |
+| incr | 16 | 0.9834 | 0.9573-1.0022 | no change | 0.9810-1.0264 | 0.9860 | 1.0104 | no change |
+| incr | 1 | 0.9765 | 0.9639-0.9902 | slower | 1.0076-1.0318 (not 1) | 0.9835 | 0.9808 | slower |
+| lpop | 16 | 1.0684 | 1.0619-1.0784 | faster | 0.9940-1.0057 | 1.0687 | 1.1359 | faster |
+| lpop | 1 | 0.9974 | 0.9810-1.0109 | no change | 0.9992-1.0300 | 0.9914 | 0.9998 | no change |
+| lpush | 16 | 1.0294 | 1.0144-1.0358 | faster | 0.9856-1.0167 | 1.0286 | 1.0483 | faster |
+| lpush | 1 | 1.0070 | 0.9351-1.0425 | no change | 0.9640-1.0695 | 1.0071 | 1.0157 | no change |
+| lrange_100 | 16 | 1.0270 | 1.0114-1.0394 | faster | 0.9293-1.0304 | 1.0199 | 1.0411 | faster |
+| lrange_100 | 1 | 0.9986 | 0.9755-1.0190 | no change | 0.9896-1.0361 | 0.9984 | 0.9893 | no change |
+| lrange_300 | 16 | 1.0191 | 1.0146-1.0245 | faster | 0.9945-1.0088 | 1.0195 | 1.0180 | faster |
+| lrange_300 | 1 | 0.9996 | 0.9941-1.0126 | no change | 0.9948-1.0130 | 0.9965 | 1.0058 | no change |
+| lrange_500 | 16 | 1.0034 | 0.9967-1.0072 | no change (client-limited, not judged) | 0.9965-1.0066 | 1.0081 | 1.0003 | no change |
+| lrange_500 | 1 | 0.9901 | 0.9869-1.0002 | no change | 0.9778-1.0209 | 0.9954 | 1.0165 | no change |
+| lrange_600 | 16 | 1.0253 | 0.9546-1.2068 | no change (client-limited, not judged) | 0.9899-1.0042 | 1.0236 | 1.0314 | faster |
+| lrange_600 | 1 | 0.9922 | 0.9779-1.0003 | no change | 0.9919-1.0117 | 0.9935 | 0.9922 | slower |
+| mset | 16 | 1.0191 | 0.9814-1.0475 | no change | 0.9414-1.0405 | 1.0185 | 1.0265 | faster |
+| mset | 1 | 0.9932 | 0.9796-1.0082 | no change | 0.9928-1.0106 | 0.9843 | 1.0097 | no change |
+| ping_inline | 16 | 1.1103 | 1.1004-1.1279 | faster | 0.9885-1.0210 | 1.1166 | 1.1973 | faster |
+| ping_inline | 1 | 1.0093 | 0.9962-1.0234 | no change | 0.9797-1.0082 | 1.0098 | 1.0158 | no change |
+| ping_mbulk | 16 | 1.1172 | 1.1073-1.1264 | faster | 0.9902-1.0150 | 1.1244 | 1.2021 | faster |
+| ping_mbulk | 1 | 1.0026 | 0.9907-1.0097 | no change | 0.9942-1.0165 | 1.0043 | 1.0168 | faster |
+| rpop | 16 | 1.0903 | 1.0770-1.1108 | faster | 0.9982-1.0105 | 1.0930 | 1.1495 | faster |
+| rpop | 1 | 1.0015 | 0.9820-1.0172 | no change | 0.9984-1.0237 | 1.0049 | 0.9974 | no change |
+| rpush | 16 | 1.0171 | 1.0016-1.0307 | faster | 0.9941-1.0230 | 1.0197 | 1.0488 | faster |
+| rpush | 1 | 0.9977 | 0.9803-1.0184 | no change | 0.9907-1.0124 | 0.9980 | 1.0002 | no change |
+| sadd | 16 | 1.0171 | 0.9930-1.0288 | no change | 0.9916-1.0087 | 1.0152 | 1.0333 | faster |
+| sadd | 1 | 1.0025 | 0.9927-1.0200 | no change | 0.9884-1.0065 | 1.0010 | 1.0191 | no change |
+| set | 16 | 0.9691 | 0.9641-0.9795 | slower | 1.0027-1.0094 (not 1) | 0.9677 | 1.0219 | faster |
+| set | 1 | 0.9880 | 0.9777-1.0024 | no change | 0.9732-1.0094 | 0.9914 | 0.9946 | no change |
+| spop | 16 | 1.1008 | 1.0806-1.1353 | faster | 0.9793-1.0228 | 1.0980 | 1.1505 | faster |
+| spop | 1 | 1.0134 | 0.9858-1.0326 | no change | 0.9894-1.0195 | 1.0057 | 1.0010 | no change |
+| zadd | 16 | 1.0245 | 1.0071-1.0423 | faster | 0.9921-1.0131 | 1.0244 | 1.0246 | faster |
+| zadd | 1 | 0.9876 | 0.9668-1.0102 | no change | 0.9925-1.0416 | 0.9935 | 0.9836 | no change |
+| zpopmin | 16 | 1.0719 | 1.0237-1.0924 | faster | 0.9752-1.0604 | 1.0727 | 1.0860 | faster |
+| zpopmin | 1 | 0.9903 | 0.9859-0.9973 | slower | 1.0049-1.0254 (not 1) | 0.9944 | 1.0008 | no change |
+
+Reading:
+
+- The twin interval holds 1 in 33 of the 36 judged cells; the three where it
+  does not (`set` 16, `incr` 1, `zpopmin` 1) are the three cells where
+  `head`/`before` is wholly on the slower side. For these cells the same image measured twice differs
+  by 0.7% to 2.1% (`head-twin`/`head` wholly above 1), so the run does not
+  settle them, and by the criteria above they are measured again with 12
+  passes (F2).
+- Of the 36 judged cells, `head`/`before` is wholly on the faster side in 14
+  (13 of the 17 judged at depth 16, `get` at depth 1), holds 1 in 19 and is
+  wholly on the slower side in 3 (`set` 16 0.9691, `incr` 1 0.9765, `zpopmin`
+  1 0.9903). `main`/`before` is wholly on the slower side in 16 of the 36
+  (for example `get` 16 0.945, `ping_mbulk` 16 0.933, `set` 16 0.951); the fix
+  is wholly on the faster side of `main` in 17 (16 of the 17 judged cells at
+  depth 16, and `ping_mbulk` at depth 1) and wholly on the slower side in 2
+  (`incr` 1 0.9808, `lrange_600` 1 0.9922). The fix took the cost out of the
+  cells it was meant for.
+- The widest twin intervals are `lpush` at depth 1 (0.9640-1.0695) and `mset`
+  at depth 16 (0.9414-1.0405): with 6 passes a cell with an interval like
+  these cannot show a change of 2%.
+
+### Run F2: the three cells again
+
+As the criteria of F (written before F ran) say, the cells of F
+that are wholly on the slower side (`set` 16, `incr` 1, `zpopmin` 1) are
+measured again, alone, with 12 interleaved passes of 5 s, the same four
+images, the same placement and the same measure. As the depth is a setting of
+the whole run, the tests `set`, `incr` and `zpopmin` run at both depths, so
+`set` 1, `incr` 16 and `zpopmin` 16 are measured too. A cell stands if
+`head`/`before` is wholly on the slower side again with the twin holding 1.
+
+### F2 results
+
+Run 40055691885 (`compare`, `set`, `incr`, `zpopmin` at depths 16 and 1, 12
+passes of 5 s, the same images and placement; no sample was client-limited,
+client busy fraction at most 0.44). `head-twin`/`head` holds 1 in all six
+cells.
+
+| test | depth | head/before | 95% interval | verdict | cpu head/before | 95% interval | head/main | verdict |
+|---|---|---|---|---|---|---|---|---|
+| `set` | 16 | 0.9779 | 0.9641-0.9885 | slower | 0.9804 | 0.9766-0.9870 | 1.0322 | faster |
+| `set` | 1 | 0.9941 | 0.9795-1.0011 | no change | 0.9939 | 0.9866-1.0001 | 0.9911 | no change |
+| `incr` | 16 | 0.9765 | 0.9698-0.9890 | slower | 0.9797 | 0.9744-0.9867 | 1.0176 | faster |
+| `incr` | 1 | 1.0018 | 0.9809-1.0054 | no change | 0.9984 | 0.9910-1.0008 | 1.0024 | no change |
+| `zpopmin` | 16 | 1.0699 | 1.0563-1.0830 | faster | 1.0687 | 1.0632-1.0821 | 1.1038 | faster |
+| `zpopmin` | 1 | 1.0020 | 0.9916-1.0076 | no change | 0.9984 | 0.9930-1.0049 | 1.0123 | faster |
+
+Server CPU time per request at depth 16, mean of the 12 passes, in
+microseconds (`before`, `main`, `head`, `head-twin`): `set` 0.3013, 0.3165,
+0.3069, 0.3077; `incr` 0.3143, 0.3272, 0.3206, 0.3197. In requests a second
+(`before`, `head`): `set` 6.59 million and 6.43 million, `incr` 6.34 million
+and 6.21 million.
+
+- `incr` 1 and `zpopmin` 1 hold 1 with 12 passes, and `head-twin`/`before`
+  holds 1 there (0.9954 and 0.9964): their slower side in F was the noise of
+  that run, and they do not stand.
+- `set` 16 stands: 2.2% slower in rate (0.9779, 0.9641-0.9885), 2.0% in CPU
+  time per request, 0.0056 microseconds, in line with the probes (0.977 in
+  P4) and with `head-twin`/`before` (0.9799, 0.9675-0.9850).
+- `incr` 16, which F did not flag (0.9834, interval 0.9573-1.0022 with 6
+  passes), is wholly on the slower side with 12 passes, 2.4% in rate (0.9765,
+  0.9698-0.9890), 2.0% in CPU time (0.9797); `head-twin`/`before` agrees
+  (0.9845, 0.9781-0.9917). The 6 passes of F could not see it, and a cell of F
+  with a wide interval (for example `sadd` 16, 0.993-1.029, or `mset` 16,
+  0.981-1.048) may hide a change of the same size; only the cells measured
+  again are known to this precision.
+- The fix still recovers 3.2% (`set`) and 1.8% (`incr`) of the 4.7% and 3.9%
+  that `main` is behind `before` at depth 16.
+
+### Conclusion of the comparison
+
+The criterion of the item, no judged cell wholly on the slower side of
+`before`, is not met: two cells stand, `set` and `incr` at depth 16, 2.2% and
+2.4% slower in rate (2.0% each in server CPU time per request), against 13 of
+the 17 judged cells at depth 16 that are 1.7% to 11.7% faster than `before`
+now. Of the 2.2% in `set`, about 1% is the check after every command in `serve`
+(P5), which has to stay, and the rest is in no segment of Firn-wf#100: with
+every segment taken out of `main` the cell was level with `before` (0.998 in
+P2), and `f4s3`, which has no promotion at all, stays 0.8% and 1.3% behind
+(0.992 in P4, 0.987 in P5). The cell is as the code placement leaves it, which no instruction of the
+profile shows; `incr` was not probed and is taken to be the same effect
+(deduced, not tested). What remains for the owner is whether to accept 2% on
+two commands of the string type at depth 16, or to ask for further work on the
+placement of the hot functions, which routing by kind (the classify-once
+design above) would change anyway.
+
+The runs above measured the branch over `7f8b4f84658b`. The branch has since
+merged the main line, which brought in the stream commands and the startup
+configuration; the tables of the admission flags carry the stream kinds now
+(142, 146 to 148 as writes, 142 and 148 as denyoom), regenerated from the lists
+of the main line and checked equal for kinds 0 to 999. The hot functions are
+laid out again by the new commands, and this record's finding is that a cell's
+cost of a few percent follows such a layout, so the comparison was made again on
+the merged program (G and G2 below), and its conclusion is the one to read.
+
+### Run G: the formal comparison on the merged program
+
+Written before G runs. The question: run F and F2 measured the branch over
+`7f8b4f84658b`; the program that merges also holds the stream commands and the
+startup configuration of the main line. Is any cell of the 19 default tests at
+depths 16 and 1 wholly on the slower side of `before` on the merged program,
+and which of `set` and `incr` at depth 16 is still behind? This is the same
+comparison as F on the head commit that merges, not a new question.
+
+- **Images.** `before` (`00e2bd1fa230`), `main` (`05f7e89c62a7`, the main line
+  the branch merged), `head` (the branch head at the time of the run, which holds
+  the merge) and `head-twin` (`head` again). The pinned compiler release is the
+  same for all of them (`whitefoot.pin` is unchanged between `7f8b4f84658b` and
+  `05f7e89c62a7`).
+- **Settings.** As F, with 8 passes of 5 s instead of 6, because F's intervals
+  were too wide to see 2% in some cells: servers on CPUs 2 and 4, clients on
+  16-31, 2 server CPUs, the 19 tests at depths 16 and 1, no profile, no
+  `reference` line.
+- **Measure and reading.** As F: `head`/`before`, `head`/`main`, `main`/`before`
+  and `head-twin`/`head` by `summary.py ratios` on the rate and on the server
+  CPU time per request. The run counts only if the twin interval holds 1 in
+  every cell that is not client-limited; a cell that is wholly on the slower
+  side of `before`, or whose twin interval does not hold 1, is measured again
+  alone with 16 passes and stands only if it is wholly slower again. The
+  criterion of the item is met if no judged cell stands. `main`/`before` says
+  how much of the loss of Firn-wf#100 the main line carries now, and
+  `head`/`main` what this change recovers of it on the merged program.
+
+### G results
+
+Run 40061821362 (`compare`, 19 tests at depths 16 and 1, 8 interleaved passes
+of 5 s, servers on CPUs 2 and 4, clients on 16-31, no profile, no `reference`
+line, the branch head `b2d687f4235a`). The images: `before` (`00e2bd1fa230`),
+`main` (`05f7e89c62a7`), `head` (`b2d687f4235a`, which holds the merge of
+`main`) and `head-twin`; all built with the same pinned compiler release
+(`wf-af7665be672d`). `lrange_500` at depth 16 is flagged client-limited
+(client busy fraction above 0.90) in 31 of 32 samples (0.907 to 0.929; the one
+sample not flagged, 0.880, is `main`'s) and `lrange_600` at depth 16 in all 32
+(0.916 to 0.955); no other sample is flagged and the busiest of them is 0.891.
+These two cells are reported and not judged: 36 cells are judged. The columns
+are as in F, and `main/before` is added, the rate ratio of `main` to `before`
+(below 1 is slower).
+
+| test | depth | head/before | 95% interval | verdict | twin/head interval | cpu head/before | main/before | verdict | head/main | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| get | 16 | 1.0913 | 1.0846-1.1046 | faster | 0.9868-1.0098 | 1.0995 | 0.9407 | slower | 1.1636 | faster |
+| get | 1 | 1.0130 | 0.9943-1.0237 | no change | 0.9750-1.0112 | 1.0094 | 0.9891 | no change | 1.0178 | no change |
+| hset | 16 | 1.0261 | 1.0042-1.0419 | faster | 0.9725-1.0311 | 1.0261 | 0.9883 | no change | 1.0427 | faster |
+| hset | 1 | 0.9862 | 0.9781-0.9928 | slower | 0.9782-1.0178 | 0.9843 | 0.9868 | slower | 0.9937 | no change |
+| incr | 16 | 0.9912 | 0.9680-1.0089 | no change | 0.9817-1.0199 | 0.9890 | 0.9747 | slower | 1.0167 | faster |
+| incr | 1 | 0.9853 | 0.9768-0.9967 | slower | 0.9976-1.0202 | 0.9891 | 0.9891 | slower | 0.9968 | no change |
+| lpop | 16 | 1.0912 | 1.0771-1.1034 | faster | 0.9863-1.0069 | 1.0911 | 0.9409 | slower | 1.1640 | faster |
+| lpop | 1 | 0.9975 | 0.9764-1.0137 | no change | 0.9872-1.0279 | 0.9977 | 1.0053 | no change | 0.9899 | no change |
+| lpush | 16 | 1.0133 | 0.9992-1.0229 | no change | 0.9847-1.0081 | 1.0141 | 0.9938 | no change | 1.0177 | faster |
+| lpush | 1 | 0.9931 | 0.9831-1.0022 | no change | 0.9935-1.0201 | 1.0004 | 0.9938 | no change | 1.0105 | no change |
+| lrange_100 | 16 | 1.0165 | 1.0057-1.0301 | faster | 0.9985-1.0208 | 1.0220 | 0.9700 | slower | 1.0519 | faster |
+| lrange_100 | 1 | 0.9988 | 0.9895-1.0092 | no change | 1.0002-1.0098 (not 1) | 1.0026 | 0.9980 | no change | 1.0077 | no change |
+| lrange_300 | 16 | 1.0191 | 1.0076-1.0255 | faster | 0.9950-1.0116 | 1.0210 | 0.9974 | slower | 1.0239 | faster |
+| lrange_300 | 1 | 1.0010 | 0.9921-1.0108 | no change | 0.9903-1.0066 | 1.0014 | 0.9995 | no change | 1.0018 | no change |
+| lrange_500 | 16 | 1.0052 | 1.0014-1.0120 | faster (client-limited, not judged) | 0.9988-1.0026 | 1.0086 | 1.0018 | no change | 1.0037 | no change |
+| lrange_500 | 1 | 0.9990 | 0.9192-1.0347 | no change | 0.9636-1.0951 | 1.0000 | 1.0046 | no change | 0.9964 | no change |
+| lrange_600 | 16 | 1.0229 | 1.0192-1.0274 | faster (client-limited, not judged) | 0.9990-1.0072 | 1.0245 | 0.9974 | no change | 1.0237 | faster |
+| lrange_600 | 1 | 0.9956 | 0.9846-1.0197 | no change | 0.9861-1.0067 | 0.9960 | 1.0054 | no change | 0.9924 | slower |
+| mset | 16 | 1.0069 | 0.9887-1.0375 | no change | 0.9828-1.0408 | 1.0065 | 0.9847 | no change | 1.0269 | faster |
+| mset | 1 | 1.0050 | 0.9832-1.0523 | no change | 0.9921-1.0162 | 1.0044 | 1.0106 | no change | 0.9926 | no change |
+| ping_inline | 16 | 1.1130 | 1.1027-1.1261 | faster | 0.9913-1.0182 | 1.1163 | 0.9374 | slower | 1.1736 | faster |
+| ping_inline | 1 | 0.9988 | 0.9863-1.0229 | no change | 1.0064-1.0308 (not 1) | 1.0097 | 1.0051 | no change | 0.9937 | no change |
+| ping_mbulk | 16 | 1.1160 | 1.1002-1.1379 | faster | 0.9932-1.0193 | 1.1193 | 0.9297 | slower | 1.2035 | faster |
+| ping_mbulk | 1 | 1.0090 | 0.9892-1.0354 | no change | 0.9791-1.0162 | 1.0095 | 0.9957 | no change | 1.0126 | no change |
+| rpop | 16 | 1.1107 | 1.0945-1.1252 | faster | 0.9740-1.0080 | 1.1103 | 0.9690 | slower | 1.1532 | faster |
+| rpop | 1 | 1.0111 | 0.9622-1.0303 | no change | 0.9737-1.0409 | 1.0148 | 0.9867 | no change | 1.0237 | no change |
+| rpush | 16 | 1.0226 | 1.0095-1.0314 | faster | 0.9894-1.0168 | 1.0219 | 0.9984 | no change | 1.0317 | faster |
+| rpush | 1 | 1.0025 | 0.9782-1.0370 | no change | 0.9930-1.0178 | 0.9994 | 1.0022 | no change | 0.9952 | no change |
+| sadd | 16 | 1.0121 | 1.0005-1.0220 | faster | 1.0040-1.0234 (not 1) | 1.0132 | 0.9855 | slower | 1.0273 | faster |
+| sadd | 1 | 0.9897 | 0.9746-1.0061 | no change | 0.9972-1.0162 | 0.9933 | 0.9882 | slower | 1.0126 | no change |
+| set | 16 | 0.9879 | 0.9772-0.9956 | slower | 0.9914-1.0068 | 0.9853 | 0.9534 | slower | 1.0267 | faster |
+| set | 1 | 0.9921 | 0.9795-1.0045 | no change | 0.9871-1.0057 | 0.9928 | 0.9920 | no change | 0.9986 | no change |
+| spop | 16 | 1.1326 | 1.0936-1.1556 | faster | 0.9687-1.0335 | 1.1314 | 0.9603 | slower | 1.1787 | faster |
+| spop | 1 | 1.0024 | 0.9872-1.0229 | no change | 0.9884-1.0112 | 1.0037 | 0.9904 | no change | 1.0133 | faster |
+| zadd | 16 | 1.0252 | 1.0128-1.0349 | faster | 0.9928-1.0129 | 1.0273 | 1.0015 | no change | 1.0237 | faster |
+| zadd | 1 | 0.9957 | 0.9852-1.0136 | no change | 1.0027-1.0247 (not 1) | 0.9932 | 0.9892 | no change | 1.0045 | no change |
+| zpopmin | 16 | 1.0704 | 1.0254-1.1061 | faster | 0.9713-1.0455 | 1.0682 | 0.9716 | no change | 1.1021 | faster |
+| zpopmin | 1 | 0.9962 | 0.9807-1.0190 | no change | 0.9890-1.0305 | 1.0020 | 0.9843 | slower | 1.0252 | faster |
+
+Reading:
+
+- The twin interval holds 1 in 32 of the 36 judged cells; the four where it
+  does not are `lrange_100` 1, `ping_inline` 1, `sadd` 16 and `zadd` 1, each
+  wholly above 1 (the lowest end 1.0002, the highest 1.0308). As the criteria above say, the run counts only if the twin holds 1
+  everywhere, so these four are measured again, with the three cells wholly on
+  the slower side of `before`: `hset` 1 (0.9862, 0.9781-0.9928), `incr` 1
+  (0.9853, 0.9768-0.9967) and `set` 16 (0.9879, 0.9772-0.9956). In `set` 16 the
+  twin holds 1 (0.9914-1.0068); in `hset` 1 it holds 1 (0.9782-1.0178) and in
+  `incr` 1 it only just does (0.9976-1.0202). The server CPU time per request
+  agrees in direction (0.9843, 0.9891, 0.9853).
+- Of the 36 judged cells, `head`/`before` is wholly on the faster side in 13
+  (all at depth 16, from `sadd` 1.0121 to `spop` 1.1326; `get` 16 is 1.0913 and
+  `ping_mbulk` 16 is 1.1160), holds 1 in 20 and is wholly on the slower side in 3.
+  At depth 16 the judged cells are 13 faster, 3 holding 1 (`incr` 0.9912,
+  `lpush` 1.0133, `mset` 1.0069) and 1 slower (`set`); at depth 1, 17 hold 1
+  and 2 are slower (`hset`, `incr`).
+- `main`/`before` is wholly on the slower side in 15 of the 36 (for example
+  `get` 16 0.9407, `ping_mbulk` 16 0.9297, `set` 16 0.9534, `lpop` 16 0.9409);
+  `head`/`main` is wholly on the faster side in 19 (all 17 judged cells at depth
+  16, and `spop` 1 and `zpopmin` 1) and wholly on the slower side in 1
+  (`lrange_600` 1, 0.9924). On the merged program the fix has taken the cost out
+  of the cells it was meant for, as it did before the merge.
+- The widest twin intervals are `lrange_500` at depth 1 (0.9636-1.0951),
+  `zpopmin` at depth 16 (0.9713-1.0455) and `rpop` at depth 1 (0.9737-1.0409):
+  with 8 passes a cell with an interval like these still cannot show a change
+  of 2%.
+
+### Run G2: the seven cells again
+
+As the criteria of G (written before G ran) say, the seven cells of G that are
+wholly on the slower side or whose twin interval does not hold 1 (`hset` 1,
+`incr` 1, `set` 16, `lrange_100` 1, `ping_inline` 1, `sadd` 16, `zadd` 1) are
+measured again, alone, with 16 interleaved passes of 5 s, the same four images
+(`head` and its twin at `b2d687f4235a`, so that the firn is the one G measured),
+the same placement and the same measure. As the depth is a setting of the whole
+run, the seven tests run at both depths, so the other seven cells of these tests
+are measured too; the same rule applies to all 14: a cell stands if
+`head`/`before` is wholly on the slower side and the twin interval holds 1. A
+cell where the twin does not hold 1 has no usable result and is reported as
+unresolved. The criterion of the item is met if no cell stands. Expected
+duration: 4 images x 14 cells x 16 passes x 5 s = 75 minutes, plus the build.
+
+### G2 results
+
+Run 40075073770 (`compare`, `hset`, `incr`, `set`, `lrange_100`, `ping_inline`,
+`sadd` and `zadd` at depths 16 and 1, 16 interleaved passes of 5 s, servers on
+CPUs 2 and 4, clients on 16-31, no profile, no `reference` line). The images:
+`before` (`00e2bd1fa230`), `main` (`05f7e89c62a7`), `head` and `head-twin` (both
+`b2d687f4235a`, the firn that G measured; the branch head of the run only adds
+this record); all built with the same pinned compiler release
+(`wf-af7665be672d`). No sample was client-limited (client busy fraction at most
+0.65), so all 14 cells are judged. `head-twin`/`head` holds 1 in all 14, so the
+run counts. The columns are those of G, with the interval of `cpu head/before`
+added.
+
+| test | depth | head/before | 95% interval | verdict | twin/head interval | cpu head/before | 95% interval | verdict | main/before | verdict | head/main | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| hset | 16 | 1.0240 | 1.0173-1.0411 | faster | 0.9976-1.0083 | 1.0200 | 1.0125-1.0272 | faster | 0.9945 | no change | 1.0408 | faster |
+| hset | 1 | 0.9899 | 0.9744-0.9990 | slower | 0.9966-1.0228 | 0.9928 | 0.9777-1.0005 | no change | 0.9915 | slower | 1.0047 | no change |
+| incr | 16 | 0.9845 | 0.9747-0.9903 | slower | 0.9953-1.0077 | 0.9857 | 0.9776-0.9904 | slower | 0.9725 | slower | 1.0115 | faster |
+| incr | 1 | 0.9845 | 0.9708-0.9988 | slower | 0.9970-1.0240 | 0.9924 | 0.9741-1.0002 | no change | 0.9959 | no change | 0.9888 | no change |
+| lrange_100 | 16 | 1.0193 | 1.0112-1.0345 | faster | 0.9917-1.0193 | 1.0255 | 1.0216-1.0269 | faster | 0.9532 | slower | 1.0641 | faster |
+| lrange_100 | 1 | 1.0108 | 1.0034-1.0173 | faster | 0.9884-1.0058 | 1.0072 | 1.0047-1.0095 | faster | 0.9993 | no change | 1.0102 | faster |
+| ping_inline | 16 | 1.1136 | 1.1050-1.1169 | faster | 0.9888-1.0086 | 1.1114 | 1.1063-1.1154 | faster | 0.9370 | slower | 1.1870 | faster |
+| ping_inline | 1 | 1.0041 | 1.0005-1.0113 | faster | 0.9942-1.0072 | 1.0073 | 1.0038-1.0098 | faster | 0.9875 | slower | 1.0165 | faster |
+| sadd | 16 | 1.0080 | 1.0001-1.0343 | faster | 0.9869-1.0157 | 1.0086 | 0.9998-1.0332 | no change | 0.9684 | slower | 1.0339 | faster |
+| sadd | 1 | 0.9948 | 0.9834-1.0011 | no change | 0.9903-1.0075 | 0.9945 | 0.9877-1.0019 | no change | 0.9870 | slower | 1.0001 | no change |
+| set | 16 | 0.9897 | 0.9761-0.9957 | slower | 0.9903-1.0129 | 0.9919 | 0.9759-0.9938 | slower | 0.9597 | slower | 1.0290 | faster |
+| set | 1 | 0.9943 | 0.9901-1.0077 | no change | 0.9935-1.0120 | 0.9921 | 0.9889-1.0018 | no change | 0.9979 | no change | 0.9975 | no change |
+| zadd | 16 | 1.0234 | 1.0182-1.0287 | faster | 0.9918-1.0006 | 1.0230 | 1.0192-1.0252 | faster | 0.9925 | slower | 1.0326 | faster |
+| zadd | 1 | 0.9903 | 0.9818-1.0075 | no change | 0.9915-1.0130 | 0.9911 | 0.9858-1.0072 | no change | 0.9864 | slower | 1.0108 | no change |
+
+Reading:
+
+- The four cells that G flagged only by the twin (`lrange_100` 1, `ping_inline`
+  1, `sadd` 16, `zadd` 1) are not slower now: `head`/`before` is 1.0108
+  (wholly faster), 1.0041 (wholly faster), 1.0080 (wholly faster) and 0.9903
+  (holds 1), and the twin holds 1 in each. Their twin interval in G was the
+  noise of that run.
+- Four cells are wholly on the slower side of `before` with the twin holding 1,
+  so by the rule above they stand:
+
+  | cell | head/before | cpu head/before | head-twin/before | cpu head-twin/before | main/before |
+  |---|---|---|---|---|---|
+  | `set` 16 | 0.9897 (0.9761-0.9957) | 0.9919 (0.9759-0.9938) | 0.9890 (0.9802-0.9947) | 0.9872 (0.9813-0.9929) | 0.9597 |
+  | `incr` 16 | 0.9845 (0.9747-0.9903) | 0.9857 (0.9776-0.9904) | 0.9877 (0.9783-0.9896) | 0.9857 (0.9767-0.9885) | 0.9725 |
+  | `incr` 1 | 0.9845 (0.9708-0.9988) | 0.9924 (0.9741-1.0002) | 0.9956 (0.9885-1.0015) | 0.9935 (0.9904-1.0003) | 0.9959 |
+  | `hset` 1 | 0.9899 (0.9744-0.9990) | 0.9928 (0.9777-1.0005) | 0.9976 (0.9896-1.0027) | 0.9974 (0.9923-1.0024) | 0.9915 |
+
+  `set` 16 and `incr` 16 are consistent in four ways: the rate of `head` and of
+  its twin against `before`, and the server CPU time per request of both, are
+  all wholly on the slower side, by 1.0% and 1.6% in rate. `incr` 1 and `hset` 1
+  are weaker: the upper ends of their rate intervals are 0.9988 and 0.9990, the
+  CPU time per request holds 1 in both, and the twin against `before` holds 1.
+  They flipped between the runs (`incr` 1 was wholly slower in F, not in F2,
+  wholly slower in G; `hset` 1 was wholly slower in G and not in F), so they are
+  reported as standing by the rule and as the weakest of the four.
+- Mean of the 16 passes, server CPU time per request in microseconds (`before`,
+  `main`, `head`, `head-twin`): `set` 16 0.3065, 0.3198, 0.3113, 0.3105;
+  `incr` 16 0.3104, 0.3199, 0.3155, 0.3159. In millions of requests a second:
+  `set` 16 6.496, 6.237, 6.404, 6.414; `incr` 16 6.418, 6.221, 6.306, 6.315.
+- Against the program before the merge (F2, 12 passes): `set` 16 was 0.9779 and
+  `incr` 16 0.9765, and are 0.9897 and 0.9845 now; the layout of the merged
+  program is less unfavourable to both, as the finding on layout would have it:
+  the merge changed none of this change's code. `head`/`main` is 1.0290 and
+  1.0115 in these cells: the fix recovers 3.0 and 1.2 percentage points of the
+  4.0 and 2.8 that `main` is behind `before`.
+- In the other cells of these tests, 7 of 10 are wholly faster than `before`
+  (`hset` 16 1.0240, `lrange_100` 16 1.0193, `ping_inline` 16 1.1136, `zadd` 16
+  1.0234, `sadd` 16 1.0080, `lrange_100` 1, `ping_inline` 1) and 3 hold 1.
+
+### Conclusion on the merged program
+
+The criterion of the item, no judged cell wholly on the slower side of `before`,
+is still not met on the merged program: of the 36 cells judged in G, three were
+wholly slower, and with 16 passes four stand among the cells measured again
+(`set` 16, `incr` 16, `incr` 1, `hset` 1), by 1.0% to 1.6% in rate. Against
+them, 13 of the 17 judged cells at depth 16 are wholly faster than `before` in
+G, from 1.2% (`sadd`) to 13.3% (`spop`), among them `get` at 1.091 and
+`ping_mbulk` at 1.116, and `main` without this change is wholly slower in 15
+cells. The loss that remains is smaller than before the merge (about 1% in
+`set` 16 against 2.2%), it is in cells of the string and hash types, and the
+part of it that was traced is the check after every command in `serve` (about
+1%, P5), which has to stay; the rest is in no segment of Firn-wf#100 and
+follows the layout of the hot functions (deduced, not tested; the layout moved
+the same cells by a percent when the main line was merged). What is left for
+the owner is whether to accept 1% to 1.6% on these four cells or to ask for
+further work, as the card says.

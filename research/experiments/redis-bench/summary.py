@@ -16,11 +16,15 @@ acceptance rows.
       when the median client work fraction of firn's line or of the fastest
       competitor's is above 0.90, and then asks only that firn is not behind:
       its p99 is reported and not judged.
-  summary.py ratios COMPARE.csv --base NAME --head NAME [--twin NAME]
+  summary.py ratios COMPARE.csv --base NAME --head NAME [--twin NAME] [--metric rate|cpu]
       compare.csv of a compare run: per cpus, test and depth, the median over
       passes of head's rate over base's, with the 95% interval of the mean log
       ratio over the passes (Student's t); the twin, an image measured again
-      as head, gives the run's noise as its own ratio to head.
+      as head, gives the run's noise as its own ratio to head. With --metric
+      cpu the ratio is of the server CPU time per request instead, inverted
+      (base's over head's) so that, as for the rate, a ratio below 1 is slower;
+      it separates a change in the server from one in the client, which limits
+      the rate of a test the client cannot keep up with.
   summary.py selftest
 
 Only the standard library, since the hosts that run it have no more.
@@ -70,10 +74,17 @@ def verdict(low, high):
 
 
 def ratios(args):
+    cpu = getattr(args, "metric", "rate") == "cpu"
+    column = "server_cpu_us_per_request" if cpu else "rps"
+
+    def ratio(numerator, denominator):
+        # A rate that fell and a cost that rose both read as a ratio below 1.
+        return denominator / numerator if cpu else numerator / denominator
+
     by_pass = defaultdict(dict)
     for r in rows(args.compare):
         key = (int(r["cpus"]), r["test"], int(r["depth"]))
-        by_pass[key].setdefault(r["line"], {})[int(r["pass"])] = float(r["rps"])
+        by_pass[key].setdefault(r["line"], {})[int(r["pass"])] = float(r[column])
     print("cpus,test,depth,passes,head/base median,head/base 95% interval,verdict,"
           "twin/head median,twin/head 95% interval,twin verdict")
     for key in sorted(by_pass):
@@ -84,12 +95,12 @@ def ratios(args):
         if len(shared) < 2:
             print(",".join(map(str, key)) + f",{len(shared)},too few passes")
             continue
-        head = [lines[args.head][p] / lines[args.base][p] for p in shared]
+        head = [ratio(lines[args.head][p], lines[args.base][p]) for p in shared]
         low, high = interval(head)
         out = [*map(str, key), str(len(shared)), f"{statistics.median(head):.4f}",
                f"{low:.4f}-{high:.4f}", verdict(low, high)]
         if args.twin in lines:
-            twin = [lines[args.twin][p] / lines[args.head][p] for p in shared]
+            twin = [ratio(lines[args.twin][p], lines[args.head][p]) for p in shared]
             tlow, thigh = interval(twin)
             out += [f"{statistics.median(twin):.4f}", f"{tlow:.4f}-{thigh:.4f}",
                     verdict(tlow, thigh)]
@@ -198,6 +209,20 @@ def selftest():
         row = out.getvalue().splitlines()[1].split(",")
         assert row[:4] == ["2", "set", "16", "4"] and row[4] == "0.9000" and row[6] == "slower", row
         assert row[7] == "1.0000" and row[9] == "no detected change", row
+        # The same file read as server CPU time per request: a cost that rose
+        # by a tenth reads as a ratio of 1/1.1, below 1.
+        lines = ["line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms"]
+        for p, (b, h, t) in enumerate([(1.0, 1.1, 1.1), (1.0, 1.1, 1.1), (1.0, 1.1, 1.1), (1.0, 1.1, 1.1)], 1):
+            for name, cost in (("before", b), ("after", h), ("after-twin", t)):
+                lines.append(f"{name},{p},2,set,16,1000,100,{cost},0.1,0.2")
+        compare.write_text("\n".join(lines) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            ratios(argparse.Namespace(compare=str(compare), base="before", head="after", twin="after-twin",
+                                      metric="cpu"))
+        row = out.getvalue().splitlines()[1].split(",")
+        assert row[4] == "0.9091" and row[6] == "slower", row
+        assert row[7] == "1.0000" and row[9] == "no detected change", row
         header = "line,pass,cpus,workload,connections,pipeline,published,delivered,seconds,rate,p50_ms,p99_ms"
         data = [header]
         limited = ["line,pass,cpus,workload,connections,pipeline,client_busy_mean,client_work_fraction,client_limited"]
@@ -299,6 +324,7 @@ def main():
     p.add_argument("--base", required=True)
     p.add_argument("--head", required=True)
     p.add_argument("--twin")
+    p.add_argument("--metric", choices=["rate", "cpu"], default="rate")
     sub.add_parser("selftest")
     args = parser.parse_args()
     {"pubsub": pubsub, "ratios": ratios}.get(args.command, lambda _: selftest())(args)

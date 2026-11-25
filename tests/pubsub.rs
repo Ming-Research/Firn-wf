@@ -331,6 +331,54 @@ fn promotion_preserves_pipeline_prefix_suffix_and_unsubscribe_all() {
     }
 }
 
+/// Commands that follow a subscription in the same write run in the mode it
+/// started: Redis 7.2.16 processCommand reads the client's pub/sub flag at each
+/// command, so in RESP2 the restricted commands are refused from the next one
+/// on, while RESP3 has no such mode. The refusal literals for GET and PUBLISH
+/// were recorded in step4-resp2-mode-and-precedence (pubsub_oracle.rs); the
+/// EXEC variant is source-derived from the same function. The ordinary owner
+/// stops at the first successful subscription, direct or inside EXEC, and the
+/// promoted owner, which alone checks the mode, runs the rest of the write.
+#[test]
+fn commands_after_a_subscription_in_one_write_see_subscriber_mode() {
+    let refusal = |name: &str| {
+        format!("-ERR Can't execute '{name}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n").into_bytes()
+    };
+    {
+        let (child, mut client, _) = start(1);
+        send(&mut client, &[&["SUBSCRIBE", "news"], &["GET", "key"], &["PUBLISH", "news", "value"], &["PING", "tail"]]);
+        assert_eq!(frame(&mut client), acknowledgment(2, "subscribe", Some("news"), 1));
+        assert_eq!(frame(&mut client), refusal("get"));
+        assert_eq!(frame(&mut client), refusal("publish"));
+        assert_eq!(frame(&mut client), b"*2\r\n$4\r\npong\r\n$4\r\ntail\r\n");
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+    {
+        let (child, mut client, _) = start(1);
+        send(&mut client, &[&["MULTI"], &["SUBSCRIBE", "news"], &["EXEC"], &["GET", "key"], &["PING", "tail"]]);
+        assert_eq!(frame(&mut client), b"+OK\r\n");
+        assert_eq!(frame(&mut client), b"+QUEUED\r\n");
+        let mut expected = b"*1\r\n".to_vec();
+        expected.extend(acknowledgment(2, "subscribe", Some("news"), 1));
+        assert_eq!(frame(&mut client), expected);
+        assert_eq!(frame(&mut client), refusal("get"));
+        assert_eq!(frame(&mut client), b"*2\r\n$4\r\npong\r\n$4\r\ntail\r\n");
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+    {
+        let (child, mut client, _) = start(1);
+        hello(&mut client, 3);
+        send(&mut client, &[&["SUBSCRIBE", "news"], &["GET", "key"], &["PING", "tail"]]);
+        assert_eq!(frame(&mut client), acknowledgment(3, "subscribe", Some("news"), 1));
+        assert_eq!(frame(&mut client), b"_\r\n");
+        assert_eq!(frame(&mut client), b"$4\r\ntail\r\n");
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
 /// Dictionary iteration order is unspecified, but every membership must
 /// appear exactly once, with the count decreasing at each removal.
 /// First/second subscription frame fields and empty UNSUBSCRIBE bytes were
