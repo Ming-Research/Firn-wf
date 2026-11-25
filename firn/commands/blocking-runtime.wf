@@ -42,10 +42,8 @@ fn list_signal(client: &Client, key: &[u8]) -> result: unit reads(key), writes(c
     Some(value: queued) => {
       let count = queued^.inner.len;
       for (index in 0_u64..count) {
-        if index < queued^.inner.len {
-          if pkg::bytes::key_equal(env: &env, left: &queued^.inner[index], right: &name) {
-            return unit;
-          }
+        if pkg::bytes::key_equal(env: &env, left: &queued^.inner[index], right: &name) {
+          return unit;
         }
       }
       if queued^.inner.len == queued^.inner.cap {
