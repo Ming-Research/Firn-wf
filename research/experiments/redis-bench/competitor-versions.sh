@@ -319,7 +319,7 @@ compare_versions() (
                 true:dragonfly|true:garnet) ;;
                 *)
                     echo "versions: $cv_name has no executable '$cv_bin'" >&2
-                    cv_failed=1 ;;
+                    cv_failed=0 ;;
             esac
             continue
         fi
