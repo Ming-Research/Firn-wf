@@ -983,17 +983,19 @@ includes the compiler, `std::collections::hash_map` and the runtime together; th
 images cannot split them. What the profiles and listings add:
 
 - the whole profile retires the same instructions per request in all four images
-  (`hset` 4948 to 4951, `hget` 5174 to 5182 in the first run, 4946 to 4962 and 5094 to
+  (`hset` 4948 to 4951, `hget` 5168 to 5182 in the first run, 4945 to 4962 and 5094 to
   5115 in the second), so the release makes no image do more work in total, and IPC
   is lower in `head` (`hset` 1.842 against `cross`'s 1.917);
 - the profile rule names the keyspace lock group (`try_entry`, the runtime's take of
   a key's lock) for the compiler's share, and not the hash-map group by itself;
 - the code the two releases build differs, in the annotated functions, only in
   `hash_map_lookup` and `hash_map_try_put` (the home bucket from `imul`, a shift and a
-  conditional move, where the old release divides) and in the offsets of the fields
-  the callers read from the map's header, which has a word more (`shift`); the
-  entry-level functions (`try_entry`, `acquire_entry`, `execute_client` and the
-  others) have the same instructions;
+  conditional move, where the old release divides) and in the offsets at which
+  `hset_body`, `run_hget` and `push_body` read the entry, 8 bytes further in, and
+  the size of their frames; the map's header has a word more (`shift`) and what
+  holds it moved. The other annotated functions (`try_entry`, `acquire_entry`,
+  `execute_client`, `make_key`, `record_memory_peak` and `push_item`) have the same
+  instructions;
 - the cycles the map functions gain sit at one instruction, the compare after the
   load of a probed slot's tag byte (+19% in `hash_map_lookup` and +86% in
   `hash_map_try_put` against `cross` in the second run), the first touch of a slot
@@ -1015,9 +1017,10 @@ Whitefoot to look at the pair on a quiet machine. Nothing in firn is changed for
 against `cross` holds 1 for both, and `base-twin` against `base` holds 1. Every
 annotated function of the `lpush` path (`execute_client`, `push_body`, `push_item`,
 `acquire_entry`, `try_entry`, `record_memory_peak`) has the same instructions in
-`base`, `base-twin` and `cross` and starts at a different address in every image, so
-the edits changed no code of the path; they moved it, and the cause is how it sits
-(Whitefoot item 287, the placement of code, is the related item there). Whether
+`base`, `base-twin` and `cross`; it starts at the same page offset in `base` and
+`base-twin` and at a different one in `cross` and in `head`, so the edits changed no
+code of the path; they moved it, and the cause is how it sits (Whitefoot#287, the
+placement of code, is the related item there). Whether
 Halo's or firn's edits move it was not split, because no edit changes an instruction
 of the path, so a build with the old Halo could say only which side's addresses move.
 No firn change that is not itself a placement of the same code is available, none is

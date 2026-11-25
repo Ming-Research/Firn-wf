@@ -55,7 +55,7 @@ check: $(CHECK_TARGETS)
 # The gate's targets but the compiler's download, which is a job's setup; the
 # target of check.yml's aof-sync-fault job; and the two checks of
 # design-readiness.yml.
-TESTS := $(filter-out compiler,$(CHECK_TARGETS)) aof-sync-fault design-ready pin-ready hash-map-release
+TESTS := $(filter-out compiler,$(CHECK_TARGETS)) aof-sync-fault design-ready pin-ready
 
 # Real server bug patterns: each faulty transcription must receive its named
 # source diagnostic and each corrected program must build with this pin.
@@ -176,24 +176,3 @@ gate-sync:
 		&& [ "$$({ cat $$workflow; echo '        run: make firn-lto'; } | runs)" != "$$want" ] \
 		|| { echo "gate-sync: the comparison accepted a changed workflow" >&2; exit 1; }; \
 	echo "gate-sync: check.yml runs every target of make check: $$want"
-
-# Scratch for item 145, removed by a later commit: the map program of
-# research/experiments/hash-map-release built by the release before the move
-# and by the pinned one, timed one against the other in this job. It always
-# ends in failure so that the harness returns its output.
-.PHONY: hash-map-release
-
-HASH_MAP_OLD ?= wf-af7665be672d
-HASH_MAP_OPERATIONS ?= 2000000
-HASH_MAP_REPS ?= 100
-
-hash-map-release: compiler
-	@mkdir -p $(BUILD)/hash-map-release
-	@printf 'release = $(HASH_MAP_OLD)\n' > $(BUILD)/hash-map-release/old.pin
-	@$(MAKE) --no-print-directory compiler PIN=$(BUILD)/hash-map-release/old.pin
-	@$(PY) -B $(ROOT)/research/experiments/hash-map-release/run.py selftest
-	@$(PY) -B $(ROOT)/research/experiments/hash-map-release/run.py --root $(ROOT) --out $(BUILD)/hash-map-release \
-	  --old $(HASH_MAP_OLD)=$(BUILD)/whitefoot/$(HASH_MAP_OLD)/whitefootc,$(BUILD)/whitefoot/$(HASH_MAP_OLD)/language \
-	  --new $(RELEASE)=$(WHITEFOOTC),$(WHITEFOOT)/language \
-	  --operations $(HASH_MAP_OPERATIONS) --reps $(HASH_MAP_REPS); \
-	status=$$?; echo "hash-map-release: run.py exit $$status; this scratch target always fails so that its output is returned" >&2; exit 1
