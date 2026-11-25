@@ -16,10 +16,6 @@ An include path holding *, ? or [ is refused in the fatal configuration frame, n
 - rejected: an agent proposed expanding wildcards in the last path component, sorted, and skipping a pattern that matches nothing; the owner rejected it, because it needs a directory listing and a rewrite of glob(3)'s details, about a day more, and character classes would still differ from Redis.
 - rejected: an agent proposed a full glob(3) in every path component; the owner rejected it, because it is the most work and no selected consumer needs it.
 
-### decision dir-reports-the-written-path
-CONFIG GET dir reports the absolute path the dir directives wrote, with . .. and repeated / removed, and reports nothing while every dir given was relative to a directory firn does not know.
-- rejected: an agent proposed leaving CONFIG GET dir unsupported until Whitefoot can query the working directory's path; the owner rejected it, because a configuration with an absolute dir would then not read back as Redis reads it, which the work's result requires.
-
 ### decision startup-accepts-only-implemented-directives
 Startup accepts only the directives firn implements, and checks the memory settings, maxclients, port and timeout with CONFIG SET's own validation code.
 - rejected: an agent proposed silently accepting unsupported Redis directives when they hold their default values; the owner rejected it, because refusing them shows the compatibility still to be built.
