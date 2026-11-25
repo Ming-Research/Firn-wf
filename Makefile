@@ -13,9 +13,13 @@ BUILD := $(ROOT)/build
 # built from it (tests/redis-suite/reference.sh) are shared between suite runs.
 REDIS_COMPAT_CACHE ?= $(BUILD)/redis-compat-cache
 
-# The live design trees: every root node file directly under design/ except
-# the log and the constitution, so a tree is linted in the same change that
-# adds it.
+# The live design trees in Design-skill's older form: every root node file
+# directly under design/ except the log and the constitution, so a tree is
+# linted in the same change that adds it. firn's tree is now in the new form
+# (design/decisions/ and design/principles/, whose forms the engine of
+# wf-agents checks) and no older node file is left, so this is empty and
+# design-lint and design-ready pass by saying there is no live tree;
+# design/log.md stays as the record of the older tree's changes.
 DESIGN_TREES := $(filter-out log constitution,$(basename $(notdir $(wildcard $(ROOT)/design/*.md))))
 
 # The revision a design-tree change is reviewed against. CI selects it per
@@ -147,7 +151,9 @@ firn-lto: $(BUILD)/firn-lto
 $(BUILD)/firn-lto: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --full-lto --graph $(FIRN_GRAPH) --entry firn -o $@
 
-# Design-skill's own tests, then the lint of every live tree.
+# Design-skill's own tests, then the lint of every live tree in the older
+# form. With none left (see DESIGN_TREES), both targets print that there is
+# no live tree and pass.
 design-lint:
 	@$(PY) -B -m unittest discover -s $(ROOT)/design/skill -p 'test_lint.py'
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)",echo "design lint: no live tree")
