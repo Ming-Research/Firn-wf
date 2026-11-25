@@ -1415,4 +1415,3 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   serverlog_close(log: &log);
   return move code;
 }
-
