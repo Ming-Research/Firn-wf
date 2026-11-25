@@ -355,7 +355,10 @@ sources agree (the repository of linux-azure for noble at
 `git.launchpad.net/~canonical-kernel/ubuntu/+source/linux-azure/+git/noble`):
 the tag `Ubuntu-azure-6.17-6.17.0-1022.22` has the check in v6.19's form
 (`return rmem + skb->len <= sk->sk_rcvbuf;`), and the tag
-`Ubuntu-azure-7.0-7.0.0-1017.17_24.04.1` has v7.0's.
+`Ubuntu-azure-7.0-7.0.0-1017.17_24.04.1` has v7.0's. So has the tag
+`Ubuntu-hwe-7.0-7.0.0-38.38_24.04.1` of Ubuntu's linux repository for noble
+(`~ubuntu-kernel/ubuntu/+source/linux/+git/noble`), build 38 of Ubuntu's 7.0,
+as the 14900K's 7.0.0-38-generic is.
 
 ### firn as the sender under each kernel
 
