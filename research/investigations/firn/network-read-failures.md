@@ -337,11 +337,15 @@ differ from what was predicted:
   receiver refuses a segment that the sender then keeps retransmitting. The
   reader's socket had dropped 16 or 17 packets under both kernels.
 
-Which change makes Ubuntu's 7.0 differ was not looked for. The third version
-of the series named above (2026-03-09,
-<https://lkml.iu.edu/2603.1/00982.html>) says its base already has commit
-026dfef287c0, "tcp: give up on stronger sk_rcvbuf checks (for now)"; this too
-was read through a summary.
+What makes 7.0 differ is, by its date, commit 026dfef287c0, "tcp: give up on
+stronger sk_rcvbuf checks (for now)" (Jakub Kicinski, posted 2026-02-27,
+`Fixes: 1d2fbaad7cd8`; read on 2026-11-25 at
+<https://github.com/torvalds/linux/commit/026dfef287c0>). It takes the
+arriving packet's length out of the receive buffer check of `tcp_can_ingest`
+in `net/ipv4/tcp_input.c`, which 1d2fbaad7cd8, the commit the report's
+bisection named, had added. That Ubuntu's 6.17.0-1022 lacks it and its 7.0
+has it is inferred from the dates and from the measurements above; their
+sources were not read.
 
 ### firn as the sender under each kernel
 
