@@ -295,17 +295,19 @@ mod tests {
         let inter = options("zinterstore", Layout::Shared);
         check_reply(&union, b":1500\r\n").unwrap();
         check_reply(&inter, b":500\r\n").unwrap();
-        for (opts, bad) in [(&union, b":500\r\n".as_slice()), (&union, b":0\r\n"), (&inter, b":1500\r\n"),
-            (&inter, b"+OK\r\n")] {
+        for (opts, bad) in [(&union, b":500\r\n".as_slice()), (&union, b":0\r\n".as_slice()),
+            (&inter, b":1500\r\n".as_slice()), (&inter, b"+OK\r\n".as_slice())] {
             assert!(check_reply(opts, bad).is_err(), "{bad:?}");
         }
         let mut pop = options("zmpop", Layout::Shared);
         let one = b"*2\r\n$4\r\nzp:7\r\n*1\r\n*2\r\n$2\r\nm0\r\n$1\r\n0\r\n";
         check_reply(&pop, one).unwrap();
-        for bad in [b"*-1\r\n".as_slice(), b"*0\r\n", b"*2\r\n$4\r\nzp:7\r\n*0\r\n",
+        let bad_pops: [&[u8]; 7] = [
+            b"*-1\r\n", b"*0\r\n", b"*2\r\n$4\r\nzp:7\r\n*0\r\n",
             b"*2\r\n$4\r\nzp:7\r\n*2\r\n*2\r\n$2\r\nm0\r\n$1\r\n0\r\n*2\r\n$2\r\nm1\r\n$1\r\n1\r\n",
             b"*2\r\n$4\r\nzp:7\r\n*1\r\n*2\r\n$2\r\nm0\r\n$1\r\n0\r\n+extra\r\n",
-            b"*2\r\n$4\r\nzp:7\r\n*1\r\n*2\r\n$2\r\nm0\r\n", b"+OK\r\n"] {
+            b"*2\r\n$4\r\nzp:7\r\n*1\r\n*2\r\n$2\r\nm0\r\n", b"+OK\r\n"];
+        for bad in bad_pops {
             assert!(check_reply(&pop, bad).is_err(), "{bad:?}");
         }
         pop.pop_count = 2;
@@ -357,7 +359,8 @@ mod tests {
                             };
                             log.lock().unwrap().push(command);
                             input.drain(..size);
-                            socket.write_all(&answer).unwrap();
+                            // A client that failed the run has closed its end.
+                            if socket.write_all(&answer).is_err() { return; }
                         }
                     }
                 }));
@@ -374,7 +377,8 @@ mod tests {
         opts.pipeline = 4;
         opts.prefill = 1200;
         opts.connections = connections;
-        opts.threads = 2;
+        // One worker, so that the error a failed run returns is the first one's.
+        opts.threads = 1;
         opts.requests = Some(6);
         let result = super::super::run(opts);
         handle.join().unwrap();
@@ -420,9 +424,9 @@ mod tests {
         // An empty reply, a wrong size and an error each fail the run, naming why.
         for (workload, reply, why) in [
             ("zmpop", b"*-1\r\n".as_slice(), "ZMPOP must answer a key"),
-            ("zunionstore", b":500\r\n", "ZUNIONSTORE must answer 1500"),
-            ("zinterstore", b":1500\r\n", "ZINTERSTORE must answer 500"),
-            ("zinterstore", b"-ERR boom\r\n", "server error: ERR boom"),
+            ("zunionstore", b":500\r\n".as_slice(), "ZUNIONSTORE must answer 1500"),
+            ("zinterstore", b":1500\r\n".as_slice(), "ZINTERSTORE must answer 500"),
+            ("zinterstore", b"-ERR boom\r\n".as_slice(), "server error: ERR boom"),
         ] {
             let (result, _) = run_against(workload, Layout::Shared, reply);
             let message = result.unwrap_err().to_string();
