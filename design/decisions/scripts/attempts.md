@@ -15,7 +15,7 @@ A script on a never-subscribed connection first holds its declared KEYS and Meta
 ### decision script-fallback-restores-logical-copies
 Before a command first changes a declared entry, the attempt saves a logical copy, and a fallback restores its members, values, scores, list order, expiry and stamps, but not the collection's layout.
 - rejected: an agent proposed copying every declared entry into a private copy when the attempt starts; the owner rejected it, because large keys the script never uses would then be copied too.
-- rejected: an agent proposed an exact snapshot of each collection's layout; the owner rejected it, because a scan's cursor is a hash-space position, and hash_map_scan returns every member present throughout however the map is rebuilt between calls, a rebuild adding only repeats, as a rehash already does.
+- rejected: an agent proposed an exact snapshot of each collection's layout; the owner rejected it, because a scan's cursor is a hash-space position, and hash_map_scan returns every member present throughout however the map is rebuilt between calls, a rebuild adding only repeats.
 
 ### decision script-attempts-hold-meta-throughout
 A script attempt holds Meta for its whole run, so scripts that write different keys still run one at a time.

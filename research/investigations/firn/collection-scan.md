@@ -36,8 +36,8 @@ The decision is in
 [script restore decision](../../../design/decisions/scripts/attempts.md) keeps
 logical collection copying: the cursor is a position in the hash space, which a
 rebuild of the backing leaves valid, so a scan that spans a script attempt
-still returns every member present throughout it, and no layout-dependent
-result is promised. The pin names the Whitefoot release that carries
+still returns every member present throughout it; a rebuild can only add
+repeats. The pin names the Whitefoot release that carries
 `hash_map_scan`.
 
 ## Reference and representation evidence
