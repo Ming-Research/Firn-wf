@@ -201,14 +201,56 @@ stall_loop() {
   python3 "$here/soft_summary.py" --loop "$out"
 }
 
-case "${1:-}" in
-  environment) environment ;;
-  mechanism) mechanism ;;
-  suite) suite "$2" ;;
-  soft-limit) soft_limit "$2" "$3" ;;
-  stall-loop) stall_loop "$2" "$3" "$4" ;;
+# In a job of GitHub Actions, repeats what a mode printed as notices of the
+# job, which GitHub's GraphQL interface gives when the job's log cannot be
+# read. A step keeps ten notices: the environment takes one and another mode
+# up to nine, of what it printed first and last when that is too long.
+notices() {
+  [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+  python3 - "$1" "$2" "$(git -C "$root" rev-parse --short HEAD)" << 'PYTHON'
+import sys
+
+mode, path, commit = sys.argv[1:4]
+most = 1 if mode == "environment" else 9
+size = 3800
+with open(path, encoding="utf-8", errors="replace") as printed:
+    lines = [line.rstrip("\n") for line in printed if not line.startswith("trace: events lost")]
+chunks = [[]]
+for line in lines:
+    line = line[:size]
+    if sum(len(kept) + 1 for kept in chunks[-1]) + len(line) + 1 > size:
+        chunks.append([])
+    chunks[-1].append(line)
+if len(chunks) > most:
+    left = len(chunks) - most
+    chunks = chunks[: most - 2] + [chunks[most - 2] + [f"(the notices leave out {left} parts here; the job's log has them)"]] + chunks[-1:] if most > 2 else chunks[:most]
+for index, chunk in enumerate(chunks, start=1):
+    text = "\n".join(chunk).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::notice title=network-read-failures {mode} {commit} {index} of {len(chunks)}::{text}")
+PYTHON
+}
+
+mode=${1:-}
+case "$mode" in
+  environment | mechanism | suite | soft-limit | stall-loop) ;;
   *)
     echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL | stall-loop MINUTES PROCESSES WAITS" >&2
     exit 2
     ;;
 esac
+# The mode runs in a subshell, so that it can stop itself, and its status
+# comes through a file, since a pipe gives only the status of its last command.
+rm -f "$out/$mode.status"
+(
+  case "$mode" in
+    environment) environment ;;
+    mechanism) mechanism ;;
+    suite) suite "$2" ;;
+    soft-limit) soft_limit "$2" "$3" ;;
+    stall-loop) stall_loop "$2" "$3" "$4" ;;
+  esac
+  echo $? > "$out/$mode.status"
+) 2>&1 | tee "$out/$mode.out"
+notices "$mode" "$out/$mode.out"
+[ -f "$out/$mode.status" ] || exit 1
+exit "$(cat "$out/$mode.status")"

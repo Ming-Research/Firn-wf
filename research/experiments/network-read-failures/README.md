@@ -27,6 +27,7 @@ aof-sync-fault: firn-test
 	$(ROOT)/research/experiments/network-read-failures/run.sh suite 19
 ```
 
-The job's log holds what the experiment printed. `run.sh` exits with 0 when
-its instruments worked, whatever the cases did: a failing pass is a result,
-which the log says.
+The job's log holds what the experiment printed, and the job's notices repeat
+the first and last of it, for when the log cannot be read. `run.sh` exits
+with 0 when its instruments worked, whatever the cases did: a failing pass is
+a result, which the log says.
