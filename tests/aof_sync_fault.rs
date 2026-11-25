@@ -211,6 +211,14 @@ fn branch(during: &str) -> String {
     }
 }
 
+fn stop_logged(client: &mut TcpStream, child: ProgramChild) -> String {
+    client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+    let (status, stdout) = finished(child);
+    assert_eq!(status, 0);
+    assert_eq!(client.read(&mut [0]).unwrap(), 0);
+    String::from_utf8_lossy(&stdout).into_owned()
+}
+
 fn stop(client: &mut TcpStream, child: ProgramChild) {
     client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
     shutdown_finished(child);
@@ -314,6 +322,9 @@ fn redis_failure(device: &Device) -> Failure {
     // lies in pages Linux stopped counting as dirty when their writeback
     // failed.
     stop(&mut client, child);
+    let redis_log = std::fs::read_to_string(&log).expect("Redis's log file");
+    assert!(redis_log.lines().any(|line| line.contains("# Fail to fsync the AOF file: ")),
+        "Redis logs the first failed sync as the line firn's must match: {redis_log}");
     std::fs::remove_dir_all(&directory).unwrap();
     failure
 }
@@ -397,7 +408,11 @@ fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
         assert!(count(&recovered, "aof_rewrites") > rewrites, "{route}: (d) recovery rewrote the file: {recovered}");
         assert_eq!(memory_request(&mut client, &["SET", "after", "p"]), "+OK\r\n", "{route}: (d) writes accepted again");
         assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n", "{route}: (d)");
-        stop(&mut client, child);
+        let log = stop_logged(&mut client, child);
+        let reason = failure.refused[0].trim_end().strip_prefix(MISCONF).expect("MISCONF refusal").to_owned();
+        let failed: Vec<&str> = log.lines().filter(|line| line.contains("# Fail to fsync the AOF file: ")).collect();
+        assert_eq!(failed.len(), 1, "{route}: one line for the first failed sync: {log}");
+        assert!(failed[0].ends_with(&format!("# Fail to fsync the AOF file: {reason}")), "{route}: {failed:?} against {reason:?}");
         device.run("remount");
         let (child, mut client) = start_firn(&program, native);
         let during = if acknowledged { "$1\r\nw\r\n" } else { "$-1\r\n" };
