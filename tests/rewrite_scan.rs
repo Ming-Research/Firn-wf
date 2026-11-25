@@ -947,7 +947,7 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
         }
         std::thread::sleep(Duration::from_micros(100));
     }
-    // Whether these writes land while the writer rotates, and so charge the
+    // Whether these writes land while the maintenance context rotates, and so charge the
     // ledger, is a race (CI run 39525916088 sampled a charge of 0), so the
     // exclusion is only reconciled here; the post-cut backlog case holds the
     // rotation open and requires a nonzero charge.
@@ -1332,8 +1332,8 @@ fn reconciled_scan_discards_a_step_that_does_not_fit_and_retries_narrower() {
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
     // The 100 MiB increment over an empty base exceeds the default minimum,
     // and Redis starts an automatic rewrite from it as from any grown AOF
-    // (its startup baseline is the base file's size); when the writer's first
-    // check ran before this case's BGREWRITEAOF arrived, the request found
+    // (its startup baseline is the base file's size); when the maintenance
+    // context's first check ran before this case's BGREWRITEAOF arrived, the request found
     // that rewrite in progress. Raise the minimum so BGREWRITEAOF is the only
     // rewrite.
     let (child, mut client, _) = start_with_minimum(&program, b"4294967296");

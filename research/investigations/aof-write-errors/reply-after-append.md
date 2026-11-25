@@ -1043,3 +1043,81 @@ unavailable. A failing row is located by the batch density (commands per
 complete append) and, if it is the sync, by a run with option B's sync as an
 extra side.
 
+### Implementation (item #110)
+
+What the code on the work branch does, where it departs from the design
+above, and why. Whitefoot stays at `wf-63b7cbb03820`.
+
+- **Sync.** The everysec sync uses the slot's own handle, not design item
+  6's second handle: the maintenance context's turn takes the slot and runs
+  `aof_rw_flush`, whose `sync_file` call is on the handle that appended the
+  bytes, so Whitefoot's contract ("every byte appended to file before this
+  call", `lib/std/fs/module.wfm` at Whitefoot `63b7cbb`) covers them.
+  Appends and replies that wait meanwhile wait for the fsync. This is option
+  1 of the owner's question `sync-handle`; the measurement below decides
+  whether it merges or waits for the Whitefoot capability described in the
+  next section.
+- **Follower guard.** A guard is one infix over two atoms or one call
+  (GRAM-5 at Whitefoot `63b7cbb`), and the pin wakes a helper-call guard on
+  every write of the object, Whitefoot#460 being newer. The desk therefore
+  keeps `ready`, the published covered mark while a context holds the slot
+  and the largest u64 while it is free, and a waiter's guard is the single
+  comparison `ready >= dependency`, which holds exactly when it is covered or
+  can take the slot; the comparison is a wake test of one atom
+  (`design/compiler/waiting-contexts/state-locks.md` at Whitefoot `63b7cbb`).
+  A saturated dependency waits for the slot alone, and is met only by an
+  append its context leads.
+- **Dependency.** The owner's rule, refined without loosening it: a command
+  whose own statement holds Meta notes the commit sequence at its commit,
+  under that hold, which covers every record the statement could observe
+  whether or not it took a sequence, and the send then reads no Meta for it.
+  The note is cleared in `execute_client` at its start and again after
+  eviction and admission, immediately before the handler. A reply whose
+  command noted nothing (GET's key-only statement, scripts, PING, QUEUED)
+  makes the send read the commit sequence in one Meta statement, once per
+  send. A subscribed connection's output reads it once per frame.
+- **Empty exchange.** A drain that finds the pending buffer empty publishes
+  written-through at the exchange's sequence in one Meta statement: with
+  both buffers empty every collected record is in the file, and without the
+  publication a leader whose records another context had already written
+  would take the slot again and again.
+- **Reuse.** After a complete append the pending buffer is cleared when its
+  capacity is at most 1 MiB and replaced with 64 KiB otherwise, so that one
+  burst does not keep a large buffer for the life of the process.
+- **Placement.** The desk is a `Shared<AofDesk>` of its own, handed to
+  `serve`, `serve_promoted`, `output_promoted`, `write_log` and `main`, each
+  of which closes its handle; inside `Keyspace` it would make every holder of
+  the keyspace linear.
+- **Rewrite.** The maintenance context holds the slot from the cut through
+  the sealed drain, the full journal drain and the switch, so the S1 order
+  holds; replies wait for that turn, including the switch's exceptional
+  reread, which the post-cut backlog case uses to check that GET, SETNX and
+  STRLEN replies wait for another connection's record.
+
+### Whitefoot gap: a sync apart from the append handle
+
+Minimal example, independent of firn. Context A appends to a file through a
+`WriteFile` that sits in a one-slot shared state between appends, as
+Whitefoot#517's `tests/programs/linear_shared_file_turns.wf` parks one.
+Context B must hand A's appended bytes to the host's durability mechanism
+once a second.
+
+```
+struct Desk { file: Option<WriteFile>; }
+// A, in a loop: take the file in an atomic statement, append_once outside
+//    it, put the file back.
+// B, once a second: take the file, sync_file(factory, &file), put it back.
+```
+
+`sync_file` covers only "every byte appended to file before this call", the
+bytes appended through its own handle, and it writes the handle, so B must
+take the handle from A for the whole fsync and A's appends wait for it. A
+second handle on the same file, opened by B, is no help within the contract:
+that its sync covers A's bytes rests on the host (Linux writes back an
+inode's dirty pages whichever descriptor syncs), not on Whitefoot, so others
+cannot check the guarantee from Whitefoot alone. Redis 7.2.16's background
+fsync does not stop its appends. Wanted: a sync capability split from the
+append handle, as `TcpConnection` splits into a receive and a send half,
+whose sync covers every byte appended through the file's append half before
+the call; or a contract that a sync of any handle on a file covers every
+append to that file made before it.

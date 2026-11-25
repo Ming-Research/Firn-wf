@@ -107,7 +107,7 @@ fn aof_upgrade(factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs
 }
 
 fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, manifest: &AofManifest, boundary: &AofBoundary, time: &Time, clock: &Clock) -> result: Result<unit, AofStartError> reads(store), reads(directory), reads(writable), reads(manifest), reads(time), writes(factory), writes(boundary), writes(clock) waits {
-  doc "Replay base first, then incrementals in manifest order. Missing listed files are fatal; only the last may be truncated. Keep startup byte sizes beside metadata for the writer and the later rewrite trigger, and retain the current increment's syntax boundary after any successful cut. A replay that saw a stop request returns Interrupted at once, before the file it was replaying could be cut and before any later file is replayed.";
+  doc "Replay base first, then incrementals in manifest order. Missing listed files are fatal; only the last may be truncated. Keep startup byte sizes beside metadata for the maintenance context and the later rewrite trigger, and retain the current increment's syntax boundary after any successful cut. A replay that saw a stop request returns Interrupted at once, before the file it was replaying could be cut and before any later file is replayed.";
   let failed = AofStartError::Failed();
   let total = 0_u64;
   for (index in 0_u64..manifest^.parts.inner.len) {

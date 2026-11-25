@@ -339,9 +339,9 @@ A command already running still finishes before its client closes;
 cancellation does not interrupt scripts. On never-promoted connections,
 sends retain their existing one-second deadline shutdown handling. Promoted
 receive and output owners are cancelled directly and pending output is
-discarded. Once every client has left, the append-only file's
-writer makes one forced attempt to append its remaining bytes and one sync
-attempt, then closes and firn exits with status 0. As in Redis 7.0.15's everysec
+discarded. Once every client has left, the append-only file's maintenance
+context makes one forced attempt to append its remaining bytes and one sync
+attempt, then closes the file and firn exits with status 0. As in Redis 7.0.15's everysec
 shutdown (`server.c:4239-4247,4301-4308`), failed appends or syncs do not retry
 forever: retained bytes are abandoned and acknowledged changes may be lost.
 No snapshot is written: the `save` schedule
@@ -610,10 +610,16 @@ any reply of an event-loop iteration (`server.c:1721-1739`). A value a client
 has seen therefore survives a SIGKILL and restart; the file is synced once a
 second, so a host failure can still lose about the last second, as with
 Redis's everysec. Reads wait too, for the records committed before them.
-After a failed append, the replies of commands already executed are sent
-without waiting, as Redis still sends them. While the exceptional reread
-described below holds a rewrite's switch, every reply waits for it, INFO's
-included, which Redis does not.
+Connections append for one another: the first whose replies must wait takes
+the file and appends every record collected so far, and the others wait for
+that append, so one write to the file covers the replies of many
+connections. The maintenance context takes the file in turn, to append
+records no reply waits for, such as expiries', and once a second to sync it;
+replies that wait during a sync wait for it, which Redis's background fsync
+does not make them do. After a failed append, the replies of commands already
+executed are sent without waiting, as Redis still sends them. While the
+exceptional reread described below holds a rewrite's switch, every reply
+waits for it, INFO's included, which Redis does not.
 
 The rewrite below is the reconciled-scan route under comparison ([investigation](../research/investigations/aof-rewrite/scan-log.md)); its design decisions await the owner's approval.
 
@@ -621,10 +627,11 @@ With append-only persistence enabled, `BGREWRITEAOF` answers started after
 S0 admission. The worker scans the live map in separate statements while
 mutations journal a changed key's complete image at its first write in the
 rewrite and, for a command on that one key afterwards, the command's AOF
-bytes. Statements stage complete records in bounded memory; the sole AOF
-writer drains them outside atomic statements into `temp-F.journal`. The
-writer seals the old increment and rotates once at S1 after draining the
-frozen journal, then the worker reads the journal in bounded chunks to
+bytes. Statements stage complete records in bounded memory; the maintenance
+context drains them outside atomic statements into `temp-F.journal`. It
+takes the active file, seals the old increment and rotates once at S1 after
+draining the frozen journal, holding the file until the rotation ends, then
+the worker reads the journal in bounded chunks to
 reconcile the scan with ordered DEL-plus-reconstruction images and subsequent
 effects. Installation selects
 base(S1) and only the increment containing later writes, before removing old
@@ -660,8 +667,9 @@ After rewrite owners are released, completion removes the remaining
 conservative ledger exclusion; later admission uses normal eviction or OOM
 if counted memory is then above the limit.
 
-The writer keeps the increment's syntax and unfinished-block boundary from
-startup and advances it after successful appends, so a healthy switch does
+firn keeps the increment's syntax and unfinished-block boundary from startup
+beside the active file, and whichever context appends advances it after
+successful appends, so a healthy switch does
 not reread accumulated history. Successful append rollback preserves the
 previous boundary. An uncertain append or truncation outcome invalidates it;
 the next switch then uses the charged streaming reader to recover the state.
@@ -808,10 +816,11 @@ order; the documented `firn_aof_rewrite_*` diagnostics follow them as a tail.
 `aof_last_write_status` is `ok` only
 when both append and sync errors are clear, otherwise `err`, independently of
 `aof_last_bgrewrite_status`. With AOF enabled, `aof_buffer_length` reports the
-collecting bytes plus bytes retained by the writer, excluding already appended
-bytes awaiting sync (`server.c:5818-5832`). `aof_pending_bio_fsync` and
-`aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
-background BIO queue or append postponement behind a background sync. The firn-only field
+collecting bytes plus bytes retained after a failed append, excluding already
+appended bytes awaiting sync (`server.c:5818-5832`). `aof_pending_bio_fsync`
+and `aof_delayed_fsync` are zero: the maintenance context syncs the file
+itself while it holds it, with no background BIO queue or append postponement
+behind a background sync. The firn-only field
 `firn_aof_rewrite_commit_seq` is the actual dataset statement sequence while
 AOF is enabled. With AOF disabled a command that queues no expiry holds only
 its keys and takes no sequence, so the field is left out, following the
@@ -955,5 +964,6 @@ default.
   and the conversions between replies and Lua values; `script_pool` holds
   the one Lua engine every script takes in turn and the registry of
   scripts the keyspace shares;
-- `persistence`: the append-only manifest, startup and upgrade, writer and replay;
+- `persistence`: the append-only manifest, startup and upgrade, the desk through
+  which connections and the maintenance context take turns appending, and replay;
 - `server`: connections, active expiry, the invocation's options and `main`.

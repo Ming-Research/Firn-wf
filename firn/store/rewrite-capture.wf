@@ -8,7 +8,7 @@ fn rewrite_capture_new() -> capture: RewriteCapture pure {
 }
 
 fn rewrite_abort(capture: &RewriteCapture, reason: RewriteAbortReason) -> result: unit writes(capture) {
-  doc "Logical abort only: retained chunks stay charged until the sole writer detaches and releases them outside holds, one chunk per waiting turn.";
+  doc "Logical abort only: retained chunks stay charged until the maintenance context detaches and releases them outside holds, one chunk per waiting turn.";
   if capture^.running {
   } else {
     return unit;

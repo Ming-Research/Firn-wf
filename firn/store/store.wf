@@ -145,7 +145,7 @@ fn log_removal(log: &Box<Slots<u8>>, key: &[u8], budget: &LogBudget) -> result: 
 }
 
 fn expire_key(store: &Keyspace, key: &[u8], at: u64) -> result: unit reads(store), reads(key) waits {
-  doc "Removes the key when its expiry is still the one queued at at, recording the removal as log_removal does, unless main has stopped the writer; testing stopping under the same metadata statement prevents a late expiry record after the final drain.";
+  doc "Removes the key when its expiry is still the one queued at at, recording the removal as log_removal does, unless main has stopped the maintenance context; testing stopping under the same metadata statement prevents a late expiry record after the final drain.";
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let loading = False();

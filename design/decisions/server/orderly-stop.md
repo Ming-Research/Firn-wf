@@ -1,6 +1,6 @@
 # Orderly stop
 
-How firn stops on SHUTDOWN or a stop signal: how waits end, what the signals do, the stop during the AOF replay, and the writer's last attempt.
+How firn stops on SHUTDOWN or a stop signal: how waits end, what the signals do, the stop during the AOF replay, and the maintenance context's last attempt.
 
 ### decision shutdown-fires-its-own-cancellation
 A shutdown request is recorded in server state and fires the current receive wake generation and a separate shutdown cancellation that main, the signal context and the expiry context watch.
@@ -36,5 +36,5 @@ A stop request during the AOF replay ends it at its next check, before the first
 - rejected: an agent proposed that the replay poll a cancellation watch of its own; the owner rejected it, because the signal context records the request in server state before it fires its source, so a watch would add a handle without seeing the request sooner.
 
 ### decision aof-writer-makes-one-last-attempt-at-exit
-After every client leaves, the everysec writer makes one forced append and one sync attempt, drops any bytes still retained, and firn exits 0 even if they fail.
+After every client leaves, the maintenance context makes one forced append and one sync attempt, drops any bytes still retained, and firn exits 0 even if they fail.
 - rejected: an agent proposed a new exit status for a failed last write; the owner rejected it, because Redis 7.0.15 exits with status 0 after failed persistence at shutdown.

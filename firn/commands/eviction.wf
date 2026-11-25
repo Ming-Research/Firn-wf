@@ -31,7 +31,7 @@ fn release_reserve(store: &Keyspace, client: &Client) -> freed: u64 reads(store)
 }
 
 fn memory_aof_buffer(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
-  doc "The allocated capacity of the two AOF buffers, the collecting one and the writer's published pending one, which INFO reports as mem_aof_buffer. With AOF disabled neither is an AOF buffer.";
+  doc "The allocated capacity of the two AOF buffers, the collecting one and the pending one of the active file's slot, which INFO reports as mem_aof_buffer. With AOF disabled neither is an AOF buffer.";
   if logged {
     return meta^.log.inner.cap +sat meta^.aof_pending_capacity;
   }

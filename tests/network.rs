@@ -683,7 +683,7 @@ fn firn_removes_expired_keys_no_command_reads_on_both_routes() {
 /// `APPEND` and `SETRANGE` edited holds its bytes; an expiry moves with its
 /// key under `RENAME` and is copied with it by `COPY`; and a sum `INCRBYFLOAT`
 /// wrote keeps its text and the key its expiry. The first run ends once its
-/// one client has closed, after its writer appended and synced the last
+/// one client has closed, after firn appended and synced the last
 /// changes.
 #[cfg(target_os = "linux")]
 #[test]
@@ -918,8 +918,8 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes() {
 /// A list pushed to or moved to and a set added to or moved to after expiry
 /// retain their new values. Keys removed on expiry before RPUSH by list pops,
 /// updates, removals, trims, inserts or moves, or set removals, pops, moves or
-/// stores replay with their new list values. The first run closes after its
-/// writer appends and syncs the changes; the second checks their values and
+/// stores replay with their new list values. The first run closes after firn
+/// appends and syncs the changes; the second checks their values and
 /// the database size alongside seeded string keys.
 #[cfg(target_os = "linux")]
 #[test]
@@ -9752,12 +9752,12 @@ fn shutdown_finished(mut child: ProgramChild) {
 /// 7.0.15 answers that read (Firn-wf probe run 37574985225); it answers `SET`
 /// alone when they arrive in two reads, which TCP allows, and the run starts
 /// over. 200 ms after the first client's connection closes, well past the
-/// writer's 10 ms cycle, the second client drains its GET, allowing the SET
+/// maintenance context's 10 ms cycle, the second client drains its GET, allowing the SET
 /// already in that batch to run after the request. Cancellation ends its next
 /// receive, not its in-progress send or batch. A run that splits either tiny
 /// pipeline across reads, or reaches the send's shutdown deadline before
 /// draining, starts over. The replay finds the 128 writes, `held` and the
-/// second client's write, which is lost when the writer drains once the
+/// second client's write, which is lost when the last append runs once the
 /// request arrives instead of after every client has gone. Five runs bound
 /// the reruns; on Linux's loopback a write this small reaches firn in one read.
 #[cfg(target_os = "linux")]
@@ -10047,11 +10047,11 @@ fn send_signal(child: &ProgramChild, signal: &str) {
 /// SIGTERM and SIGINT stop firn as SHUTDOWN does, as Redis 7.0.15 shuts
 /// down gracefully on either (`sigShutdownHandler` and `serverCron` in its
 /// `src/server.c`): the signal comes right after 128 acknowledged writes,
-/// within the writer's 10 ms cycle and its one-second sync, while the client
+/// within the file's one-second sync, while the client
 /// that wrote them stays connected. firn closes that client and exits with
 /// status 0, and the replay finds every write. Under the host default, which
 /// applied before firn took signals, the signal ended firn at once, a status
-/// this case refuses, and lost the writes not yet appended.
+/// this case refuses.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {

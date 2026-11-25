@@ -203,7 +203,7 @@ fn aof_rw_journal_count(bytes: &[u8], decoder: &AofJournalCount) -> result: unit
 }
 
 fn aof_rw_journal_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, decoder: &AofJournalCount, maximum: u64) -> drained: Bool reads(store), writes(factory), writes(file), writes(decoder) waits {
-  doc "Drain at most a snapshot of staging length. The writer alone owns dequeue and cleanup; an in-flight chunk stays charged until its append and release complete. Ordinary AOF draining runs between bounded batches.";
+  doc "Drain at most a snapshot of staging length. The maintenance context alone owns dequeue and cleanup; an in-flight chunk stays charged until its append and release complete. Ordinary AOF draining runs between bounded batches.";
   let count = 0_u64;
   atomic snapshot = &store^.meta {
     match snapshot^.rewrite.journal {

@@ -12,7 +12,7 @@ A rewrite writes its base from bounded scan steps over the live keyspace after S
 - rejected: an agent proposed sorting the journaled images so that the base holds each key once; the owner rejected it, because that needs an external sort or more memory, while writing the images in sequence order needs the fewest parts and the most direct proof.
 
 ### decision aof-rewrite-switches-once-at-s1
-The sole writer switches to a new incremental file once, at S1 when the scan ends, so the new base is paired only with the commands after S1.
+The maintenance context switches to a new incremental file once, at S1 when the scan ends, so the new base is paired only with the commands after S1.
 - replaced: Switching at the start of the rewrite, as the replay rewrite did, was on main; the owner changed it, because a base that holds the state at S1, paired with the commands from S0, would apply INCR and other non-idempotent writes twice.
 - rejected: an agent proposed switching at both S0 and S1; the owner rejected it, because it leaves one more incremental file for the scan window and one more round of file work, for the same cut.
 
@@ -23,7 +23,7 @@ At the switch, an old incremental file that ends inside an unfinished block, whi
 - rejected: an agent proposed cutting before the latest MULTI; the owner rejected it, because with nested MULTIs that leaves an earlier unfinished block in a file that is no longer last, and such a file must replay whole.
 
 ### decision aof-rewrite-carries-the-block-boundary
-The writer carries the current incremental file's block boundary from startup's parse and advances it with each append, so the switch rereads the file only when that state is unknown.
+The active file's slot carries its block boundary from startup's parse and every append advances it, so the switch rereads the file only when that state is unknown.
 - replaced: Rereading the whole current incremental file at each switch was on main; the owner changed it, because on the 14900K writes piled up in the reread until the reserve ran out and the rewrite aborted; Redis 7.2.16 does not reread (data: `research/investigations/aof-rewrite/scan-pace.md`).
 - rejected: an agent proposed keeping the reread and only yielding by time slice during it; the owner rejected it, because the switch would still read the whole history, and the longer the history, the more new writes pile up.
 - replaced: Replaying the current file into a private keyspace to check its blocks at the switch was on main; the owner changed it, because that builds a second copy of the dataset before the switch, while syntax and block classification need no keyspace.

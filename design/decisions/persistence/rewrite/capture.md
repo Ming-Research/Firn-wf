@@ -16,11 +16,11 @@ A statement that journals images gathers each changed key's complete image in it
 - rejected: an agent proposed journaling borrowed parts of entries, exporting a second keyspace, or releasing a whole journal at once under Meta; the owner rejected it, because an EXEC or script must commit its final images with its effects, and cleanup must release owners of bounded size.
 
 ### decision aof-rewrite-journal-streams-to-disk
-The sole writer drains journal staging outside Meta to temp-F.journal in appendonlydir, and the rewrite reads it back through one charged 64-KiB buffer after S1.
+The maintenance context drains journal staging outside Meta to temp-F.journal in appendonlydir, and the rewrite reads it back through one charged 64-KiB buffer after S1.
 - replaced: Keeping the whole journal in memory was on main; the owner changed it, because under steady writes the journal grew toward another copy of the dataset and used up the reserve, so rewrites aborted at 16 MiB and at 429 MB alike (data: `research/investigations/aof-rewrite/journal-disk.md`).
 
 ### decision aof-rewrite-collecting-buffer-charged-to-reserve
-Growth of the collecting buffer while the writer seals and switches is charged to R through a statement-local LogBudget, committed with the mutation under Meta.
+Growth of the collecting buffer while the maintenance context seals and switches is charged to R through a statement-local LogBudget, committed with the mutation under Meta.
 - rejected: an agent proposed counting on reuse of the two buffer owners to bound their capacity; the owner rejected it, because maxmemory leaves out ordinary AOF buffers, and writes of constant-sized values could still grow the backlog after S1 without bound.
 
 ### decision aof-rewrite-startup-serves-past-a-leftover-journal

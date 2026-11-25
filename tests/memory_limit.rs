@@ -702,7 +702,7 @@ fn info_memory_fields_peak_and_resetstat_are_live() {
 }
 
 /// AOF eviction propagates DEL, so a restart must not resurrect a victim.
-/// Even a drained writer retains allocated capacity, excluded in INFO.
+/// Even drained AOF buffers retain allocated capacity, excluded in INFO.
 #[test]
 fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     let program = CompiledProgram::from_environment();
@@ -828,8 +828,8 @@ fn admission_with_aof_refuses_writes_over_the_limit() {
     configure(&mut client, &["maxmemory", &roomy.to_string(), "maxmemory-policy", "noeviction"]);
     assert_eq!(memory_request(&mut client, &["SET", "under", &value]), "+OK\r\n");
 
-    // The excluded AOF capacity decides admission. Once the writer has
-    // drained, the buffers still own at least 2 * 65536 bytes (see the
+    // The excluded AOF capacity decides admission. Once the SET is
+    // appended, the buffers still own at least 2 * 65536 bytes (see the
     // replay case above). A limit halfway between used - excluded and used
     // admits a small write only if admission subtracts that capacity: a
     // branch that compared the raw heap, as the no-file path does, would see
