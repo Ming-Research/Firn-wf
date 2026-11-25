@@ -40,11 +40,13 @@ fn servers() -> Vec<(&'static str, PathBuf)> {
     servers
 }
 
+/// Starts the subject with two drivers: none of these cases depends on how many the host has, and a
+/// server that starts one ring per core fails to start when the host has no rings left for it.
 fn start(binary: &Path, directory: &Path, arguments: &[&str]) -> ProgramChild {
     let mut command = Command::new(binary);
     command.current_dir(directory).args(arguments.iter().map(OsString::from))
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .env("TZ", "Asia/Kolkata").env_remove("WF_REQUIRE_WINDOWS_IOCP");
+        .env("TZ", "Asia/Kolkata").env("WF_DRIVERS", "2").env_remove("WF_REQUIRE_WINDOWS_IOCP");
     ProgramChild::spawn(&mut command).expect("spawn log subject")
 }
 
