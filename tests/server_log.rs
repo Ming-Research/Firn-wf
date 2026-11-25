@@ -34,8 +34,8 @@ fn messages(log: &str) -> Vec<(char, String)> {
 
 fn servers() -> Vec<(&'static str, PathBuf)> {
     let mut servers = vec![("firn", PathBuf::from(std::env::var_os("FIRN").expect("FIRN")))];
-    if let Some(binary) = std::env::var_os("REDIS_SERVER") {
-        servers.push(("Redis 7.2.16", PathBuf::from(binary)));
+    if std::env::var_os("REDIS_SERVER").is_some() {
+        servers.push(("Redis 7.2.16", support::redis_oracle()));
     }
     servers
 }
@@ -49,7 +49,7 @@ fn start(binary: &Path, directory: &Path, arguments: &[&str]) -> ProgramChild {
 }
 
 fn stop(port: u16, child: ProgramChild) -> std::process::Output {
-    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect to stop the server");
+    let mut client = bounded_stream(TcpStream::connect(("127.0.0.1", port)).expect("connect to stop the server"));
     client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop the server");
     let mut byte = [0_u8; 1];
     assert_eq!(client.read(&mut byte).expect("shutdown closes the connection"), 0);
@@ -58,7 +58,7 @@ fn stop(port: u16, child: ProgramChild) -> std::process::Output {
 
 /// The local minute as `dd Mon yyyy hh:mm` in the zone the subjects run in.
 fn minute() -> String {
-    let output = Command::new("date").env("TZ", "Asia/Kolkata").arg("+%d %b %Y %H:%M").output().expect("date");
+    let output = Command::new("date").env("TZ", "Asia/Kolkata").env("LC_ALL", "C").arg("+%d %b %Y %H:%M").output().expect("date");
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 

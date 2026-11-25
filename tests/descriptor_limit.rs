@@ -9,17 +9,28 @@ use std::process::{Command, Stdio};
 
 fn servers() -> Vec<(&'static str, PathBuf)> {
     let mut servers = vec![("firn", PathBuf::from(std::env::var_os("FIRN").expect("FIRN")))];
-    if let Some(binary) = std::env::var_os("REDIS_SERVER") {
-        servers.push(("Redis 7.2.16", PathBuf::from(binary)));
+    if std::env::var_os("REDIS_SERVER").is_some() {
+        servers.push(("Redis 7.2.16", support::redis_oracle()));
     }
     servers
 }
 
-/// Starts the server after the shell has set the hard limit to `hard` and the soft limit to `soft`.
+/// Whether this process may raise its own hard open-files limit (CAP_SYS_RESOURCE, bit 24 of the
+/// effective capabilities). Redis then raises the hard limit it was started with, which firn
+/// cannot, so the cases that start below what the request needs compare nothing there.
+fn may_raise_hard_limit() -> bool {
+    let status = std::fs::read_to_string("/proc/self/status").expect("read process status");
+    let line = status.lines().find(|line| line.starts_with("CapEff:")).expect("effective capabilities");
+    let effective = u64::from_str_radix(line["CapEff:".len()..].trim(), 16).expect("capability mask");
+    effective & (1 << 24) != 0
+}
+
+/// Starts the server after the shell has set the soft limit to `soft` and the hard limit to `hard`
+/// (the soft limit first, which the kernel needs while it is above the new hard limit).
 fn start_limited(binary: &PathBuf, directory: &std::path::Path, hard: u32, soft: u32, arguments: &[&str]) -> ProgramChild {
     let mut command = Command::new("/bin/sh");
     command.current_dir(directory)
-        .args(["-c", "ulimit -Hn \"$1\" && ulimit -Sn \"$2\" && shift 2 && exec \"$@\"", "sh"])
+        .args(["-c", "ulimit -Sn \"$2\" && ulimit -Hn \"$1\" && shift 2 && exec \"$@\"", "sh"])
         .arg(hard.to_string()).arg(soft.to_string()).arg(binary).args(arguments.iter().map(OsString::from))
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .env_remove("WF_REQUIRE_WINDOWS_IOCP");
@@ -39,7 +50,7 @@ fn log_bodies(log: &str) -> Vec<String> {
 }
 
 fn stop(port: u16, child: ProgramChild) -> std::process::Output {
-    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect to stop the server");
+    let mut client = bounded_stream(TcpStream::connect(("127.0.0.1", port)).expect("connect to stop the server"));
     client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop the server");
     let mut byte = [0_u8; 1];
     assert_eq!(client.read(&mut byte).expect("shutdown closes the connection"), 0);
@@ -86,6 +97,9 @@ fn startup_raises_the_soft_limit_to_maxclients_plus_32_as_redis_does() {
 
 #[test]
 fn a_hard_limit_below_the_request_lowers_maxclients_as_redis_does() {
+    if may_raise_hard_limit() {
+        return;
+    }
     let fixture = fixture_directory();
     for (label, binary) in servers() {
         let lease = support::lease_port();
@@ -112,9 +126,15 @@ fn a_hard_limit_below_the_request_lowers_maxclients_as_redis_does() {
 
 #[test]
 fn a_limit_of_32_stops_startup_with_status_1_and_redis_line() {
+    if may_raise_hard_limit() {
+        return;
+    }
     let fixture = fixture_directory();
     for (label, binary) in servers() {
-        let output = start_limited(&binary, fixture.path(), 32, 32, &["--bind", "127.0.0.1", "--maxclients", "100"])
+        let lease = support::lease_port();
+        let port = lease.port().to_string();
+        let output = start_limited(&binary, fixture.path(), 32, 32,
+            &["--bind", "127.0.0.1", "--port", &port, "--maxclients", "100"]).with_port(&lease)
             .wait_with_output().expect("bounded refusal");
         assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
         let bodies = log_bodies(&String::from_utf8_lossy(&output.stdout));
@@ -126,6 +146,9 @@ fn a_limit_of_32_stops_startup_with_status_1_and_redis_line() {
 
 #[test]
 fn config_set_maxclients_raises_the_limit_or_answers_redis_error_and_keeps_the_old_value() {
+    if may_raise_hard_limit() {
+        return;
+    }
     let fixture = fixture_directory();
     for (label, binary) in servers() {
         let lease = support::lease_port();
