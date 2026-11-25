@@ -612,7 +612,9 @@ library map's functions are the largest firn-side change in `hget`:
 `hash_map_lookup` costs 188 instructions and 159 cycles per request in `head`
 against 150 and 127 in `cross` (+25% in both), and `hash_map_try_put` in `hset`
 340 instructions and 233 cycles against 326 and 212 (+4% and +10%); the other
-functions' instructions fall by about as much, so the total is unchanged. For
+functions' instructions fall by about as much, so the total is unchanged (the
+second profile run below finds the sign of the instruction difference again but
+not its size, and `head`'s listing has fewer instructions in both functions). For
 `lpush` `head` and `cross` differ by 14 cycles in 2434; no group accounts for
 the compiler's share. For the source edits' share the mechanical rule names
 firn's other code (+19 against twice 4, and half of 19), spread over many
