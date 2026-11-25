@@ -1053,10 +1053,11 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   `aof_rw_flush`, whose `sync_file` call is on the handle that appended the
   bytes, so Whitefoot's contract ("every byte appended to file before this
   call", `lib/std/fs/module.wfm` at Whitefoot `63b7cbb`) covers them.
-  Appends and replies that wait meanwhile wait for the fsync. This is option
-  1 of the owner's question `sync-handle`; the measurement below decides
-  whether it merges or waits for the Whitefoot capability described in the
-  next section.
+  Appends and replies that wait meanwhile wait for the fsync. The owner took
+  this option of the question `sync-handle`: it merges if every cell passes
+  the criterion, and a cell that fails because of the sync stall goes back
+  to the owner, to choose the second handle or to wait for the Whitefoot
+  capability described in the next section.
 - **Follower guard.** A guard is one infix over two atoms or one call
   (GRAM-5 at Whitefoot `63b7cbb`), and the pin wakes a helper-call guard on
   every write of the object, Whitefoot#460 being newer. The desk therefore
@@ -1075,7 +1076,10 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   eviction and admission, immediately before the handler. A reply whose
   command noted nothing (GET's key-only statement, scripts, PING, QUEUED)
   makes the send read the commit sequence in one Meta statement, once per
-  send. A subscribed connection's output reads it once per frame.
+  send. A subscribed connection's output reads it once per frame. The owner
+  kept this rule over waiting for present keys' last-write stamps (question
+  `read-dependency`); the stamp form is measured as a further side only if a
+  GET cell fails the criterion or lands within 0.02 of its line.
 - **Empty exchange.** A drain that finds the pending buffer empty publishes
   written-through at the exchange's sequence in one Meta statement: with
   both buffers empty every collected record is in the file, and without the

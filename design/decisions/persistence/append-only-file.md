@@ -22,3 +22,9 @@ A connection whose replies must wait takes the active file from a shared desk an
 ### decision aof-reply-dependency-is-the-commit-sequence
 A reply waits for the commit sequence its command's own Meta statement noted, or else one Meta statement reads before the send; a subscriber's frame waits for the one read before it.
 - rejected: an agent proposed that a reply wait only for its own command's records; the owner rejected it, because a read could then show another client's write that a kill loses.
+- rejected: an agent proposed that a read of present keys wait only for their last-write stamps, the rest reading the commit sequence; the owner rejected it, because reading the commit sequence is the smaller change, and only a GET cell failing or within 0.02 of its line would warrant measuring it.
+
+### decision aof-sync-through-the-appending-handle
+The maintenance context syncs the active file once a second through the handle that appends to it, during its turn, so appends and replies wait for the fsync.
+- rejected: an agent proposed a second handle on the same file for the sync, so appends go on as with Redis's background fsync; the owner rejected it, because covering the other handle's appends rests on host behaviour outside Whitefoot's sync_file contract, which others cannot check.
+- rejected: an agent proposed waiting for a Whitefoot sync apart from the append handle before group commit; the owner rejected it, because the appending handle's own sync already gives durability others can check from Whitefoot's contract, while the gap goes to Whitefoot.
