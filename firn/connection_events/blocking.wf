@@ -116,9 +116,7 @@ fn block_install(hub: &Hub, request: BlockedList) -> result: unit writes(hub) {
   }
   let count = request.names.inner.len;
   for (index in 0_u64..count) {
-    if index < request.names.inner.len {
-      member_add(map: &hub^.waiting, key: &request.names.inner[index], id: id);
-    }
+    member_add(map: &hub^.waiting, key: &request.names.inner[index], id: id);
   }
   let empty = Empty();
   set hub^.blocking_state.keys = hub^.waiting.length;
