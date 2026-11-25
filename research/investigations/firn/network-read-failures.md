@@ -154,6 +154,7 @@ The suite, `make test` pass after pass with the same trace:
 | Test process | Run | Passes | Failed | SIGCHLD per pass: discarded | queued | dequeued |
 | --- | --- | --- | --- | --- | --- | --- |
 | as on main | 45611579505 | 7 | 0 | 807 to 819 | 2 to 7 (28 in all) | every one queued: 17 by the first thread, 11 by the thread that started the child |
+| as on main, each pass through `whitefoot-kit/ci/run-tests.py test` | 45654535876 | 7 | 0 | 806 to 826 | 2 to 5 (23 in all) | every one queued: 15 by the first thread, 8 by the thread that started the child |
 | SIGCHLD blocked in every thread, children inheriting the block | 45611579570 | 6 | 0 | 0 | 1 for each test process, 918 to 952 found already pending | 0 |
 | SIGCHLD blocked in every thread, the harness's children given the first mask again before their exec | 45631079729 | 7 | 0 | 0 | 1 for each test process, 806 to 822 found already pending | 0 |
 
@@ -187,6 +188,21 @@ must have the mask the process started with. Written before the runs:
 | SIGCHLD blocked before `main`, the mask given back in each child | both pass in 20 of 20 runs; the suite passes with them in it and no SIGCHLD is dequeued | either fails |
 | not blocked | the first fails in every one of 20 runs with reads interrupted; the second fails at its own thread's mask | the first passes in any run: 4000 children are then too few to show the fault every time |
 | blocked, the mask not given back | the first passes; the second fails at the child's mask in 5 of 5 runs | the second passes |
+
+Measured on 2026-11-25 on GitHub's ubuntu-24.04 (kernel 7.0.0-1017-azure for
+the first two rows and 7.0.0-1014-aws for the third, glibc 2.39), each run a
+`cargo test` of the two tests alone:
+
+| Variant | Run | Result |
+| --- | --- | --- |
+| not blocked | 45651001353 | 20 of 20 runs fail both: between 1631 of 1633 and 2013 of 2014 timed reads were interrupted in a run of 0.9 s, and the test's thread does not block SIGCHLD |
+| blocked, the mask not given back | 45654534560 | 5 of 5 runs: the first passes, the second fails at the child's mask |
+| blocked before `main`, the mask given back in each child | 45654536460 | 20 of 20 runs pass both; then 5 passes of the suite with the two tests in it, through `whitefoot-kit/ci/run-tests.py test`, all pass in 141 to 143 s each, with one SIGCHLD queued for each test process, 4811 to 4821 found already pending, none discarded and none dequeued |
+
+Each variant did what was predicted of it, so the two tests tell the fixed
+state from each of the two unfixed ones. The first test's own children are
+what raises the count found already pending from about 810 a pass to about
+4815.
 
 ## The 10 s read stall: hypotheses
 
@@ -314,7 +330,8 @@ comparison is the case itself in the machine under 6.17.
 Measured on 2026-11-25 on GitHub's ubuntu-24.04 runners with waits of 35 and
 33 s. The machine is QEMU with KVM, 4 processors and 10 GiB; the kernel
 package is `linux-image-6.17.0-1022-azure_6.17.0-1022.22_amd64.deb` (SHA-256
-909e771d8abc1aecb5df5aa699650a1488ea65fb526f8b648ee6925d71805e60, as apt downloaded and checked it).
+909e771d8abc1aecb5df5aa699650a1488ea65fb526f8b648ee6925d71805e60, as apt
+downloaded and checked it).
 
 | Kernel | Where | Run | Pairs | First frame: reads with a second or more without a byte | Second frame | Longest wait for a byte |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -327,7 +344,8 @@ package is `linux-image-6.17.0-1022-azure_6.17.0-1022.22_amd64.deb` (SHA-256
 For the three runs on 6.17 the table counts the first pairs only: `run.sh`
 then kept the first 400 lines about waits, and these runs printed far more
 (consoles of 13008, 12994 and 16862 lines, against 1003 for the run of the
-same length in which nothing waited). Each run's log holds every pair.
+same length in which nothing waited). The consoles were not kept; the last
+run of the next section repeats the measurement and keeps its summary.
 
 The hypothesis is not rejected: on 6.17 two plain sockets, with no server of
 ours, stop as the case stopped, at the second frame and not the first, as
@@ -399,23 +417,76 @@ window (4) is pending.
 | firn as the sender, the runner's kernel 7.0 in the machine | no read waits a second | reads wait: then firn or the machine has a part in it |
 | plain sockets again on 6.17.0-1022-azure, with the run's summary kept | most second frames wait and no first frame; the kernel counts segments refused for lack of buffer (`TCPRcvQDrop` above zero), which it did not on 7.0 (+0 in runs 45642367552 and 45642366860) | `TCPRcvQDrop` stays zero: then the refusal the source shows is not where the wait starts |
 
+Measured on 2026-11-25, a pair every 2 s, waits of 35 and 33 s:
+
+| Sender | Kernel | Where | Run | Pairs | First frame: reads with a second or more without a byte | Second frame | Longest wait for a byte | `TCPRcvQDrop` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| firn | 6.17.0-1022-azure | the machine | 45651001132 | 495 | 0 | 1 | 20.6 s | +2 |
+| firn | 6.17.0-1022-azure | the machine | 45654532381 | 494 | 0 | 5 | 20.6 s | +5 |
+| firn | 6.17.0-1022-azure | the machine | 45654534988 | 493 | 0 | 0 | 3 ms | +0 |
+| firn | 7.0.0-1020-azure | the machine | 45654532624 | 492 | 0 | 0 | 6 ms | +0 |
+| firn | 7.0.0-1014-aws | the runner itself | 45651005863 | 545 | 0 | 0 | 4 ms | +0 |
+| a thread's blocking write | 6.17.0-1022-azure | the machine | 45654536709 | 494 | 0 | 386 | 20.8 s | +386 |
+
+All three predictions held. The plain sockets' run, whose summary was kept
+this time, gives the rate the earlier three could not: 386 of 494 second
+frames waited, 20.3 s at the median, and no first frame. The kernel counted
+one refused segment and one retransmission timeout for each of them
+(`TCPRcvQDrop` +386, `TCPTimeouts` +386), and none of either on 7.0, so the
+refusal the source shows is where the wait starts.
+
+With firn as the sender the kernel's fault is met rarely, as in CI's history:
+6 second frames of 1482 in the three runs on 6.17 (1 of 495, 5 of 494 and 0 of
+493), against 2 stalls in about 205 gate runs. Each of the six reads had taken
+the 2.2 to 2.4 MiB its own socket held and then got nothing for about 20 s,
+20.6 s at the longest. The kernel counted a refused segment only in the runs
+that had a wait (`TCPRcvQDrop` +2 and +5, and +0 in the run without one), and
+in the run with five waits it counted five retransmission timeouts
+(`TCPTimeouts` +5). In the wait of run 45651001132 firn's socket had the
+retransmission timer pending with 19 s to run, a timeout of 26 s and a
+congestion window of one segment (`timer=01:00000778 rto=2624 cwnd=1`), and
+the reader's window was open (`rcv_wnd=2359296`) with 17 packets dropped. In
+the first pair of the same run, which did not wait, firn's socket had the
+probe of a closed window pending and a timeout of 0.2 s before the read
+(`timer=04:000007D5 rto=20 cwnd=22`), and the reader had dropped 16. So the
+wait needs kernel 6.17 and does not need October's firn or its Whitefoot
+release: today's firn, built with wf-63b7cbb03820, waits there too, and on 7.0
+neither it nor the plain sockets do, in the same machine or on the runner
+itself. Why a thread's blocking write meets the fault in four pairs of five
+(386 of 494) and firn's sends in one of some hundreds (6 of 1482) was not
+looked into; both are the kernel refusing a segment it had offered room for.
+
+### What removes it, and how a recurrence shows
+
+Nothing in firn or in the case causes the wait, so neither changes. The gate's
+runners left the kernel that has the fault: GitHub's ubuntu-24.04 image has
+had kernel 7.0 since 2026-10-26, and the 14900K runs 7.0.0-38-generic. On a
+kernel that still counts the arriving segment in `tcp_can_ingest` (Linux 6.17
+to 6.19 and what is built from them) the case can fail as it did in October:
+`pub/sub bulk body: WouldBlock` at `tests/pubsub.rs:69`, about 81 s after the
+case started, in some runs of a thousand (2 of about 205 gate runs in October,
+6 of 1482 pairs here). `run.sh tcp-reopen-vm` with the kernel's package says
+within 25 minutes whether a kernel has the fault.
+
 ## The gate's failure rate
 
 `run.sh suite` runs the gate's network target pass after pass on the gate's
 kind of runner and says how each pass ended and what each failing case said.
-For the passes of this section and of the EINTR results above it ran `make
-test`; since then it runs each pass as check.yml's step does, through
+For the first passes of the EINTR results above it ran `make test`; since
+then it runs each pass as check.yml's step does, through
 `whitefoot-kit/ci/run-tests.py test`, which starts `make test` in a session
-of its own with its output in a pipe.
+of its own with its output in a pipe. The rows that say so ran that way.
 
-The 13 passes above all passed (140 s a pass on one runner, 153 s on the
-other), as did the gate's own run of main that day (run 45610525110). CI's
-history is the measure of the rate: the 400 runs hold 10 read failures, of
-which 7 were the port lease's, which leaves 3 in about 400 passes, under 1%.
-At that rate 100 passes without a failure have a probability of about 47%
-with nothing fixed, so a loop of 100 passes cannot by itself show a cause
-removed; what shows it is, for each cause, an observation that tells the
-fixed state from the unfixed one. Every pass also runs
-`leased_port_refuses_connections_while_a_concurrent_spawn_runs`, which
-connects to 10000 leased ports and fails if one is not refused: 130000
-connections in the 13 passes, none accepted.
+The 32 passes of the suite in this record all passed: 14 with the test process
+as on main (7 by `make test`, 7 through the kit's runner), 6 with the block
+inherited and 12 with the mask given back, at 140 to 143 s a pass but for the
+153 to 154 s of one runner (run 45611579570). So did the gate's own run of
+main that day (run 45610525110). CI's history is the measure of the rate: the
+400 runs hold 10 read failures, of which 7 were the port lease's, which leaves
+3 in about 400 passes, under 1%. At that rate 100 passes without a failure
+have a probability of about 47% with nothing fixed, so a loop of 100 passes
+cannot by itself show a cause removed; what shows it is, for each cause, an
+observation that tells the fixed state from the unfixed one. Every pass also
+runs `leased_port_refuses_connections_while_a_concurrent_spawn_runs`, which
+connects to 10000 leased ports and fails if one is not refused: 320000
+connections in the 32 passes, none accepted.
