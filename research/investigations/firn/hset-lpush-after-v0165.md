@@ -705,7 +705,7 @@ The run attributes; it accepts or rejects nothing.
 Run [45644686875](https://github.com/Ming-Research/Firn-wf/actions/runs/45644686875)
 succeeded (job 15:25:58 to 15:40:28 UTC; builds 4 min 1 s; Measure 9 min 56 s).
 Its control held (idle 0.0242, loaded 0.1592), both passes were clean (highest
-reading 0.0142), no profiled run was void, and every `annotate-*.txt` has the
+reading 0.0142), no profiled run was void (they read at most 0.0221), and every `annotate-*.txt` has the
 listing of its symbol (176 files; those of a symbol the test does not run, such
 as `hset_body` under `lpush`, are empty). Listings are compared with
 rip-relative operands and call targets removed.
