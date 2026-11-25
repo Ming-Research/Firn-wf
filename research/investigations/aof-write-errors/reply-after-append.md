@@ -1099,13 +1099,13 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   holds; replies wait for that turn, including the switch's exceptional
   reread, which the post-cut backlog case uses to check that GET, SETNX and
   STRLEN replies wait for another connection's record.
-- **Frame checks.** A subscriber's frame can be shown to wait only while
-  something holds the file: a publisher that pipelines its SET before its
-  PUBLISH appends the SET in its own send microseconds later, sooner than the
-  message reaches the test, so a missing frame wait would rarely show there.
-  The post-cut backlog case therefore also publishes after A's unread SET, to
-  a connection that subscribed before the cut, and requires both the PUBLISH
-  reply and the message to find A's record in the file.
+- **Frame checks.** A publisher that pipelines its SET before its PUBLISH
+  appends the SET in its own send, so without the frame wait the message
+  only races that append; on red commit (iii) below it won the race in 7 of
+  10 rounds of the visibility case. The post-cut backlog case also publishes
+  after A's unread SET, which no send can append while the switch holds the
+  file, to a connection that subscribed before the cut, and requires both the
+  PUBLISH reply and the message to find A's record in the file.
 
 ### Red runs
 
@@ -1131,6 +1131,22 @@ reply sent too early, never fail one sent in time. The case therefore waits
 30 ms between the observers and the writers, starts from 256 MiB of history
 instead of 128 MiB so that the reread outlasts both pauses, and reports every
 early arrival in one failure.
+
+The same changes rebuilt on that test (02b4404), run the same day:
+
+- (i) a60310b, run 45721254789: the post-cut case failed before its held-slot
+  check, at "the exclusion was never checked while the backlog was charged":
+  no writer's INFO ran while the rotation was held open and charged. Not yet
+  explained; the head and (i) passed that assertion before the test changed
+  (runs 45692241498 and 45694953610).
+- (ii) 9f1fb6a, run 45721254456: the visibility case failed in rounds 0, 1, 2
+  and 9, each at the SET another connection's GET revealed.
+- (iii) 1341d3c, run 45721255003: the visibility case failed in rounds 2 to
+  8, each at the SET made before a delivered message.
+
+In (ii) and (iii) the post-cut case aborted on the driver ring (see below).
+The kill case passed on (i) and aborted on the ring in every other run of
+that day, the head's 45721254386 and the witness's 45721254294 included.
 
 ### Void runs
 
