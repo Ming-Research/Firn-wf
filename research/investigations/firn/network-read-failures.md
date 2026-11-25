@@ -337,15 +337,22 @@ differ from what was predicted:
   receiver refuses a segment that the sender then keeps retransmitting. The
   reader's socket had dropped 16 or 17 packets under both kernels.
 
-What makes 7.0 differ is, by its date, commit 026dfef287c0, "tcp: give up on
-stronger sk_rcvbuf checks (for now)" (Jakub Kicinski, posted 2026-02-27,
-`Fixes: 1d2fbaad7cd8`; read on 2026-11-25 at
-<https://github.com/torvalds/linux/commit/026dfef287c0>). It takes the
-arriving packet's length out of the receive buffer check of `tcp_can_ingest`
-in `net/ipv4/tcp_input.c`, which 1d2fbaad7cd8, the commit the report's
-bisection named, had added. That Ubuntu's 6.17.0-1022 lacks it and its 7.0
-has it is inferred from the dates and from the measurements above; their
-sources were not read.
+Linux's source says the same (`net/ipv4/tcp_input.c` at the releases' tags,
+read on 2026-11-25). v6.16 has no such check. v6.17 refuses an arriving
+segment when the receive queue's memory and the segment's own size together
+exceed the receive buffer (`tcp_can_ingest`, added by 1d2fbaad7cd8, the
+commit the report's bisection named), and drops a segment that ends beyond the
+window while the receive queue is not empty (`tcp_sequence`,
+`SKB_DROP_REASON_TCP_INVALID_END_SEQUENCE`). So a reader that is not reading
+refuses a segment, closes its window, and then drops every retransmission of
+that segment until it has read its queue empty; by then the sender's timer is
+tens of seconds long. v6.19 still counts the segment's length. v7.0 refuses a
+segment only when the queue's memory alone exceeds the buffer (`return rmem
+<= sk->sk_rcvbuf;`), the change of commit 026dfef287c0, "tcp: give up on
+stronger sk_rcvbuf checks (for now)" (`Fixes: 1d2fbaad7cd8`,
+<https://github.com/torvalds/linux/commit/026dfef287c0>). Ubuntu's own
+sources were not read: its 6.17.0-1022 and its 7.0 behave as upstream's
+releases of those numbers read.
 
 ### firn as the sender under each kernel
 
