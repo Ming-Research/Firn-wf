@@ -200,23 +200,25 @@ network, in `EXEC` and through `redis.call` or `redis.pcall`.
 
 `SSCAN`, `HSCAN` and `ZSCAN` return a compact collection whole after MATCH
 filtering, with cursor `0`, whatever cursor and COUNT arrive, as Redis 7.2.16
-returns its listpack encodings. A collection is compact by its current content:
-at most 128 members of a set or sorted set, or 512 fields of a hash, and no
-member, field or hash value longer than 64 bytes, Redis's default listpack
-limits; stored CONFIG encoding values do not matter, an all-integer set is
-judged like any other set, and nothing remembers how a collection grew. A
-larger collection is scanned in steps: the cursor is a position in the hash
-space of Whitefoot's `hash_map_scan`, printed in decimal, and COUNT is the
-number of home buckets a step covers, as Redis's COUNT is a hint of the work of
-a call. A step returns the matching members of those buckets, fewer than COUNT
-on average and none at times, and may return more than COUNT where many members
-share a home; the cursor `0` ends the scan. Any cursor value is accepted. A
-member present from the first call to the last is returned at least once while
-others are added and removed between calls, through any growth or rebuild of
-the table; one scanned over an unchanged collection is returned once. Sets and
-hashes use the map's order and a larger sorted set the order of its
-member-to-score map, so its steps are not in score order; a compact sorted set
-keeps score order. Both protocols use an array of bulk strings;
+returns its listpack and intset encodings. A collection is compact by its
+current content, with Redis's default limits: at most 128 members of a set or
+sorted set, or 512 fields of a hash, and no member, field or hash value longer
+than 64 bytes; or a set of at most 512 members that Redis's `string2ll` reads
+all as 64-bit integers. Stored CONFIG encoding values do not matter, and
+nothing remembers how a collection grew. A larger collection is scanned in
+steps, as Redis's `dictScan` loop does: the cursor is a position in the hash
+space of Whitefoot's `hash_map_scan`, printed in decimal, and one call takes
+steps from it until it has sampled COUNT entries (counted before MATCH, a hash
+field counting once), the cursor is `0`, or the call has covered 10*COUNT+1
+home buckets. A call therefore returns about COUNT entries when MATCH takes all
+of them, none or few where MATCH takes few, and fewer than COUNT from a table
+that was once large and is now sparse; the cursor `0` ends the scan. Any cursor
+value is accepted. A member present from the first call to the last is returned
+at least once while others are added and removed between calls, through any
+growth or rebuild of the table; one scanned over an unchanged collection is
+returned once. Sets and hashes use the map's order and a larger sorted set the
+order of its member-to-score map, so its steps are not in score order; a
+compact sorted set keeps score order. Both protocols use an array of bulk strings;
 hash field/value and sorted-set member/score pairs stay flat. A missing key
 returns cursor `0` and an empty array before options are checked; a wrong type
 is also checked before options, while an invalid cursor is checked first.

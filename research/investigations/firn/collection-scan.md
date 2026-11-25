@@ -9,40 +9,42 @@ recorded in the run linked below.
 
 SSCAN, HSCAN and ZSCAN return a collection that is compact by its current
 content whole, with cursor zero and MATCH applied, whatever cursor and COUNT
-arrive. Any other collection is scanned in steps: one call lends the members
-whose home buckets are the next COUNT of Whitefoot's `hash_map_scan` from the
-cursor, and the library's next position, printed in decimal, is the reply's
-cursor, zero at the end. COUNT and cursor text are validated as Redis 7.2.16
+arrive. Any other collection is scanned in steps as Redis 7.2.16's
+scanGenericCommand scans a hash table: one call takes steps of Whitefoot's
+`hash_map_scan` from the cursor, the cursor being a position in the hash space
+printed in decimal, until it has sampled COUNT entries (counted before MATCH,
+a hash field counting once), the cursor reaches zero, or the call has covered
+10*COUNT+1 home buckets. COUNT and cursor text are validated as Redis 7.2.16
 validates them. Sets and hashes scan the ordinary map; a sorted set that is not
 compact scans its member-to-score map, so its steps are in hash order, not
 score order.
 
-Compact means Redis 7.2.16's default listpack limits applied to the current
-content: at most 128 members of a set or sorted set, or 512 fields of a hash
-(`set-max-listpack-entries`, `zset-max-listpack-entries`,
+Compact means Redis 7.2.16's default listpack and intset limits applied to the
+current content: at most 128 members of a set or sorted set, or 512 fields of a
+hash (`set-max-listpack-entries`, `zset-max-listpack-entries`,
 `hash-max-listpack-entries`), and no member, field or hash value longer than 64
-bytes. The owner selected this reading of the content, with no encoding
-history, for ZSCAN score text first, and the same classification now decides
-the shape of the reply: a listpack-encoded Redis collection answers whole with
-cursor zero, so a client that calls SSCAN once on a small set gets the
-members it gets from Redis, and the recorded transcripts below stay exact. The
-check reads at most 512 entries. An all-integer set is judged like any other
-set, so one of 129 to 512 integers is scanned in steps where Redis's intset
-answers whole.
+bytes; or a set of at most 512 members (`set-max-intset-entries`) that
+Redis's string2ll reads all as 64-bit integers. The owner selected this reading
+of the content, with no encoding history, for ZSCAN score text first, and the
+same classification now decides the shape of the reply: a listpack- or
+intset-encoded Redis collection answers whole with cursor zero, so a client
+that calls SSCAN once on a small set gets the members it gets from Redis, and
+the recorded transcripts below stay exact. The check reads at most 512 entries.
 
-The decision is in [enumeration](../../../design/firn/enumeration.md).
-The [script restore decision](../../../design/firn/scripts.md) keeps logical
-collection copying: the cursor is a position in the hash space, which a rebuild
-of the backing leaves valid, so a scan that spans a script attempt still
-returns every member present throughout it, and no layout-dependent result is
-promised. The pin names the Whitefoot release that carries `hash_map_scan`.
+The decision is in
+[enumeration](../../../design/decisions/commands/enumeration.md). The
+[script restore decision](../../../design/decisions/scripts/attempts.md) keeps
+logical collection copying: the cursor is a position in the hash space, which a
+rebuild of the backing leaves valid, so a scan that spans a script attempt
+still returns every member present throughout it, and no layout-dependent
+result is promised. The pin names the Whitefoot release that carries
+`hash_map_scan`.
 
 ## Reference and representation evidence
 
 The reference is [Redis 7.2.16](https://github.com/redis/redis/tree/7.2.16).
-Compiler pin `wf-d75f318d5631` names Whitefoot source
-`d75f318d56318834785322bde3a3656fb93116a6`. Interfaces and the specification
-were inspected at that source revision.
+Interfaces and the specification were inspected at the Whitefoot commit that
+compiler pin `wf-63b7cbb03820` names.
 
 [`Value`](../../../firn/store/module.wfm) stores sets and hashes as ordinary
 HashMap values. Sorted stores an ordered score/member map and a member/score
@@ -75,20 +77,34 @@ sorted set keeps score order.
 
 ## Resumable scan
 
-Whitefoot's `hash_map_scan` (Whitefoot#487) takes a map, a cursor, a limit of
-home buckets, the key binding and a visitor; it lends every pair whose home is
-one of up to limit consecutive buckets and returns the position after the last
-of them, zero when the pass is complete. Any cursor value is accepted. Between
-calls the map may change in any way: every pair present from the start of a
-pass to its completion is lent at least once, a pair may be lent again after
-the bucket count changes, and a pass over an unchanged map lends each pair
-once. The limit must be at least one, which firn guarantees with a small
-function whose postcondition the call site uses. The limit is a hint for work,
-not a cap on pairs. Capacity is three quarters of the bucket count, so a step
-lends fewer than one pair per home bucket (deduced from the interface, not
-measured). The call holds the map read-only, so SSCAN, HSCAN and ZSCAN run it
-twice under one hold, as they ran the whole-map visitor twice: once to count
-the matching pairs for the array header and once to write them.
+Whitefoot's `hash_map_scan` takes a map, a cursor, a limit of home buckets, the
+key binding and a visitor; it lends every pair whose home is one of up to limit
+consecutive buckets and returns the position after the last of them, zero when
+the pass is complete. Any cursor value is accepted. Between calls the map may
+change in any way: every pair present from the start of a pass to its
+completion is lent at least once, a pair may be lent again after the bucket
+count changes, and a pass over an unchanged map lends each pair once. The limit
+must be at least one, which firn guarantees with a small function whose
+postcondition the call site uses. The limit is a hint for work, not a cap on
+pairs. The map never shrinks when pairs are removed (its rebuilds keep or
+enlarge the bucket count), and it holds one pair per bucket, so a table has at
+least as many buckets as the most members it ever held.
+
+Redis 7.2.16 does not give COUNT to dictScan as a bucket count. Its loop in
+[db.c](https://github.com/redis/redis/blob/7.2.16/src/db.c) calls dictScan again
+and again while the cursor is not zero, fewer than 10*COUNT+1 iterations have
+run and fewer than COUNT entries have been sampled, and its scanCallback counts
+an entry as sampled before it tests MATCH. Firn follows the same rule over
+`hash_map_scan`: the first step covers COUNT home buckets and each later step
+covers the buckets the density seen so far says remain for the entries still
+wanted, at most twice the buckets covered so far and never past the call's
+budget of 10*COUNT+1 buckets. A step of a bucket count equal to COUNT would
+return about 0.6 COUNT entries from a table at its usual load, which Redis's
+loop does not.
+
+The visitor writes the matching entries into a buffer in the one walk and
+counts them; the reply's header follows from the count and the buffer is
+appended to the reply, so a call walks its pairs once.
 
 Sets and hashes pass their map. A sorted set keeps its members twice, in an
 ordered map of (score, member) and in a map from member to score; the cursor
