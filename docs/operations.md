@@ -72,10 +72,13 @@ remain:
   matches nothing. List the files by name.
 - `CONFIG GET dir` reports the absolute path the `dir` directives wrote, with
   `.`, `..` and repeated `/` removed, not the path the host resolves through
-  symbolic links, and reports nothing while every `dir` given was relative to
-  a directory firn does not know. Redis reports the resolved path.
+  symbolic links, and reports nothing until a `dir` gives an absolute path,
+  which includes when no `dir` was given. Redis reports the resolved path of
+  the working directory.
 - A configuration file given by a relative path is named as given in the
   line that reports it cannot be opened; Redis names its absolute path.
+- An `include` nested more than 32 deep is refused in the fatal frame with
+  `firn: includes nest too deeply`; Redis sets no limit.
 - A `logfile` whose last component is a symbolic link is refused where Redis
   follows the link.
 
@@ -147,10 +150,13 @@ least M. Exiting.` `CONFIG SET maxclients` adjusts the limit the same way and,
 when the host cannot support the number, answers Redis's error naming the
 number it can and keeps the old value. firn can change only the soft limit:
 where the hard limit is below the request, the limit it reaches equals
-Redis's, but the host's reason in the second warning is the text the host gives
-firn, and Redis lowers the hard limit to the same value where firn leaves it.
-Reserve descriptors for persistence files, listeners and other process needs
-by setting the hard limit through the service manager's `LimitNOFILE=`.
+Redis's for a process that may not raise its hard limit, but the host's reason
+in the second warning is the text the host gives firn, and Redis lowers the
+hard limit to the same value where firn leaves it. A process that may raise
+its hard limit, as root may, gets the whole request from Redis and not from
+firn. The 32 descriptors above `maxclients` are for persistence files,
+listeners and other process needs; set the hard limit to at least
+`maxclients` plus 32 through the service manager's `LimitNOFILE=`.
 When the process runs out of descriptors,
 firn logs `Accepting client connection: Too many open files` to stderr, at
 most once a second, and keeps listening; it accepts again once descriptors
@@ -321,14 +327,22 @@ fsync the AOF file: reason`), the stop signal, `User requested shutdown...`,
 These differences from Redis's log remain: the product name is `firn`, there
 is no version line, the line for a stop signal is an ordinary log line where
 Redis writes `pid:signal-handler (unix time) message` from its handler, a stop
-signal during the append-only file replay logs only that line where Redis adds
-its shutdown lines, the rewrite line has no `by pid` because firn rewrites in
-a thread, `pidfile` and `syslog-enabled` are refused, `CONFIG SET dir` is
-refused where Redis changes the directory, and messages Redis writes for
-features firn does not have do not appear. A write that fails drops the line,
-as Redis ignores a failed log write.
-Accepting an excess client or failing to accept still writes to stderr as the
-connections section says.
+signal during the append-only file replay logs the ordinary signal line only,
+where Redis logs `Received shutdown signal during loading, scheduling
+shutdown.` and then its shutdown lines, the rewrite line has no `by pid`
+because firn rewrites in a thread, `pidfile` and `syslog-enabled` are refused,
+`CONFIG SET dir` answers the unknown-option error where Redis answers `can't
+set protected config` or, with `enable-protected-configs` set, changes the
+directory, and Redis's other messages do not appear: those of features firn
+does not have, the lines that name the append-only files Redis creates, opens
+and removes, and the logo Redis prints instead of `Running mode=...` on a
+terminal. The lines above are not all that firn writes: it also logs `Reading
+config from stdin`, `Unable to obtain the current NOFILE limit`, `Fatal error,
+can't open config file` and `Fatal error loading the DB`. A write that fails
+drops the line, as Redis ignores a failed log write. A failure to accept a
+connection still writes `Accepting client connection: reason` to stderr, as
+the connections section says; an excess client gets its error reply and
+nothing is logged.
 
 ## Migrate from Redis
 

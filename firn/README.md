@@ -225,8 +225,8 @@ The recorded reference comparison and boundary cases are in
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
-`save`, `timeout`, `maxclients`, `auto-aof-rewrite-percentage` and
-`auto-aof-rewrite-min-size`, and the parameters whose only effect in Redis is on its
+`save`, `timeout`, `maxclients`, `dir`, `loglevel`, `logfile`,
+`auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`, and the parameters whose only effect in Redis is on its
 internal encodings, leaving every value as commands read it,
 `hash-max-listpack-entries`, `hash-max-listpack-value`,
 `list-compress-depth`, `list-max-listpack-size`, `set-max-intset-entries`,
@@ -544,7 +544,8 @@ Supported directives, in files or after `--`, are:
   `nothing`, and `logfile`, the file the log lines are appended to, empty by
   default for standard output; `CONFIG GET` reports both and `dir`, `CONFIG SET
   loglevel` changes the level while firn runs, `CONFIG SET logfile` answers
-  Redis's immutable-config error and `CONFIG SET dir` is refused;
+  Redis's immutable-config error and `CONFIG SET dir` answers the unknown-option
+  error;
 - `firn-clients`, a **firn-only test directive**: how many connections to
   admit over the server's lifetime before stopping, 0 by default for no
   limit. Connections refused by `maxclients` do not count. This shutdown
@@ -565,7 +566,8 @@ At startup, and on `CONFIG SET maxclients`, firn raises the soft
 limit supports when the host refuses, or exits with status 1 when the limit is 32
 or less; `CONFIG SET` answers Redis's error and keeps the old value when the host
 cannot support the number. firn can change only the soft limit, so a hard limit
-below the request is left as it is. Redis's event-loop capacity adjustment has
+below the request is left as it is, where Redis lowers it to what it reaches and
+a privileged Redis raises it to the request. Redis's event-loop capacity adjustment has
 no equivalent. An `accept` error, descriptor exhaustion
 included, leaves firn listening and is logged (see
 [Accept-error diagnostics](#accept-error-diagnostics)); the
