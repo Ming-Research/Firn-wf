@@ -101,23 +101,7 @@ fn blocks(document: &str) -> Vec<Block> {
     result
 }
 
-/// Whether a line has Redis's log form: `pid:role dd Mon yyyy hh:mm:ss.mmm mark message`.
-fn is_log_line(line: &str) -> bool {
-    let mut parts = line.splitn(6, ' ');
-    let (Some(origin), Some(day), Some(month), Some(year), Some(clock), Some(rest)) =
-        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next())
-        else { return false };
-    let Some((pid, role)) = origin.split_once(':') else { return false };
-    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let digits = |text: &str, count: usize| text.len() == count && text.bytes().all(|byte| byte.is_ascii_digit());
-    let time = clock.as_bytes();
-    let well_timed = time.len() == 12 && time[2] == b':' && time[5] == b':' && time[8] == b'.'
-        && [0, 1, 3, 4, 6, 7, 9, 10, 11].into_iter().all(|at| time[at].is_ascii_digit());
-    !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()) && matches!(role, "C" | "M")
-        && digits(day, 2) && months.contains(&month) && digits(year, 4) && well_timed
-        && rest.len() >= 3 && matches!(rest.as_bytes()[0], b'.' | b'-' | b'*' | b'#')
-        && rest.as_bytes()[1] == b' '
-}
+use super::server_log::is_log_line;
 
 fn matches_output(block: &Block, output: &Output) -> bool {
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -4,6 +4,8 @@
 
 mod support;
 mod config;
+mod server_log;
+mod descriptor_limit;
 mod operations;
 mod memory_limit;
 mod aof_write_errors;
