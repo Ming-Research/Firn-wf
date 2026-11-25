@@ -350,6 +350,30 @@ The reading cannot see a job that runs on a server or client CPU, which is
 the one case the rule leaves to the twin: `base-twin` over `base`, a clean
 pass's noise, shows it.
 
+## Sample run, stated before measuring
+
+**Question.** Does the measurement script with the rules above run to its end
+on the 14900K with the four images, how long do its parts take, and where does
+the other CPUs' idle reading lie against T?
+
+**Run.** [45620993537](https://github.com/Ming-Research/Firn-wf/actions/runs/45620993537),
+dispatched on 2026-11-25 at 13:11 UTC from the engine's ref
+`wf-try/work-145-26e0fade/call/37`, commit `51c7be4`; later commits of this
+branch only add two log lines (the CPUs the control's loops and the profiler
+are pinned to) and a header comment to `redis-bench.sh`. Mode `compare`, servers
+2,4 and clients 16-31; revisions `base` and `base-twin` `7cf12df`, `head`
+`b08522a`, `cross` `1dddd17`; test `hset` at depth 16, 2 passes of 5 seconds,
+profile `hset 16`. It has the four images of the four-image run so that it
+builds all three of them with `make firn-lto` and times a pass of four images.
+
+**Read.** The control's idle and loaded readings (`compare-control.csv`), the
+readings of every run (`compare-runs.csv`), the step times of the job and the
+`time,` lines of the log (a pass, a profiled run, the builds, the steps before
+them), `revisions.csv` (the `cross` row names `1dddd17` and pin
+`wf-af7665be672d`), and whether each `profile-*.txt` holds a table of cycles
+and one of instructions. The run decides no comparison, and its rates are not
+read.
+
 ## Four-image run, stated before measuring
 
 **Question.** Is each of `hset`, `lpush` and `hget` at depth 16 slower
