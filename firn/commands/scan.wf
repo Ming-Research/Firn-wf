@@ -226,18 +226,16 @@ fn scan_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entr
       set wanted = scan_matches(input: input, pattern: plan^.pattern, key: key);
     }
     if wanted {
-      if index < entries^.len {
-        let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[index], client: client);
-        let removed = client^.state == state_expired;
-        let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
-        set appended = appended +wrap recorded;
-        if kind != 0_u64 {
-          let any = plan^.kind == 0_u64;
-          let typed = plan^.kind == kind;
-          let included = bor(any, typed);
-          if included {
-            key_set_insert(keys: found, key: key);
-          }
+      let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[index], client: client);
+      let removed = client^.state == state_expired;
+      let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
+      set appended = appended +wrap recorded;
+      if kind != 0_u64 {
+        let any = plan^.kind == 0_u64;
+        let typed = plan^.kind == kind;
+        let included = bor(any, typed);
+        if included {
+          key_set_insert(keys: found, key: key);
         }
       }
     }
@@ -318,13 +316,11 @@ fn keys_body(keys: &ConcurrentHashMap<Entry>, input: &[u8], pattern: Span, now: 
     let key = &bytes.inner[0_u64..size];
     let matched = scan_matches(input: input, pattern: pattern, key: key);
     if matched {
-      if index < entries^.len {
-        let present = entry_present(slot: &entries^[index]);
-        let lapsed = held_lapsed(slot: &entries^[index], now: now);
-        if present {
-          if bnot(lapsed) {
-            key_set_insert(keys: found, key: key);
-          }
+      let present = entry_present(slot: &entries^[index]);
+      let lapsed = held_lapsed(slot: &entries^[index], now: now);
+      if present {
+        if bnot(lapsed) {
+          key_set_insert(keys: found, key: key);
         }
       }
     }
@@ -369,20 +365,16 @@ fn held_randomkey(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap
       set random^ = next_random(state: random^);
       let pick = random^ % gathered;
       let entries = &keys^[sample];
-      if pick < sample.len {
-        let bytes = scanned_key(keys: &sample, index: pick);
-        let size = bytes.inner.len;
-        let key = &bytes.inner[0_u64..size];
-        if pick < entries^.len {
-          let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[pick], client: client);
-          let removed = client^.state == state_expired;
-          let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
-          set appended = appended +wrap recorded;
-          if kind != 0_u64 {
-            reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
-            return appended;
-          }
-        }
+      let bytes = scanned_key(keys: &sample, index: pick);
+      let size = bytes.inner.len;
+      let key = &bytes.inner[0_u64..size];
+      let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[pick], client: client);
+      let removed = client^.state == state_expired;
+      let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
+      set appended = appended +wrap recorded;
+      if kind != 0_u64 {
+        reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
+        return appended;
       }
     }
   }

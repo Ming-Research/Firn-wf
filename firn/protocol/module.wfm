@@ -81,11 +81,11 @@ public fn split_arguments(input: &[u8], start: u64, end: u64, args: &Box<Slots<S
   requires end <= input^.len;
 } doc "Splits input[start..end] with Redis sdssplitargs quoting into args, cleared first, decoding in place. State 1 means arguments, 6 none, 7 malformed quoting; next is end. Input NUL terminates the line, escaped NUL is retained. This has no RESP framing or line-length policy.";
 
-public fn parse_request(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, locked: Bool) -> parsed: Parsed writes(input), writes(args) doc "Reads one request from a position of the input, of which held bytes are filled: a RESP array of bulk strings, or an inline command split as Redis splits one, quotes and escapes included. A command's arguments replace what args held, one span each; an inline command's decoded arguments are written back into the input over its line. locked is true for a client that must authenticate first, whose arrays Redis limits.";
+public fn parse_request(input: &[u8], start: u64, held_bytes: u64, args: &Box<Slots<Span>>, locked: Bool) -> parsed: Parsed writes(input), writes(args) doc "Reads one request from a position of the input, of which held_bytes bytes are filled: a RESP array of bulk strings, or an inline command split as Redis splits one, quotes and escapes included. A command's arguments replace what args held, one span each; an inline command's decoded arguments are written back into the input over its line. locked is true for a client that must authenticate first, whose arrays Redis limits.";
 
 public fn request_stream_new() -> made: RequestStream pure doc "An empty syntax-only request stream, ready at a command boundary.";
 
-public fn parse_request_stream(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, stream: &RequestStream) -> parsed: Parsed writes(input), writes(args), writes(stream) doc "Traverses RESP payloads without storing them, sharing the ordinary header and inline parser rules. State 0 returns the consumed prefix in next and retains partial RESP state; state 1 identifies a complete request, state 6 a skipped empty request. Completed inline requests use args; completed RESP requests use stream's count, first-argument length and five-byte prefix.";
+public fn parse_request_stream(input: &[u8], start: u64, held_bytes: u64, args: &Box<Slots<Span>>, stream: &RequestStream) -> parsed: Parsed writes(input), writes(args), writes(stream) doc "Traverses RESP payloads without storing them, sharing the ordinary header and inline parser rules. State 0 returns the consumed prefix in next and retains partial RESP state; state 1 identifies a complete request, state 6 a skipped empty request. Completed inline requests use args; completed RESP requests use stream's count, first-argument length and five-byte prefix.";
 
 public fn settings_copy(settings: &Settings) -> made: Settings reads(settings) doc "A copy of the settings, for another connection.";
 
@@ -98,7 +98,7 @@ public fn input_new(capacity: u64) -> made: Box<Slots<u8>> pure contract {
 
 public fn input_grow(input: &Box<Slots<u8>>) -> result: unit writes(input) doc "Doubles a full input window, filling its new bytes; one of 2^31 bytes or more stays as it is.";
 
-public fn keep_rest(input: &Box<Slots<u8>>, from: u64, held: u64) -> kept: u64 writes(input) doc "Moves the bytes from a position up to held, an incomplete request, to the front of the input and returns how many it moved.";
+public fn keep_rest(input: &Box<Slots<u8>>, from: u64, held_bytes: u64) -> kept: u64 writes(input) doc "Moves the bytes from a position up to held_bytes, an incomplete request, to the front of the input and returns how many it moved.";
 
 public fn clear_args(args: &Box<Slots<Span>>) -> result: unit writes(args) doc "Empties the argument spans, keeping their capacity.";
 

@@ -186,9 +186,9 @@ fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result:
   if undo^.entries.inner.len < undo^.entries.inner.cap {
     let original = None<Entry>();
     match slot^ {
-      Some(value: held) => {
-        let payload = copy_value(value: &held^.value);
-        let saved = Entry(value: move payload, expires: held^.expires, access: held^.access, last_write: held^.last_write);
+      Some(value: held_value) => {
+        let payload = copy_value(value: &held_value^.value);
+        let saved = Entry(value: move payload, expires: held_value^.expires, access: held_value^.access, last_write: held_value^.last_write);
         set original = Some<Entry>(value: move saved);
       }
       None() => {

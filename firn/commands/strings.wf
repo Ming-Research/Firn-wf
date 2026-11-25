@@ -238,8 +238,8 @@ fn get_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot
   doc "GET's work on its key's entry, held by the caller, against the client's now: a live string is written as a bulk string reply, recording done; another kind records wrong and an expired entry expired, writing nothing; an absent entry leaves the state as the caller set it.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let kind = text_value(env: client, value: held);
+    Some(value: held_value) => {
+      let kind = text_value(env: client, value: held_value);
     }
     None() => {
     }
@@ -375,8 +375,8 @@ fn string_deadline(input: &[u8], span: Span, flags: u64, unix_ms: u64) -> deadli
 fn held_expiry(slot: &Option<Entry>) -> expires: u64 reads(slot) {
   doc "The expiry an entry's value holds, zero for none and for an absent entry.";
   match slot^ {
-    Some(value: held) => {
-      return held^.expires;
+    Some(value: held_value) => {
+      return held_value^.expires;
     }
     None() => {
       return 0_u64;
@@ -387,8 +387,8 @@ fn held_expiry(slot: &Option<Entry>) -> expires: u64 reads(slot) {
 fn hold_expiry(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Option<Entry>, expires: u64) -> result: unit reads(capture_key), writes(sequence), writes(slot) {
   doc "Gives an entry's value the expiry, zero for none; an absent entry stays absent.";
   match slot^ {
-    Some(value: held) => {
-      set held^.expires = expires;
+    Some(value: held_value) => {
+      set held_value^.expires = expires;
     }
     None() => {
     }
@@ -400,8 +400,8 @@ fn hold_expiry(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &
 fn reply_held_text(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
   doc "Writes the string a live entry holds as a bulk string reply, as text_value writes it; another kind and an absent entry write nothing.";
   match slot^ {
-    Some(value: held) => {
-      let kind = text_value(env: client, value: held);
+    Some(value: held_value) => {
+      let kind = text_value(env: client, value: held_value);
     }
     None() => {
     }
@@ -493,9 +493,9 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let plan = SetPlan(flags: flags, at: at, mode: mode, key_index: key_index, value_index: value_index);
   let none = False();
   let work = SetWork(outcome: state_absent, answered: none, removed: none);
-  let held = bor(logged, timed);
+  let held_value = bor(logged, timed);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = if held {
+    let sequence = if held_value {
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
@@ -506,7 +506,7 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       give move inert;
     }
     set work = set_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, value: move value, flags: flags, at: at);
-    if held {
+    if held_value {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let stored = work.outcome == state_done;
       let queued = band(stored, timed);
@@ -786,9 +786,9 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   set client^.now = time^.check;
   let none = False();
   let work = GetexWork(kind: 0_u64, removed: none, change: 0_u64);
-  let held = bor(logged, plan.timed);
+  let held_value = bor(logged, plan.timed);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = if held {
+    let sequence = if held_value {
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
@@ -799,7 +799,7 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       give move inert;
     }
     set work = getex_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
-    if held {
+    if held_value {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = getex_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
@@ -812,8 +812,8 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
 fn held_lapsed(slot: &Option<Entry>, now: u64) -> lapsed: Bool reads(slot) {
   doc "Whether an entry holds a value whose expiry has passed at now.";
   match slot^ {
-    Some(value: held) => {
-      let reached = expired(expires: held^.expires, now: now);
+    Some(value: held_value) => {
+      let reached = expired(expires: held_value^.expires, now: now);
       return reached;
     }
     None() => {
@@ -1029,9 +1029,7 @@ fn run_incr(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let removed = incr_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, counted: &counted);
     if store^.logging {
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
-      if store^.logging {
-        let appended = incr_log(log: &m^.log, removed: removed, counted: &counted, input: input, args: args, key: key, budget: &log_budget);
-      }
+      let appended = incr_log(log: &m^.log, removed: removed, counted: &counted, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -1045,8 +1043,8 @@ fn incr_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let fresh_needed = True();
   match slot^ {
-    Some(value: held) => {
-      let outcome = bump_value(env: counted, value: held);
+    Some(value: held_value) => {
+      let outcome = bump_value(env: counted, value: held_value);
       set fresh_needed = False();
     }
     None() => {
@@ -1201,9 +1199,7 @@ fn long_write(long: &Box<Slots<u8>>, input: &[u8], span: Span, offset: u64) -> r
     let target = imax(doubled, end);
     let fits = target <= 4611686018427387904_u64;
     if fits {
-      if target >= long^.inner.cap {
-        grow(cell: long, capacity: target);
-      }
+      grow(cell: long, capacity: target);
     }
   }
   loop @zeros {
@@ -1257,8 +1253,8 @@ fn text_write(text: &Bytes, input: &[u8], span: Span, offset: u64) -> length: u6
 fn held_text_length(slot: &Option<Entry>) -> length: u64 reads(slot) {
   doc "The length of the string a live entry holds, zero for another kind and for an absent entry.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Text(bytes: stored) => {
           let length = bytes_length(bytes: stored);
           return length;
@@ -1289,8 +1285,8 @@ fn held_text_length(slot: &Option<Entry>) -> length: u64 reads(slot) {
 fn held_text_write(slot: &Option<Entry>, input: &[u8], span: Span, offset: u64) -> length: u64 reads(input), writes(slot) {
   doc "Writes into the string a live entry holds as text_write does, keeping its expiry, and returns the new length; another kind and an absent entry are left as they are, answering zero.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Text(bytes: stored) => {
           let length = text_write(text: stored, input: input, span: span, offset: offset);
           return length;
@@ -1377,8 +1373,8 @@ fn reply_text_range(client: &Client, text: &Bytes, start: i64, end: i64) -> resu
 fn reply_held_range(slot: &Option<Entry>, client: &Client, start: i64, end: i64) -> result: unit reads(slot), writes(client) {
   doc "Writes a range of the string a live entry holds as reply_text_range writes it; another kind and an absent entry write nothing.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Text(bytes: stored) => {
           reply_text_range(client: client, text: stored, start: start, end: end);
         }
@@ -1646,23 +1642,21 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       invariant aligned: slots^.len == keys.len,
       invariant group_offset: log_budget.group_start <= m^.log.inner.len
     ) {
-      if rank < slots^.len {
-        refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
-        let kind = entry_kind_at(sequence: &sequence, capture_keys: &keys, capture_index: rank, slot: &slots^[rank], client: client);
-        if client^.state == state_expired {
-          if logged {
-            let position = key_position(positions: &client^.key_metadata, index: rank);
-            let index = position -wrap 1_u64;
-            let place = key_bounds(input: input, args: args, index: index);
-            let key = &input^[place.start..place.end];
-            let lapsed = True();
-            let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
-          }
+      refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
+      let kind = entry_kind_at(sequence: &sequence, capture_keys: &keys, capture_index: rank, slot: &slots^[rank], client: client);
+      if client^.state == state_expired {
+        if logged {
+          let position = key_position(positions: &client^.key_metadata, index: rank);
+          let index = position -wrap 1_u64;
+          let place = key_bounds(input: input, args: args, index: index);
+          let key = &input^[place.start..place.end];
+          let lapsed = True();
+          let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
         }
-        if kind != 0_u64 {
-          set blocked = True();
-          break @checked;
-        }
+      }
+      if kind != 0_u64 {
+        set blocked = True();
+        break @checked;
       }
     }
     if blocked {
@@ -1835,12 +1829,12 @@ fn append_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
     set length = value_span.length;
     set outcome = state_done;
   } else if kind == 1_u64 {
-    let held = held_text_length(slot: slot);
-    let total = held +wrap value_span.length;
+    let held_value = held_text_length(slot: slot);
+    let total = held_value +wrap value_span.length;
     if total > string_limit {
       set outcome = state_long;
     } else {
-      set length = held_text_write(slot: slot, input: input, span: value_span, offset: held);
+      set length = held_text_write(slot: slot, input: input, span: value_span, offset: held_value);
       set outcome = state_done;
     }
   } else {
@@ -1984,8 +1978,8 @@ fn incrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let fresh_needed = True();
   match slot^ {
-    Some(value: held) => {
-      let outcome = float_value(env: summed, value: held);
+    Some(value: held_value) => {
+      let outcome = float_value(env: summed, value: held_value);
       set fresh_needed = False();
     }
     None() => {

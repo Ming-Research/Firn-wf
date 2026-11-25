@@ -537,20 +537,20 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let started = std::time::now(clock: &clock);
   let last = nanoseconds_from(earlier: origin, later: started);
   let polled = last;
-  let held = 0_u64;
+  let held_bytes = 0_u64;
   let promoted = False();
   loop @requests {
     if client.closing {
       break @requests;
     }
-    if held >= input.inner.len {
+    if held_bytes >= input.inner.len {
       input_grow(input: &input);
-      if held >= input.inner.len {
+      if held_bytes >= input.inner.len {
         break @requests;
       }
     }
     let ended = False();
-    let received = held;
+    let received = held_bytes;
     let fresh = True();
     loop @receiving {
       let before = std::time::now(clock: &clock);
@@ -570,7 +570,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       let length = input.inner.len;
       let window = &input.inner[0_u64..length];
       let waited = False();
-      match receive_next(receive: &connection.receive, destination: window, start: held, end: length, deadline: limit, cancel: &limits.cancel) {
+      match receive_next(receive: &connection.receive, destination: window, start: held_bytes, end: length, deadline: limit, cancel: &limits.cancel) {
         Ok(value: next) => {
           set received = next;
         }
@@ -605,7 +605,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     if ended {
       break @requests;
     }
-    set held = received;
+    set held_bytes = received;
     let reading = read_time(wall: &wall);
     let time = reading.time;
     set client.unix_us = reading.unix_us;
@@ -637,7 +637,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         set client.locked = demanded;
       }
       let locked = client.locked;
-      let parsed = parse_request(input: bytes, start: consumed, held: held, args: &args, locked: locked);
+      let parsed = parse_request(input: bytes, start: consumed, held_bytes: held_bytes, args: &args, locked: locked);
       if parsed.state == 0_u64 {
         break @commands;
       }
@@ -672,7 +672,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       }
     }
     if promoted {
-      set held = keep_rest(input: &input, from: consumed, held: held);
+      set held_bytes = keep_rest(input: &input, from: consumed, held_bytes: held_bytes);
       break @requests;
     }
     if client.at > 0_u64 {
@@ -686,7 +686,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     if stopping {
       break @requests;
     }
-    set held = keep_rest(input: &input, from: consumed, held: held);
+    set held_bytes = keep_rest(input: &input, from: consumed, held_bytes: held_bytes);
   }
   if promoted {
     std::time::close_cancel_watch(watch: move limits.cancel);
@@ -694,7 +694,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     let promoted_clock = clock_share(clock: &clock);
     let promoted_wall = wall_clock_share(clock: &wall);
     let promoted_shutdown = std::time::cancel_share(source: &shutdown);
-    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held: held, transaction: move transaction);
+    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held_bytes: held_bytes, transaction: move transaction);
     std::time::close_cancel_source(source: move shutdown);
     atomic m = &store.meta {
       set m^.clients = m^.clients -wrap 1_u64;
@@ -1011,7 +1011,7 @@ const option_rewrite_min_size: Array<u8, 25> = "AUTO-AOF-REWRITE-MIN-SIZE";
 
 fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation reads an optional Redis configuration file or stdin -, followed by --directive values, with the later directives overriding the file. Maxclients defaults to 10000 and refuses excess connected clients with Redis's error; --firn-clients limits served clients for tests. Invalid invocation or configuration prints its reason and exits 1; include and directory changes beyond dir . or ./ are refused explicitly pending firn-req-host-paths. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from before the append-only file's replay, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; a request the replay sees, at most 1024 commands after it is made, ends firn with status 0, leaving appendonlydir as the replay found it, as Redis 7.2.16 exits while it loads. firn stops with status 3 when the host refuses it those signals, before it replays anything, or when it cannot listen on its address.";
-  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: stderr, handles: handles, stdin: stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
+  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: stderr, handles: handles, stdin: stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter, host_paths: unused_host_paths, process_id: unused_process_id) = move inputs;
   let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
   let options = read_options(args: &args, factory: &handles, root: &cwd, input: &stdin, output: &stderr);
   if options.valid {
