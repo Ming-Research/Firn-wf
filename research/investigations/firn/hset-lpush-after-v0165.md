@@ -289,9 +289,12 @@ each image, recording cycles and retired instructions. How passes run beside
 other jobs on the machine is settled before dispatch and added here.
 
 **Split rule, for each of `hset`, `lpush` and `hget`.** The intervals are
-those of the pin comparison (median of the per-pass ratios, distribution-free
-95% interval), and a cell counts only if its `base-twin`/`base` interval holds
-1. With `head`/`base` wholly below 1, the compiler's share is `head`/`cross`
+those of the pin comparison: the 95% interval of the mean log ratio of the
+per-pass rates (Student's t), as `summary.py ratios` prints it, run once for
+each pair without `--twin` (`--base base --head head`, `--base base --head
+cross`, `--base cross --head head` and `--base base --head base-twin`), since
+that option divides the twin by the head. A cell counts only if its
+`base-twin`/`base` interval holds 1. With `head`/`base` wholly below 1, the compiler's share is `head`/`cross`
 and the source edits' share is `cross`/`base`:
 
 - **the compiler** if `head`/`cross` is wholly below 1 and `cross`/`base` is
