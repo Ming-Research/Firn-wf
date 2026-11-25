@@ -259,7 +259,7 @@ fn run_collection_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, 
       let budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = ttl_meta(log: &m^.log, logged: store^.logging, removed: lapsed, key: key, budget: &budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
-      pkg::store::aof_note(meta: m, client: client);
+      pkg::store::aof_note(meta: m, client: client, taken: sequence.taken);
     }
   }
   return unit;

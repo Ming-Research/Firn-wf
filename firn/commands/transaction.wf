@@ -328,7 +328,7 @@ fn run_exec_events(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time,
       log_word(log: &m^.log, word: &word_exec_log[0_u64..4_u64], budget: &log_budget);
     }
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-    pkg::store::aof_note(meta: m, client: client);
+    pkg::store::aof_note(meta: m, client: client, taken: sequence.taken);
     pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: unix_seconds);
   }
   transaction_reset(transaction: transaction);
@@ -406,7 +406,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       log_word(log: &m^.log, word: &word_exec_log[0_u64..4_u64], budget: &log_budget);
     }
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-    pkg::store::aof_note(meta: m, client: client);
+    pkg::store::aof_note(meta: m, client: client, taken: sequence.taken);
   }
   transaction_reset(transaction: transaction);
   return unit;
