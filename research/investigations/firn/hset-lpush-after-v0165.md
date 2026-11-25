@@ -643,6 +643,22 @@ profiled runs (highest 0.0008) stay clean, so the 16 passes and every interval
 above are unchanged. Every run that overlaps a heavy step and reads above T′ is
 in a void attempt. The script's default T stays 0.05.
 
+### Scratch run: the control fails when its loops are not seen
+
+Run [45641919866](https://github.com/Ming-Research/Firn-wf/actions/runs/45641919866),
+dispatched on 2026-11-25 at 15:09 UTC from the branch ref at `f446580`, the
+scratch commit that pins the control's two busy loops to the server CPUs (2
+and 4), which lie outside the other set; images `base` and `base-twin`, one
+test, no profile. It failed in the Measure step: the control waited 604 s for
+quiet (the other CPUs read 0.57 at the end), the log shows the loops' affinity
+lists as `2` and `4`, and `compare-control.csv` has `2,0.9981,0.9985,0.05,2,13,failed`
+with the message `the control failed: 2 busy loops on 2 4 of 13 other CPUs read
+0.9985 against 0.9981 idle`. Both readings were above T, because another job had
+the other CPUs busy; a control that asked only for a loaded reading above T would
+have held here, and the rise the loops make (0.0004 against at least 0.077)
+is what failed it. `compare-runs.csv` is empty: no image ran. The commit is
+reverted by `a443e2a`, which leaves `redis-bench.sh` as it was in `bc0c257`.
+
 ## Second profile run, stated before measuring
 
 **Question.** (a) In `hash_map_lookup` and `hash_map_try_put`, which
@@ -654,7 +670,9 @@ are the hot functions of their path the same instructions in `base` and in
 **Run.** `redis-bench.yml`, mode `compare`, the placement and void rules above,
 from the engine's ref `wf-try/work-145-26e0fade/call/37` (`51c7be4`, whose
 script differs from the four-image run's `bc0c257` only by log lines and a
-header comment); the images `base`, `base-twin`, `cross` and `head` as before;
+header comment), dispatched on 2026-11-25 at 15:23 UTC as run
+[45644686875](https://github.com/Ming-Research/Firn-wf/actions/runs/45644686875)
+(`headSha` read from the run) once the scratch run had ended; the images `base`, `base-twin`, `cross` and `head` as before;
 tests `hset lpush hget sismember`, depth 16, 2 passes of 5 seconds (they size
 the profiled runs and decide nothing); `profile_test`
 `hset 16;lpush 16;hget 16;sismember 16`; `annotate`
