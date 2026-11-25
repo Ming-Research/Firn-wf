@@ -3921,11 +3921,14 @@ fn firn_listens_where_its_options_by_name_say() {
         let child = program.spawn_on_route(true, arguments);
         let output = child.wait_with_output().expect("wait for rejected startup");
         assert_eq!(output.status.code(), Some(1), "{arguments:?}: {output:?}");
-        assert!(!output.stderr.is_empty(), "startup error has no diagnostic: {arguments:?}");
         if arguments[0] == text.as_bytes() {
+            // Redis logs a configuration file it cannot open as a warning line, on standard output.
             let expected = format!("Fatal error, can't open config file '{text}': ");
-            assert!(output.stderr.starts_with(expected.as_bytes()),
+            assert!(output.stderr.is_empty()
+                && String::from_utf8_lossy(&output.stdout).contains(&expected),
                 "legacy positional port must be treated as an unopened config file: {output:?}");
+        } else {
+            assert!(!output.stderr.is_empty(), "startup error has no diagnostic: {arguments:?}");
         }
     }
 }
