@@ -225,6 +225,21 @@ traced the signals of the network job, a diagnostic for this cause, are
 removed with it; `run.sh suite` traces SIGCHLD and says which threads dequeued
 one.
 
+Measured on 2026-11-25, with the change (commit d56c7a4) and on commits that
+are on no branch and each lack a part of it:
+
+| Commit | What it lacks | Where | Result |
+| --- | --- | --- | --- |
+| d56c7a4 | nothing | the 14900K, the whole suite (run 45672142230) | the three tests pass |
+| e52e0d8 | the block | GitHub's ubuntu-24.04, kernel 7.0.0-1017-azure, glibc 2.39, the three tests alone 5 times (run 45672141214) | in each of the 5 runs the first test fails with between 1728 of 1729 and 1878 of 1879 timed reads interrupted, and the second at its own thread's mask (`SigBlk 0000000000000000`); the third passes |
+| e52e0d8 | the block | the 14900K, the whole suite (run 45672141214) | the first test fails with 64 of 342 reads interrupted, the second at its own thread's mask, and `firn_closes_a_client_silent_past_its_idle_limit_on_both_routes` fails with `Interrupted` on a read of its own |
+| 655c654 | the mask given back, and `support::command` at one site of `tests/rewrite_scan.rs` | the 14900K, the whole suite (run 45672141629) | the second test fails at the child's mask (`SigBlk 0000000000010000` against a first mask of 0), the third names `tests/rewrite_scan.rs:826` |
+
+On the 14900K all three runs of the whole suite also had more than a hundred
+cases fail at once, each because firn stopped at its start with `whitefoot
+completion: cannot initialize a selected driver ring`, whatever part of the
+change the commit held; this is not one of the read failures here.
+
 ## The 10 s read stall: hypotheses
 
 Both failures stopped receiving the second 14 MiB frame, which firn had held
