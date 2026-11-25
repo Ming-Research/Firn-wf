@@ -98,7 +98,7 @@ fn copy_score(env: &ScoreCopy, key: &Key, value: &f64) -> result: unit reads(key
 }
 
 fn copy_value(value: &Value) -> made: Value reads(value) {
-  doc "A copy of a value, every element, member, field and score copied, as COPY duplicates one; a container is made with room for what the original holds, within the ceiling every container of firn keeps.";
+  doc "A copy of a value, every element, member, field, score and stream entry copied, as COPY duplicates one; a container is made with room for what the original holds, within the ceiling every container of firn keeps.";
   match value^ {
     Text(bytes: stored) => {
       let copied = bytes_copy(bytes: stored);
@@ -157,6 +157,11 @@ fn copy_value(value: &Value) -> made: Value reads(value) {
       let copied = Sorted(order: move copied_order, scores: move copied_scores);
       return Value::Ranked(ranked: move copied);
     }
+    Stream(stream: stream_of) => {
+      let copied = stream_copy(stream: &stream_of^.inner);
+      let boxed = box_new::<StreamLog>(value: move copied);
+      return Value::Stream(stream: move boxed);
+    }
   }
 }
 
@@ -181,9 +186,9 @@ fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result:
   if undo^.entries.inner.len < undo^.entries.inner.cap {
     let original = None<Entry>();
     match slot^ {
-      Some(value: held) => {
-        let payload = copy_value(value: &held^.value);
-        let saved = Entry(value: move payload, expires: held^.expires, access: held^.access, last_write: held^.last_write);
+      Some(value: held_value) => {
+        let payload = copy_value(value: &held_value^.value);
+        let saved = Entry(value: move payload, expires: held_value^.expires, access: held_value^.access, last_write: held_value^.last_write);
         set original = Some<Entry>(value: move saved);
       }
       None() => {

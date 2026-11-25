@@ -246,8 +246,8 @@ fn collection_scan_body(sequence: &pkg::store::WriteSequence, journal: &Option<p
   let visit = CollectionScanVisit(pattern: move pattern, matching: plan.matching, emitting: no, compact: no, count: 0_u64, client: move temporary_client);
   swap(first: client, second: &visit.client);
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Members(members: set_of) => {
           let size = hash_map_len::<Key, unit, ceiling>(map: set_of);
           if size <= collection_scan_set_compact {
@@ -301,6 +301,8 @@ fn collection_scan_body(sequence: &pkg::store::WriteSequence, journal: &Option<p
             set visit.emitting = True();
             let again = hash_map_scan::<KeyHash, f64, CollectionScanVisit, fn collection_scan_score, ceiling>(map: &sorted^.scores, cursor: plan.cursor, limit: limit, key_env: &keys, visit_env: &visit);
           }
+        }
+        Stream(..) => {
         }
         Text(..) => {
         }

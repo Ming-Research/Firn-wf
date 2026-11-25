@@ -89,7 +89,7 @@ fn scan_cursor(input: &[u8], span: Span) -> parsed: ScanCursor reads(input) {
 }
 
 fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
-  doc "TYPE names are compared in either case up to NUL, as Redis 7.2.16's strcasecmp. none and other unknown types match nothing: 6; Redis's scanGenericCommand excludes an absent lookup result before comparing types, even for none, so an expired key the lookup removes is never returned. 0 means no TYPE filter in ScanPlan.";
+  doc "TYPE names are compared in either case up to NUL, as Redis 7.2.16's strcasecmp. none and other unknown types match nothing: 7; Redis's scanGenericCommand excludes an absent lookup result before comparing types, even for none, so an expired key the lookup removes is never returned. 0 means no TYPE filter in ScanPlan.";
   let length = before_zero(input: input, span: span);
   let code = name_code(input: input, start: span.start, length: length);
   if code == 78401563153491_u64 {
@@ -107,7 +107,10 @@ fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
   if code == 1413829466_u64 {
     return 5_u64;
   }
-  return 6_u64;
+  if code == 84942731236435_u64 {
+    return 6_u64;
+  }
+  return 7_u64;
 }
 
 fn scan_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: ScanPlan reads(input), reads(args) {
@@ -223,18 +226,16 @@ fn scan_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entr
       set wanted = scan_matches(input: input, pattern: plan^.pattern, key: key);
     }
     if wanted {
-      if index < entries^.len {
-        let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[index], client: client);
-        let removed = client^.state == state_expired;
-        let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
-        set appended = appended +wrap recorded;
-        if kind != 0_u64 {
-          let any = plan^.kind == 0_u64;
-          let typed = plan^.kind == kind;
-          let included = bor(any, typed);
-          if included {
-            key_set_insert(keys: found, key: key);
-          }
+      let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[index], client: client);
+      let removed = client^.state == state_expired;
+      let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
+      set appended = appended +wrap recorded;
+      if kind != 0_u64 {
+        let any = plan^.kind == 0_u64;
+        let typed = plan^.kind == kind;
+        let included = bor(any, typed);
+        if included {
+          key_set_insert(keys: found, key: key);
         }
       }
     }
@@ -320,13 +321,11 @@ fn keys_body(keys: &ConcurrentHashMap<Entry>, input: &[u8], pattern: Span, now: 
     let key = &bytes.inner[0_u64..size];
     let matched = scan_matches(input: input, pattern: pattern, key: key);
     if matched {
-      if index < entries^.len {
-        let present = entry_present(slot: &entries^[index]);
-        let lapsed = held_lapsed(slot: &entries^[index], now: now);
-        if present {
-          if bnot(lapsed) {
-            key_set_insert(keys: found, key: key);
-          }
+      let present = entry_present(slot: &entries^[index]);
+      let lapsed = held_lapsed(slot: &entries^[index], now: now);
+      if present {
+        if bnot(lapsed) {
+          key_set_insert(keys: found, key: key);
         }
       }
     }
@@ -371,20 +370,16 @@ fn held_randomkey(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap
       set random^ = next_random(state: random^);
       let pick = random^ % gathered;
       let entries = &keys^[sample];
-      if pick < sample.len {
-        let bytes = scanned_key(keys: &sample, index: pick);
-        let size = bytes.inner.len;
-        let key = &bytes.inner[0_u64..size];
-        if pick < entries^.len {
-          let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[pick], client: client);
-          let removed = client^.state == state_expired;
-          let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
-          set appended = appended +wrap recorded;
-          if kind != 0_u64 {
-            reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
-            return appended;
-          }
-        }
+      let bytes = scanned_key(keys: &sample, index: pick);
+      let size = bytes.inner.len;
+      let key = &bytes.inner[0_u64..size];
+      let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[pick], client: client);
+      let removed = client^.state == state_expired;
+      let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
+      set appended = appended +wrap recorded;
+      if kind != 0_u64 {
+        reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
+        return appended;
       }
     }
   }
