@@ -1,6 +1,5 @@
 //! Concurrent histories checked against a serial order (board item
-//! firn-concurrent-check-gate) and process-crash recovery (board item
-//! firn-group-commit).
+//! firn-concurrent-check-gate) and process-crash recovery.
 //!
 //! Redis 7.2.16 src/t_string.c:697-727 defines APPEND's byte-length reply.
 //! Eight clients interleave APPENDs on shared keys, and the checker below
