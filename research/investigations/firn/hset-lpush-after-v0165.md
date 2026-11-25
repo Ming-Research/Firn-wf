@@ -851,8 +851,8 @@ stands in this record for the run's result.
 The sample ([run 45654914775](https://github.com/Ming-Research/Firn-wf/actions/runs/45654914775),
 job 30 s) did what it was for. After two source changes the program builds with
 both releases, 2 to 3 s for each of the six builds, and exits 0 from all of them:
-the pinned release rejects the binder `held` (a reserved word since the old
-release; the old one accepted it) and the guard `if place < 12_u64` that the loop
+the pinned release rejects the binder `held`, a reserved word there that the old
+release accepted, and the guard `if place < 12_u64` that the loop
 bound decides (OP-5), and the program has neither now. `perf stat` counts user
 cycles and retired instructions on the runner without root (a probe of `true`
 counted 456,620 and 149,037). The sample took 2,000,000 operations and 3
@@ -872,8 +872,8 @@ profiles also found, and its cycles are not read yet.
 
 Two changes before the counting run, both about resolution and neither about the
 result. The cost of `fill` is taken as its median over the repetitions of the same
-executable, not that of the same repetition, because a run of `fill` is a tenth of
-a short run and its own noise would enter every ratio. And a run is read for an
+executable, not that of the same repetition, because a run of `fill` (43 ms) is a seventh
+of a short run and its own noise would enter every ratio. And a run is read for an
 operation only if its twin's cycle interval lies within [0.985, 1.015] and holds
 1.000, a width at which an effect of 2.5% (the smallest throughput difference of
 the slow tests) can be seen; otherwise the operation is *unresolved* in that run,
