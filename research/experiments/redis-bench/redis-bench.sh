@@ -1753,7 +1753,8 @@ other_control() {
     control_idle=$(other_read 2) || exit 1
     set -- $(echo "$OTHER_CPUS" | tr ',' ' ')
     control_others=$#
-    control_loop_cpus=$(echo "$OTHER_CPUS" | tr ',' ' ' | awk '{ print $1 (NF > 1 ? " " $2 : "") }')
+    # Scratch: the loops run on the server CPUs, outside the other set, so the control must fail.
+    control_loop_cpus=$(echo "$SERVER_CPUS" | tr ',' ' ')
     control_loops=0
     control_pids=
     for control_cpu in $control_loop_cpus; do
