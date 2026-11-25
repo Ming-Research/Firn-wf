@@ -894,7 +894,11 @@ cell of the 19 default tests at depths 16 and 1 wholly on the slower side of
   two that are slower.
 - **Settings.** As G: the 14900K, servers on CPUs 2 and 4, clients on CPUs
   16-31, 2 server CPUs, the 19 tests at depths 16 and 1, 8 interleaved passes
-  of 5 s, no profile, no `reference` line. G's measuring step took 106 minutes.
+  of 5 s, no `reference` line, and no profile: the workflow's `profile` input
+  is on unless the dispatch sets it off. G's measuring step took 106 minutes.
+  The images are built first by a run of the workflow's `build` mode, and H
+  names that run as `images_run`, so that no build runs in the window that
+  must be quiet.
 - **The host.** The 14900K carries several runner instances of this
   repository (`14900k-4`, `14900k-6` and `14900k-8` ran jobs on 2026-11-25),
   and the `fast.yml` jobs of other works run on them beside a measurement. In
@@ -931,7 +935,16 @@ Written before H runs, so that its reading does not follow H's numbers.
 - **Settings.** The tests of the cells H flagged, at both depths (the depth is
   a setting of the whole run), 16 interleaved passes of 5 s, the placement of
   H. With k tests the measuring step is about k x 2 x 5 x 16 x 5 s, and G2 took
-  75 minutes for 7 tests and 4 images.
+  75 minutes for 7 tests and 4 images. A second `build` run, naming H's build
+  run as `images_run`, keeps H's four images and adds `head-nops`; H2 names it
+  as `images_run`.
+- **Profile.** After the passes, each image is profiled under each flagged
+  test at depth 16 (`profile_test`, 4999 Hz, flat), with the instructions of
+  `serve`'s and of the ordinary instance of `execute_client`'s resume symbols
+  annotated. The workflow annotates a symbol by its exact name, and P5's
+  annotation matched nothing because it gave the source names; the names are
+  read from the head image of the build run (`nm`) before H2 is dispatched.
+  This part is exploratory: it attributes, and decides nothing about the item.
 - **Reading.** The same rule applies to every cell of the run: a cell stands
   if `head`/`before` is wholly on the slower side and `head-twin`/`head` holds
   1; a cell whose twin does not hold 1 is unresolved. For a cell that stands,
@@ -940,6 +953,19 @@ Written before H runs, so that its reading does not follow H's numbers.
   `head-nops`/`before` wholly on the slower side puts the loss in the main
   line's other changes since `before`, of which the compiler move is the one
   measured. The two together are reported as they come.
+- **Where a cost of publish/subscribe lies.** For a cell that stands with
+  `head`/`head-nops` wholly on the slower side, the profile is read per symbol
+  in cycles per request (share of samples times the server CPU time per
+  request). A symbol accounts for the cost if its `head` minus `head-nops` is
+  more than twice its `head-twin` minus `head`, in absolute value, and at least
+  half of the whole profile's `head` minus `head-nops`. If `serve` accounts for
+  it and its annotation puts the extra cycles on instructions the compiler made
+  for the unchanged check after every command, or for `serve`'s coroutine frame
+  (spills and reloads of frame slots in the loop), then firn cannot remove the
+  cost in its own source. That is a gap of Whitefoot, recorded as
+  `whitefoot-kit/downstream.md` says. If no symbol accounts for the cost, it
+  is reported as not located.
 - **What decides.** The criterion of the item is met if no judged cell stands.
-  A cell that stands goes to the owner with its size and the reading of
-  `head-nops`, for the owner to accept or to ask for more work.
+  A cell that stands goes to the owner with its size, the reading of
+  `head-nops` and, for a cost of publish/subscribe, where the profile puts it,
+  for the owner to accept or to ask for more work.
