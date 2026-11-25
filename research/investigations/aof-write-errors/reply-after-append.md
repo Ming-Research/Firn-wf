@@ -1107,6 +1107,18 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   a connection that subscribed before the cut, and requires both the PUBLISH
   reply and the message to find A's record in the file.
 
+### Void runs
+
+Two runs of `test` on the witness commit 82de0eb (main's server with the new
+durability cases) on 2026-11-25 are void, not red: fast.yml runs 45651408646
+and 45661533220 on the 14900K failed 140 and 141 of 311 cases, nearly all
+with firn aborting before it listened, `whitefoot completion: cannot
+initialize a selected driver ring`. Another work's run of the same day,
+45656378791, failed the same way 223 times, so the cause is the host, which
+could not set up an I/O ring while several runners tested at once, not the
+code under test. The witness's verdict on the kill and visibility cases
+comes from a run without that error.
+
 ### Whitefoot gap: a sync apart from the append handle
 
 Minimal example, independent of firn. Context A appends to a file through a
