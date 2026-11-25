@@ -202,7 +202,7 @@ done
 Stop firn before copying persistence state and wait for the process to
 exit. This avoids both writes to the active increment and rewrite changes
 to the manifest or its selected files. The
-[AOF publication design](../design/firn/aof-rewrite.md) replaces the manifest
+[AOF publication design](../design/decisions/persistence/rewrite/installation.md#decision-aof-rewrite-install-keeps-the-renamed-manifest) replaces the manifest
 before deleting old files; copying an active directory can race those
 changes. This guide provides no tested online-backup procedure.
 
