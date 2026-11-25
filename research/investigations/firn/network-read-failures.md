@@ -258,11 +258,22 @@ The stall is in TCP between the two sockets on kernel 6.17: after the
 receiver dropped packets for lack of buffer and closed its window, reading
 the buffer empty did not make it announce the open window, and the sender
 waited for its next probe. firn and Whitefoot's runtime have no part in it.
-Linux has had this fault before: commit 8c670bdfa58e, "tcp: correct handling
-of extreme memory squeeze" (January 2025), repaired a receiver that
-advertised a closed window under memory squeeze without recording it, so that
-reading its buffer empty sent no update and the connection waited for the
-sender's probe.
+Linux's developers have a report of it. On 2026-01-25 Simon Baatz wrote to
+netdev, under "[regression] tcp: stronger sk_rcvbuf checks"
+(<https://lists.openwall.net/netdev/2026/01/25/92>), that Valkey's test suite
+fails on kernels 6.17 and later: over loopback, with one side not reading, the
+receiver runs out of buffer and drops a packet, answers with a closed window
+and moves its window's right edge back (commit 8c670bdfa58e, "tcp: correct
+handling of extreme memory squeeze"), and then refuses what the sender had
+already sent as lying beyond the window (commit 9ca48d616e, "tcp: do not
+accept packets beyond window", new in 6.17), so the connection stalls; the
+bisection named 1d2fbaad7cd8, "tcp: stronger sk_rcvbuf checks". The series
+"tcp: implement RFC 7323 window retraction receiver requirements" followed
+from the same author in February and March 2026. The dropped packets and the
+closed window of that report are what the sample above shows of every run of
+the case. Whether kernel 6.17.0-1022-azure has the fault and Ubuntu's 7.0 the
+repair is what the comparison below measures; the report itself was read
+through a summary and is a lead, not a measurement.
 
 `tcp_window_reopen.rs` repeats the case's two frames on pairs of loopback
 sockets with no server of ours: a thread writes 14 MiB with a blocking write,
