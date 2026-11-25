@@ -374,6 +374,59 @@ them), `revisions.csv` (the `cross` row names `1dddd17` and pin
 and one of instructions. The run decides no comparison, and its rates are not
 read.
 
+### Sample run, results
+
+The run succeeded: queued at 13:11:06, started 13:13:46 and ended 13:26:08 UTC
+on 2026-11-25 (job steps read with `gh run view`). The four images were built
+and `revisions.csv` has `cross` as `1dddd17` with `release = wf-af7665be672d`.
+Its rates were not used; the log prints the profiled runs' rates, which were
+seen while checking the profile files and are not used here either.
+
+- **The control held.** After waiting 331 s from the session's start for the
+  other CPUs to fall to T (another project's job; the 2 s readings fell from
+  0.98 to 0.09, 28 of them), the idle reading was 0.0069 and the loaded 0.1585
+  against the 2/13 = 0.154 the loops should make. The idle reading is at most
+  0.02, so **T stays 0.05**.
+- **The void path ran.** Three attempts, two clean passes: attempt 1 read 0.0144,
+  0.2511, 0.2550 and 0.2989 in its four runs and is void (`compare-void.csv`),
+  its replacement attempts 2 and 3 are clean passes 1 and 2 (their runs read
+  0.0016 to 0.0096) in the specified order (attempts 1 and 2 forward, 3
+  reversed). The four profiled runs read 0.0007 to 0.0026 and none is in
+  `profile-void.csv`. No run read between 0.0144 and 0.2511, so T lies in an
+  empty gap of this run. The attempt-1 load was spread over the 13 other
+  CPUs (0.05 to 0.56 each in the three runs it voided; at most 0.04 on any CPU
+  in the clean attempts).
+- **The profile files hold both tables.** Each `profile-*-2-hset.txt` has a
+  table of `cpu_core/cycles/` and one of `cpu_core/instructions/`, each with
+  its event count and an IPC column. perf names the events `cpu_core/...`.
+  Symbol names carry an instance hash (`hash_map_try_put$instance$<hex>`), so
+  the symbols of two images are matched with that suffix removed. This commit
+  predates the log lines that print the CPUs perf and the control's loops are
+  pinned to; the four-image run carries them.
+- **Times.** The steps before the build took 44 s, the three builds 241 s, and
+  the Measure step 452 s, of which 331 s waiting for the control. A pass of
+  four images at one test took 19 to 25 s (about 4.7 s a run), a profiled run
+  about 9 s (35 s for the four), the size pilot and the four correctness
+  checks 5 s. For the four-image run (five tests, sixteen passes, three
+  profiled tests) a pass is about 100 s and the profiles about 2 minutes, so
+  the Measure step is about 35 minutes without waits; 44 s + 241 s + 150 minutes
+  is 155 minutes, below the 175 of the rule, so no `images_run` is needed.
+- **The oracle on this run** (a scratch script reading `gh api`: the workflow
+  runs of each of the five repositories created in the 3 hours before the
+  window, then the jobs of those that overlap it, keeping the jobs labelled
+  `14900k`; a step is light when its name starts with `Set up job`, `Run
+  actions/`, `Post Run`, `Complete job`, `Check out` or `Download`; 17 calls).
+  One heavy step overlaps all 16 client runs: the `Test` step of a Firn-wf fast
+  job, 13:16:07 to 13:32:06, 16 minutes. It does not separate the void runs from
+  the clean ones, since the whole of the session lies inside it; the void
+  attempt overlaps a job, so its load is not from outside GitHub.
+
+**A case the oracle rules did not cover, decided before the four-image run.**
+When every client run overlaps a heavy step, no run gives T', which is then not
+defined and min(T, T') is T: T stays, a run above T is void, and the record says
+that the check could not tighten T. T' is computed only when at least one
+non-void run overlaps no heavy step.
+
 ## Four-image run, stated before measuring
 
 **Question.** Is each of `hset`, `lpush` and `hget` at depth 16 slower
