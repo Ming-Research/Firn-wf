@@ -65,8 +65,14 @@ fn minute() -> String {
 fn run_and_stop(binary: &Path, directory: &Path, extra: &[&str]) -> (String, String) {
     let lease = support::lease_port();
     let port = lease.port().to_string();
-    let mut arguments = vec!["--bind", "127.0.0.1", "--port", port.as_str()];
-    arguments.extend_from_slice(extra);
+    // A configuration file, when there is one, is the first argument.
+    let (config, rest) = match extra.split_first() {
+        Some((first, rest)) if !first.starts_with("--") => (Some(*first), rest),
+        _ => (None, extra),
+    };
+    let mut arguments: Vec<&str> = config.into_iter().collect();
+    arguments.extend(["--bind", "127.0.0.1", "--port", port.as_str()]);
+    arguments.extend_from_slice(rest);
     let child = start(binary, directory, &arguments).with_port(&lease);
     let _ready = connect_when_ready(lease.port(), &child);
     drop(_ready);
@@ -143,6 +149,12 @@ fn logfile_takes_the_lines_and_a_renamed_file_is_created_anew() {
         let ready = connect_when_ready(lease.port(), &child);
         drop(ready);
         let rotated = root.join(format!("{}.log.1", label.replace(' ', "-")));
+        // The line is written by another thread, so wait for it before rotating.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !std::fs::read_to_string(&path).map(|text| text.contains("Ready to accept connections tcp")).unwrap_or(false) {
+            assert!(std::time::Instant::now() < deadline, "{label}: the ready line never reached the log file");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         std::fs::rename(&path, &rotated).expect("rotate the log by rename");
         let output = stop(lease.port(), child);
         assert!(output.stdout.is_empty(), "{label}: a logfile replaces standard output: {output:?}");
