@@ -420,7 +420,8 @@ fn config_open_error(options: &Options, factory: &HandleFactory, paths: &HostPat
 fn config_load(options: &Options, name: &[u8], factory: &HandleFactory, paths: &HostPaths, root: &DirectoryRead, output: &OutputStream, stdout: &OutputStream, wall: &WallClock, buffer: &Text) -> success: Bool reads(options), reads(name), reads(paths), reads(root), reads(wall), writes(factory), writes(output), writes(stdout), writes(buffer) waits {
   doc "Reads the file the host path name names, looked up from root, into buffer as loadServerConfig does; a file that cannot be opened is logged as Redis logs it, with the path as given.";
   let length = name^.len;
-  match std::fs::open_host_read_bytes(factory: factory, paths: paths, base: root, path: name, start: 0_u64, end: length, encoding: PathEncoding::NativeBytes()) {
+  let native = PathEncoding::NativeBytes();
+  match std::fs::open_host_read_bytes(factory: factory, paths: paths, base: root, path: name, start: 0_u64, end: length, encoding: native) {
     Ok(value: file) => {
       return config_read_file(factory: factory, file: move file, output: output, buffer: buffer);
     }
@@ -849,15 +850,16 @@ fn config_join_dir(old: &[u8], path: &[u8]) -> joined: Box<Slots<u8>> reads(old)
 fn config_set_dir(options: &Options, path: &[u8], factory: &HandleFactory, paths: &HostPaths, cwd: &DirectoryRead, cwd_write: &DirectoryWrite) -> error: Box<Slots<u8>> reads(path), reads(paths), writes(options), writes(factory), writes(cwd), writes(cwd_write) waits {
   doc "Makes the directory the host path names the working directory of every later relative path, as Redis's chdir does, by swapping the held halves for the new ones; returns the host's description of a refusal and holds the old directory then.";
   let length = path^.len;
-  match std::fs::open_host_directory_bytes(factory: factory, paths: paths, base: cwd, path: path, start: 0_u64, end: length, encoding: PathEncoding::NativeBytes()) {
+  let native = PathEncoding::NativeBytes();
+  match std::fs::open_host_directory_bytes(factory: factory, paths: paths, base: cwd, path: path, start: 0_u64, end: length, encoding: native) {
     Ok(value: opened) => {
       let std::fs::Directory(read: fresh_read, write: fresh_write) = move opened;
       swap(first: &fresh_read, second: cwd);
       swap(first: &fresh_write, second: cwd_write);
       std::fs::close_directory(factory: factory, directory: move fresh_read);
       std::fs::close_directory_write(factory: factory, directory: move fresh_write);
-      let held = options^.dir.inner.len;
-      let joined = config_join_dir(old: &options^.dir.inner[0_u64..held], path: path);
+      let previous = options^.dir.inner.len;
+      let joined = config_join_dir(old: &options^.dir.inner[0_u64..previous], path: path);
       set options^.dir = move joined;
       return box_slots_new::<u8>(capacity: 0_u64);
     }
@@ -1054,9 +1056,9 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
   let start = 0_u64;
   let number = 1_u64;
   loop @segments {
-    let held = frames.inner.len;
+    let suspended = frames.inner.len;
     let size = current.inner.len;
-    let segment = if held == 0_u64 {
+    let segment = if suspended == 0_u64 {
       give config_lines(options: options, source: source, first: start, line_number: number, invalid_line: invalid_line, factory: factory, paths: paths, cwd: cwd, cwd_write: cwd_write, output: output);
     } else {
       give config_lines(options: options, source: &current.inner[0_u64..size], first: start, line_number: number, invalid_line: 0_u64, factory: factory, paths: paths, cwd: cwd, cwd_write: cwd_write, output: output);

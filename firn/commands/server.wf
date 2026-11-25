@@ -934,7 +934,7 @@ fn config_adjust_maxclients(store: &Keyspace, client: &Client, wanted: u64) -> g
 fn reply_maxclients_unsupported(client: &Client, granted: u64) -> result: unit writes(client) {
   doc "Writes Redis's refusal of a maxclients the operating system cannot handle, naming the number it can.";
   let message = pkg::serverlog::log_message_new();
-  pkg::serverlog::log_message_append(message: &message, source: &maxclients_unsupported[0_u64..85]);
+  pkg::serverlog::log_message_append(message: &message, source: &maxclients_unsupported[0_u64..85_u64]);
   pkg::serverlog::log_message_number(message: &message, number: granted);
   let length = message.inner.len;
   reply_set_failed(client: client, which: 33_u64, reason: &message.inner[0_u64..length]);

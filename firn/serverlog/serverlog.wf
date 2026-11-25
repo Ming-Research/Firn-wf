@@ -384,7 +384,7 @@ fn logfile_open(factory: &HandleFactory, paths: &HostPaths, base: &DirectoryRead
   }
   let room = length +sat 1_u64;
   let parent = box_slots_new::<u8>(capacity: room);
-  let held = box_slots_new::<u8>(capacity: length);
+  let leaf_name = box_slots_new::<u8>(capacity: length);
   if slash < length {
     if slash == 0_u64 {
       log_message_byte(message: &parent, byte: 47_u8);
@@ -395,24 +395,25 @@ fn logfile_open(factory: &HandleFactory, paths: &HostPaths, base: &DirectoryRead
     }
     let leaf_from = slash + 1_u64;
     for @leaf_bytes (index in leaf_from..length) {
-      log_message_byte(message: &held, byte: path^[index]);
+      log_message_byte(message: &leaf_name, byte: path^[index]);
     }
   } else {
     log_message_byte(message: &parent, byte: 46_u8);
     for @whole_name (index in 0_u64..length) {
-      log_message_byte(message: &held, byte: path^[index]);
+      log_message_byte(message: &leaf_name, byte: path^[index]);
     }
   }
   let parent_length = parent.inner.len;
-  let leaf_length = held.inner.len;
-  match std::fs::open_host_directory_bytes(factory: factory, paths: paths, base: base, path: &parent.inner[0_u64..parent_length], start: 0_u64, end: parent_length, encoding: PathEncoding::NativeBytes()) {
+  let leaf_length = leaf_name.inner.len;
+  let native = PathEncoding::NativeBytes();
+  match std::fs::open_host_directory_bytes(factory: factory, paths: paths, base: base, path: &parent.inner[0_u64..parent_length], start: 0_u64, end: parent_length, encoding: native) {
     Ok(value: opened) => {
       let std::fs::Directory(read: opened_read, write: opened_write) = move opened;
       std::fs::close_directory(factory: factory, directory: move opened_read);
-      match std::fs::open_append(factory: factory, root: &opened_write, name: &held.inner[0_u64..leaf_length], start: 0_u64, end: leaf_length) {
+      match std::fs::open_append(factory: factory, root: &opened_write, name: &leaf_name.inner[0_u64..leaf_length], start: 0_u64, end: leaf_length) {
         Ok(value: probe) => {
           std::fs::close_write(factory: factory, file: move probe);
-          let file = LogFile(directory: move opened_write, name: move held);
+          let file = LogFile(directory: move opened_write, name: move leaf_name);
           return Ok<LogFile, IoError>(value: move file);
         }
         Err(error: problem) => {
