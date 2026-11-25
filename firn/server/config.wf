@@ -1078,16 +1078,6 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
       return unit;
     }
     if state == 1_u64 {
-      if frames.inner.len < frames.inner.cap {
-      } else {
-        let message = config_buffer();
-        config_append(buffer: &message, source: &config_title[0_u64..48_u64]);
-        config_append(buffer: &message, source: &config_nesting[0_u64..30_u64]);
-        config_byte(buffer: &message, byte: 10_u8);
-        config_emit(factory: factory, output: output, text: &message);
-        set options^.valid = False();
-        return unit;
-      }
       let path_length = segment.path.inner.len;
       let text = config_buffer();
       let loaded = config_load(options: options, name: &segment.path.inner[0_u64..path_length], factory: factory, paths: paths, root: cwd, output: output, stdout: stdout, wall: wall, buffer: &text);
@@ -1097,7 +1087,18 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
         return unit;
       }
       let parent = ConfigFrame(bytes: move current, start: segment.start, number: segment.number);
-      place_back(window: &frames.inner, value: move parent);
+      if frames.inner.len < frames.inner.cap {
+        place_back(window: &frames.inner, value: move parent);
+      } else {
+        let dropped = move parent;
+        let message = config_buffer();
+        config_append(buffer: &message, source: &config_title[0_u64..48_u64]);
+        config_append(buffer: &message, source: &config_nesting[0_u64..30_u64]);
+        config_byte(buffer: &message, byte: 10_u8);
+        config_emit(factory: factory, output: output, text: &message);
+        set options^.valid = False();
+        return unit;
+      }
       set current = move text.bytes;
       set start = 0_u64;
       set number = 1_u64;
