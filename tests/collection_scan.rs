@@ -472,20 +472,38 @@ fn compact_collections_return_whole_and_larger_ones_scan_in_steps() {
             }
         }
         // 64 bytes keeps a collection compact, 65 does not, in a member or
-        // field and also in a hash's value.
+        // field and also in a hash's value. The collection holds 100 members, so
+        // that one that is not compact cannot be finished by a call at COUNT 1.
         for length in [64, 65] {
             let member = "m".repeat(length);
             let value = "v".repeat(length);
             request(&mut client, &["DEL", "long:s", "long:h", "long:v", "long:z"]);
+            let mut short: Vec<Vec<u8>> = Vec::new();
+            for index in 0..99 {
+                let name = format!("s{index:02}");
+                request(&mut client, &["SADD", "long:s", &name]);
+                request(&mut client, &["HSET", "long:h", &name, "v"]);
+                request(&mut client, &["HSET", "long:v", &name, "v"]);
+                request(&mut client, &["ZADD", "long:z", "3", &name]);
+                short.push(name.into_bytes());
+            }
             request(&mut client, &["SADD", "long:s", &member]);
             request(&mut client, &["HSET", "long:h", &member, "v"]);
             request(&mut client, &["HSET", "long:v", "f", &value]);
             request(&mut client, &["ZADD", "long:z", "3", &member]);
             let compact = length == 64;
-            assert_scan(&mut client, "SSCAN", "long:s", compact, &[member.as_bytes().to_vec()], 1);
-            assert_scan(&mut client, "HSCAN", "long:h", compact, &[member.as_bytes().to_vec(), b"v".to_vec()], 2);
-            assert_scan(&mut client, "HSCAN", "long:v", compact, &[b"f".to_vec(), value.into_bytes()], 2);
-            assert_scan(&mut client, "ZSCAN", "long:z", compact, &[member.into_bytes(), b"3".to_vec()], 2);
+            let mut set = short.clone();
+            set.push(member.as_bytes().to_vec());
+            let mut hash: Vec<Vec<u8>> = short.iter().flat_map(|name| [name.clone(), b"v".to_vec()]).collect();
+            let mut valued = hash.clone();
+            hash.extend([member.as_bytes().to_vec(), b"v".to_vec()]);
+            valued.extend([b"f".to_vec(), value.into_bytes()]);
+            let mut sorted: Vec<Vec<u8>> = short.iter().flat_map(|name| [name.clone(), b"3".to_vec()]).collect();
+            sorted.extend([member.into_bytes(), b"3".to_vec()]);
+            assert_scan(&mut client, "SSCAN", "long:s", compact, &set, 1);
+            assert_scan(&mut client, "HSCAN", "long:h", compact, &hash, 2);
+            assert_scan(&mut client, "HSCAN", "long:v", compact, &valued, 2);
+            assert_scan(&mut client, "ZSCAN", "long:z", compact, &sorted, 2);
         }
         drop(client); assert_eq!(finished(child).0, 0);
     }
