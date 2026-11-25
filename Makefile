@@ -85,7 +85,7 @@ $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 test: firn-test list-ceiling
 	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) && \
 	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
-	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output
+	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output --test-threads=8
 	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) || exit $$?; \
 	log=$$(mktemp) || exit $$?; trap 'rm -f "$$log"' EXIT; \
 	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
