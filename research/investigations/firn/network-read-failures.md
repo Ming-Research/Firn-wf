@@ -351,8 +351,11 @@ segment only when the queue's memory alone exceeds the buffer (`return rmem
 <= sk->sk_rcvbuf;`), the change of commit 026dfef287c0, "tcp: give up on
 stronger sk_rcvbuf checks (for now)" (`Fixes: 1d2fbaad7cd8`,
 <https://github.com/torvalds/linux/commit/026dfef287c0>). Ubuntu's own
-sources were not read: its 6.17.0-1022 and its 7.0 behave as upstream's
-releases of those numbers read.
+sources agree (the repository of linux-azure for noble at
+`git.launchpad.net/~canonical-kernel/ubuntu/+source/linux-azure/+git/noble`):
+the tag `Ubuntu-azure-6.17-6.17.0-1022.22` has the check in v6.19's form
+(`return rmem + skb->len <= sk->sk_rcvbuf;`), and the tag
+`Ubuntu-azure-7.0-7.0.0-1017.17_24.04.1` has v7.0's.
 
 ### firn as the sender under each kernel
 
