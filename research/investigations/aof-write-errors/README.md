@@ -31,6 +31,113 @@ and pcall returning an error (`script_lua.c:988-994,1711-1722`).
 health. Shutdown forces a flush and sync and exits even when these fail
 (`server.c:4239-4247,4301-4308`).
 
+## Close-fsync status in Redis 7.2.16
+
+Source investigation for board item `firn-aof-close-sync-status`; the runtime
+check is the isolated fixture below, which passed in CI at head 2c9a592 (run
+[39457176042](https://github.com/Ming-Research/Firn-wf/actions/runs/39457176042)).
+The following findings concern Redis 7.2.16, whereas
+the historical investigation below primarily concerns Redis 7.0.15.
+
+Redis queues the old incremental descriptor's fsync-and-close at rewrite
+**start**, after persisting the new manifest in
+[openNewIncrAofForAppend](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L792-L848).
+The [background rewrite caller](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L2443-L2464)
+rotates before forking. [Startup](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L715-L770)
+opens the active file and initializes synced-size accounting without closing
+an old descriptor. The
+[completion handler](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L2584)
+installs the base/history and records rewrite status; it does not close that
+descriptor. Redis's own
+[WAIT test](https://github.com/redis/redis/blob/7.2.16/tests/unit/wait.tcl#L219-L221)
+also identifies the close-sync at rewrite start.
+
+The [close helper](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L931-L932)
+passes `(fd, server.master_repl_offset, 1)`; the final argument is
+`need_reclaim_cache`, not `need_fsync`.
+[Job creation](https://github.com/redis/redis/blob/7.2.16/src/bio.c#L186-L193)
+sets `need_fsync` internally. Close and ordinary fsync jobs share
+[one worker](https://github.com/redis/redis/blob/7.2.16/src/bio.c#L74-L79).
+Its [sync handling](https://github.com/redis/redis/blob/7.2.16/src/bio.c#L259-L285)
+publishes `C_ERR` and saves errno on failures except EBADF/EINVAL; success
+or an ignored errno publishes `C_OK` without resetting the saved errno.
+Publication precedes cache reclamation and close and is asynchronous with
+the main event loop.
+
+This does not change internal `aof_last_write_status`.
+[Admission](https://github.com/redis/redis/blob/7.2.16/src/server.c#L4483-L4514)
+checks BIO status separately and copies its errno for MISCONF;
+[INFO](https://github.com/redis/redis/blob/7.2.16/src/server.c#L5812-L5813)
+combines append and BIO statuses. Rewrite status is independent, so installation
+can report `ok` while close-sync reports `err`. The
+[pending counter](https://github.com/redis/redis/blob/7.2.16/src/server.c#L5830)
+uses the [ordinary-fsync count](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L917-L921),
+excluding close jobs: observe the actual status transition, not pending zero
+alone.
+
+Firn already saves a counted seal-sync failure and aborts the rewrite
+(`firn/persistence/rewrite.wf:83-94`). Success preserves the saved error until
+[durable installation](../../../design/firn/append-only-file.md).
+Inspection therefore does not reproduce the premise that Firn ignores this
+failure. Redis's immediate clearing after a successful close-sync conflicts
+with Firn's established failed-page safety rule: writes resume only after a
+durable rewrite. The owner ruled on 2026-10-14 (card firn-q-close-sync-recovery,
+option A) to retain that recovery rule and record Redis's
+clear-on-successful-close-sync path as an intentional divergence in the
+append-only-file decision and rejection rationale. No runtime behavior change
+is needed for this comparison.
+
+### Isolated fixture and assertions
+
+`aof_rewrite_close_sync_failure_is_isolated_and_recovers` in
+`tests/aof_sync_fault.rs` keeps the directory, manifest, new base and new
+incremental file healthy and bind-mounts a file on the dm-fault filesystem
+over the original incremental pathname **before startup**. It runs Redis
+7.2.16 first, then firn's file adapter and native ring. It seeds and settles,
+fails while idle, and requests BGREWRITEAOF without an intervening write.
+Failing the whole mount would instead fault Redis's preceding manifest
+fsync and queue no close job. The device probe now requires both fsync and
+fdatasync to return EIO on an already-synced clean inode before any failing
+write; both servers use fdatasync on Linux.
+
+The test is ignored in the ordinary gate and explicitly selected alongside
+the other five cases of the sync-fault target by `make aof-sync-fault`, which
+requires all six to pass and the test process's successful exit. Each poll uses
+the existing ten-second limit. A three-key seed with one second of rewrite
+delay per key exposes recovery in progress; the healed idle watch uses the
+existing three seconds. On head 2c9a592, CI run
+[39457176042](https://github.com/Ming-Research/Firn-wf/actions/runs/39457176042)
+passed all six cases, and the new case's failed and recovered states were
+printed for the redis, firn-file and firn-native routes.
+
+| Assertions | Failure detected |
+| --- | --- |
+| Bound-file device/inode, healthy directory device, startup old descriptor and active manifest filename | A missing or reversed bind, failure affecting replacement metadata, or the server opening a different file. |
+| Seed `ok`, zero buffer and no ordinary sync pending before failing; started reply and exactly one completed rewrite attempt | An unsettled seed, rejected request, extra attempts, or stale startup rewrite status mistaken for completion. |
+| Wait for write status `err`; enabled AOF, zero buffer and no pending/delayed ordinary sync; compare shared INFO fields with Redis | A seal/close sync failure omitted from write health, or incompatible persistence reporting. Pending zero alone is never treated as close-job completion. |
+| Full EIO MISCONF for SET and PING, byte-for-byte against Redis; GET of the refused key is nil | An incorrect error message, accepted write/PING during failure, or a refusal that still mutates the keyspace. |
+| Redis rewrite status `ok`, a new healthy increment and bounded wait for the old descriptor to close; firn rewrite status `err`, original increment and old descriptor retained | Confusing rewrite health with sync health, closing without reporting the sync failure, or publishing firn's rotation despite failed sealing. This ordering divergence is recorded by the append-only-file and rewrite decisions. |
+| Healed idle write status stays `err` and PING keeps MISCONF; no new admitted attempt while firn recovery is held by maxmemory | Healing alone incorrectly clears failure. PING avoids SET's OOM precedence while maxmemory is one byte. |
+| Second request starts, or firn reports already in progress with exactly one additional admitted attempt and a running witness | A silently failed recovery request or an unrelated retry mistaken for the requested recovery; firn's automatic recovery may win the request race. |
+| During delayed recovery, Redis reports `ok` and admits SET/PING; firn reports `err`, refuses both and leaves the key absent | Failure to implement the explicitly selected divergence between successful close-sync and durable-rewrite recovery. |
+| Final write and rewrite status `ok`, rewrite not running, exactly one recovery attempt, SET/PING/GET succeed and the manifest selects a new increment | Incomplete recovery, premature healthy reporting, unwanted retries, or writes that remain refused or fail to apply afterward. |
+| Checked normal heal, shutdown, unbind and source removal; panic cleanup preserves that order and teardown reads a root-owned binding registry | A successful test concealing cleanup failure or a killed test leaving the fault filesystem mounted through a file binding. |
+
+Keep the bind mount through firn's pathname-based boundary validation;
+history unlink may return nonfatal EBUSY. No runtime behavior was changed.
+A firn that ignores the sealed file's failing sync never publishes `err`:
+there are no new bytes to provoke an ordinary everysec sync, so the initial
+status wait fails, and write/PING/INFO assertions also reject healthy output
+if reached. The existing implementation already records this failure; the
+new case protects it rather than claiming a measured before-fix failure.
+
+The delayed firn sample precedes S1; the later recovery wait rejects any
+observed healthy status while a rewrite still runs, but sampling cannot
+guarantee observation of the brief interval between sealing and installation.
+No new test hook was added for that interval. Full oracle replies are compared
+with the live Redis 7.2.16 observation: the MISCONF text is the one Redis
+returned, byte for byte.
+
 ## Before this change
 
 `append_all` discarded the terminal IoError and returned only progress;
@@ -304,6 +411,9 @@ citing `firn-req-enospc-text`, until the pin moved to the release with
   attempted append's `drain`. The case
   `aof_rewrite_during_latched_append_error_reports_the_attempted_drain`
   starts a rewrite while an append error is latched and requires `drain`.
+  Superseded: a failed append no longer aborts a rewrite, and that case
+  became `aof_rewrite_during_latched_append_error_publishes_and_applies_retained_once`
+  ([direct installation](../aof-rewrite/publish-during-append-error.md#implementation)).
 - The append retry cadence follows Redis's event loop (every 100 ms) instead
   of the once-per-second cron retry; the idle sync retry stays once per second.
   No test pins the cadence: a timing bound tight enough to separate 100 ms from

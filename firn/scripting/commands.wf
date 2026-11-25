@@ -21,7 +21,7 @@ fn command(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64) 
 }
 
 fn command_argument(vm: &Vm, v: Value) -> text: Value writes(vm) {
-  doc "A redis.call or redis.pcall argument as the command receives it: a number in the text Redis 7.2.16's luaArgsToRedisArgv gives it (see append_argument_text), separately from Lua tostring's %.14g, and a string unchanged.";
+  doc "A redis.call or redis.pcall argument as the command receives it: a number in the text Redis 7.2.16's luaArgsToRedisArgv gives it (see pkg::scores::append_argument_text), separately from Lua tostring's %.14g, and a string unchanged.";
   match num_of(v: v) {
     Is(x: n) => {
       return argument_text(vm: vm, x: n);

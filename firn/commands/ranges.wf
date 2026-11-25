@@ -368,11 +368,9 @@ fn walk_node(node: &OrderedNode<Rank, unit>, walk: &Walk, client: &Client) -> re
       if first >= count {
         break @seek;
       }
-      if first < node^.entries.len {
-        let begun = starts(walk: walk, rank: &node^.entries[first].pair.key);
-        if begun {
-          break @seek;
-        }
+      let begun = starts(walk: walk, rank: &node^.entries[first].pair.key);
+      if begun {
+        break @seek;
       }
       set first = first +wrap 1_u64;
     }
@@ -389,10 +387,8 @@ fn walk_node(node: &OrderedNode<Rank, unit>, walk: &Walk, client: &Client) -> re
     if walk^.ended {
       return unit;
     }
-    if index < node^.entries.len {
-      walk_visit(walk: walk, client: client, rank: &node^.entries[index].pair.key);
-      walk_link(link: &node^.entries[index].after, walk: walk, client: client);
-    }
+    walk_visit(walk: walk, client: client, rank: &node^.entries[index].pair.key);
+    walk_link(link: &node^.entries[index].after, walk: walk, client: client);
   }
   return unit;
 }
@@ -559,6 +555,10 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
       }
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
       return 1_u64;
@@ -720,8 +720,8 @@ fn zrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "Runs ZRANGE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = range_ranked(env: client, value: held, walk: walk);
+    Some(value: held_value) => {
+      let found = range_ranked(env: client, value: held_value, walk: walk);
     }
     None() => {
     }
@@ -782,6 +782,10 @@ fn count_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
       set env^.state = state_done;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
       return 1_u64;
@@ -824,8 +828,8 @@ fn zcount_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "Runs ZCOUNT over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = count_ranked(env: client, value: held, walk: walk);
+    Some(value: held_value) => {
+      let found = count_ranked(env: client, value: held_value, walk: walk);
     }
     None() => {
     }
@@ -938,6 +942,10 @@ fn remove_walked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 writes(e
       }
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
       return 1_u64;
@@ -1000,8 +1008,8 @@ fn zremrange_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   doc "Runs ZREMRANGE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = remove_walked(env: client, value: held, walk: walk);
+    Some(value: held_value) => {
+      let edited = remove_walked(env: client, value: held_value, walk: walk);
     }
     None() => {
     }
@@ -1018,7 +1026,10 @@ fn zremrange_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   return lapsed;
 }
 
-fn zremrange_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
+fn zremrange_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let changed = client^.number > 0_u64;
   let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key, budget: budget);
@@ -1062,9 +1073,9 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
     }
     let lapsed = zremrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, walk: &walk);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = zremrange_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   zremrange_finish(client: client);

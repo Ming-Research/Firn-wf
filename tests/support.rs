@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -29,7 +30,8 @@ impl Drop for LeasedPort {
 
 /// A loopback port reserved against reuse by another test in this process.
 /// Clones share the reservation until the last owner drops it; the operating
-/// system listener is released so the server can bind the port itself.
+/// system claim (`PortClaim`) is released so the server can bind the port
+/// itself. Until it does, nothing listens on the port.
 #[derive(Clone)]
 pub struct PortLease {
     reservation: Arc<LeasedPort>,
@@ -42,21 +44,98 @@ impl PortLease {
     }
 }
 
+/// An operating-system claim on a loopback port: a socket bound to it that
+/// never listens.
+///
+/// The claim must not listen. A child that another thread spawns while the
+/// claim is open copies the socket and keeps the copy until its own exec. A
+/// copy that listens goes on accepting connections after the claim is
+/// dropped, and resets them when the child execs, so a peer that connects to
+/// the port before its server has started sees a reset instead of a refusal.
+/// A bound socket that never listens refuses every connection whichever
+/// process holds a copy.
+struct PortClaim {
+    _socket: OwnedFd,
+    port: u16,
+}
+
+/// Binds a socket to `127.0.0.1:port` as `TcpListener::bind` does, a port of
+/// 0 selecting one, and leaves it unconnected and not listening.
+fn claim_loopback_port(port: u16) -> std::io::Result<PortClaim> {
+    #[repr(C)]
+    struct SocketAddressV4 {
+        family: u16,
+        port: u16,
+        address: [u8; 4],
+        zero: [u8; 8],
+    }
+    unsafe extern "C" {
+        fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
+        fn setsockopt(socket: i32, level: i32, name: i32, value: *const i32, length: u32) -> i32;
+        fn bind(socket: i32, address: *const SocketAddressV4, length: u32) -> i32;
+        fn getsockname(socket: i32, address: *mut SocketAddressV4, length: *mut u32) -> i32;
+    }
+    const AF_INET: i32 = 2;
+    const SOCK_STREAM: i32 = 1;
+    const SOCK_CLOEXEC: i32 = 0o2000000;
+    const SOL_SOCKET: i32 = 1;
+    const SO_REUSEADDR: i32 = 2;
+    let length = std::mem::size_of::<SocketAddressV4>() as u32;
+    // SAFETY: each call passes a live descriptor and pointers to values that
+    // outlive it; the new descriptor is owned by the OwnedFd at once.
+    unsafe {
+        let descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let owned = OwnedFd::from_raw_fd(descriptor);
+        let enable = 1;
+        if setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &enable, 4) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut address = SocketAddressV4 {
+            family: AF_INET as u16,
+            port: port.to_be(),
+            address: [127, 0, 0, 1],
+            zero: [0; 8],
+        };
+        if bind(descriptor, &address, length) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut written = length;
+        if getsockname(descriptor, &mut address, &mut written) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(PortClaim { _socket: owned, port: u16::from_be(address.port) })
+    }
+}
+
 /// Leases an operating-system-selected port not held by any other test.
 /// Keep the lease across every server lifetime, including restarts on that
 /// port; `ProgramChild::with_port` also retains it for a single child.
 pub fn lease_port() -> PortLease {
-    // Keep each candidate's listener bound until the registry has accepted
-    // or refused it. A refused listener is dropped before choosing again.
-    let mut listener = None;
+    // Keep each candidate's claim until the registry has accepted or refused
+    // it. A refused claim is dropped before choosing again.
+    let mut claim = None;
     lease_from(|| {
-        drop(listener.take());
-        let bound = std::net::TcpListener::bind(("127.0.0.1", 0))
-            .expect("bind loopback port for lease");
-        let port = bound.local_addr().expect("leased listener address").port();
-        listener = Some(bound);
+        drop(claim.take());
+        let bound = claim_loopback_port(0).expect("claim loopback port for lease");
+        let port = bound.port;
+        claim = Some(bound);
         port
     })
+}
+
+/// Reserves a literal port used by a documented command, without rewriting
+/// the example. A conflicting listener or in-process lease fails the case.
+pub(super) fn lease_named_port(port: u16) -> PortLease {
+    let mut ports = locked(LEASED_PORTS.get_or_init(|| Mutex::new(HashSet::new())));
+    assert!(!ports.contains(&port), "documented port {port} is already leased");
+    let claim = claim_loopback_port(port)
+        .unwrap_or_else(|error| panic!("reserve documented port {port}: {error}"));
+    ports.insert(port);
+    drop(claim);
+    PortLease { reservation: Arc::new(LeasedPort { port }) }
 }
 
 /// Retries candidates until the registry grants an exclusive reservation.
@@ -158,8 +237,11 @@ impl CompiledProgram {
         .expect("spawn compiled program")
     }
 
-    /// Starts the program on one runtime route with raw invocation arguments,
+    /// Starts the program on one runtime route with raw invocation arguments
     /// and hands back the running child.
+    /// Firn callers supply Redis-style directives explicitly, including
+    /// `--firn-clients N` when the test ends after accepting N clients; the
+    /// harness passes argv through unchanged.
     ///
     /// A loopback case has to play the peer while the program runs, so it
     /// needs the child rather than the finished output: the program is a
@@ -188,7 +270,21 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
     ) -> ProgramChild {
-        self.spawn_on_route_options(native_ring, settings, arguments, false)
+        self.spawn_on_route_options(native_ring, settings, arguments, false, PROGRAM_DEADLINE)
+    }
+
+    /// Starts the program as `spawn_on_route_with` does, stopping it after
+    /// `limit` instead of `PROGRAM_DEADLINE`: for a case whose property is an
+    /// interval the program itself keeps, such as a 60-second output limit,
+    /// which the shared deadline would end first.
+    pub fn spawn_on_route_with_limit(
+        &self,
+        native_ring: bool,
+        settings: &[(&str, &str)],
+        arguments: &[&[u8]],
+        limit: Duration,
+    ) -> ProgramChild {
+        self.spawn_on_route_options(native_ring, settings, arguments, false, limit)
     }
 
     /// Linux append-failure cases inherit ignored SIGXFSZ so RLIMIT_FSIZE
@@ -199,7 +295,7 @@ impl CompiledProgram {
         native_ring: bool,
         arguments: &[&[u8]],
     ) -> ProgramChild {
-        self.spawn_on_route_options(native_ring, &[], arguments, true)
+        self.spawn_on_route_options(native_ring, &[], arguments, true, PROGRAM_DEADLINE)
     }
 
     fn spawn_on_route_options(
@@ -208,6 +304,7 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
         ignore_xfsz: bool,
+        limit: Duration,
     ) -> ProgramChild {
         let mut command = Command::new(&self.executable);
         #[cfg(target_os = "linux")]
@@ -241,7 +338,7 @@ impl CompiledProgram {
         for (name, count) in settings {
             command.env(name, count);
         }
-        ProgramChild::spawn(&mut command).expect("spawn compiled program")
+        ProgramChild::spawn_with_limit(&mut command, limit).expect("spawn compiled program")
     }
 }
 
@@ -430,6 +527,35 @@ pub struct ProgramMonitor {
 }
 
 impl ProgramMonitor {
+    /// Observes output already drained from stderr without waiting for EOF,
+    /// stopping the child or waiting behind its output reader's buffer lock.
+    pub(crate) fn stderr_contains(&self, needle: &[u8]) -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        match self.program.errors.bytes.try_lock() {
+            Ok(bytes) => bytes.windows(needle.len()).any(|window| window == needle),
+            Err(TryLockError::Poisoned(error)) => error.into_inner()
+                .windows(needle.len()).any(|window| window == needle),
+            Err(TryLockError::WouldBlock) => false,
+        }
+    }
+
+    /// Counts matching markers already drained from stderr. A busy reader
+    /// buffer is an unavailable observation, so a caller must retry it rather
+    /// than interpreting contention as an empty log. Never waits for EOF.
+    pub(crate) fn stderr_occurrences(&self, needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(0);
+        }
+        match self.program.errors.bytes.try_lock() {
+            Ok(bytes) => Some(bytes.windows(needle.len()).filter(|window| *window == needle).count()),
+            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()
+                .windows(needle.len()).filter(|window| *window == needle).count()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// Stops the child and collects both output tails within one shared
     /// diagnostic budget, including when a peer only owns a monitor.
     pub(crate) fn diagnostic_block(&self, port: Option<u16>) -> String {
@@ -671,6 +797,21 @@ pub(crate) fn run_command(command: &mut Command) -> Output {
         .unwrap_or_else(|error| panic!("run native test command: {error}"))
 }
 
+/// The redis-server `REDIS_SERVER` names, checked to be 7.2.16, the oracle
+/// every case that runs Redis itself compares firn with.
+pub(crate) fn redis_oracle() -> PathBuf {
+    let binary = std::env::var_os("REDIS_SERVER")
+        .map(PathBuf::from)
+        .expect("REDIS_SERVER must name redis-server 7.2.16, the oracle");
+    let output = run_command(Command::new(&binary).arg("--version"));
+    assert!(output.status.success(), "Redis version command: {output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(" v=7.2.16 "),
+        "{output:?}"
+    );
+    binary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,6 +1022,98 @@ mod tests {
             );
         }
         assert_eq!(ports.len(), 400);
+    }
+
+    #[repr(C)]
+    struct Timespec {
+        seconds: i64,
+        nanoseconds: i64,
+    }
+
+    unsafe extern "C" {
+        fn nanosleep(request: *const Timespec, remaining: *mut Timespec) -> i32;
+    }
+
+    /// Runs `/bin/true` after a pause between fork and exec, the stretch in
+    /// which a child still holds a copy of every descriptor that was open
+    /// when it was forked.
+    fn run_slow_exec_child() {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("/bin/true");
+        // SAFETY: the closure calls only nanosleep, which is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                let pause = Timespec { seconds: 0, nanoseconds: 2_000_000 };
+                nanosleep(&pause, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        let status = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn slow-exec witness");
+        assert!(status.success(), "slow-exec witness: {status:?}");
+    }
+
+    /// Nothing listens on a leased port until its server does, so a peer that
+    /// connects to it must be refused. A child that another thread forks while
+    /// a lease is being taken holds a copy of the lease's socket until its own
+    /// exec; if that socket listens, the child accepts the peer and resets it
+    /// at the exec, which is how a server's readiness check once read
+    /// "Connection reset by peer" before the server had started.
+    #[test]
+    fn leased_port_refuses_connections_while_a_concurrent_spawn_runs() {
+        const SPAWNERS: usize = 4;
+        const LEASERS: usize = 2;
+        const LEASES_PER_THREAD: usize = 5_000;
+        let stop = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(std::sync::Barrier::new(SPAWNERS + LEASERS));
+        let spawners: Vec<_> = (0..SPAWNERS)
+            .map(|_| {
+                let (stop, ready) = (Arc::clone(&stop), Arc::clone(&ready));
+                std::thread::spawn(move || {
+                    ready.wait();
+                    while !stop.load(Ordering::Relaxed) {
+                        run_slow_exec_child();
+                    }
+                })
+            })
+            .collect();
+        let leasers: Vec<_> = (0..LEASERS)
+            .map(|_| {
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    ready.wait();
+                    let mut accepted = Vec::new();
+                    for _ in 0..LEASES_PER_THREAD {
+                        let lease = lease_port();
+                        let address = std::net::SocketAddr::from(([127, 0, 0, 1], lease.port()));
+                        match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                            outcome => accepted.push((lease.port(), format!("{outcome:?}"))),
+                        }
+                    }
+                    accepted
+                })
+            })
+            .collect();
+        let leased: Vec<_> = leasers.into_iter().map(|thread| thread.join()).collect();
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().expect("spawning thread");
+        }
+        let accepted: Vec<_> = leased
+            .into_iter()
+            .flat_map(|leases| leases.expect("leasing thread"))
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "{} of {} connections to freshly leased ports were not refused: {accepted:?}",
+            accepted.len(),
+            LEASERS * LEASES_PER_THREAD
+        );
     }
 
     #[test]

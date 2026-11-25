@@ -1,0 +1,37 @@
+fn lazy_free(engine: Shared<Bool>, completed: Shared<Bool>) -> result: unit pure waits {
+  doc "Valkey PR 3029: shutdown holds the GIL while draining workers that require the GIL. Closest Whitefoot form: a waiting drain call inside atomic engine access. https://github.com/valkey-io/valkey/pull/3029";
+  atomic engine_state = &engine {
+    let observed = engine_state^;
+  }
+  atomic finished = &completed {
+    set finished^ = True();
+  }
+  return unit;
+}
+
+fn wait_for_lazy_free(completed: Shared<Bool>) -> result: unit pure waits {
+  atomic finished = &completed when finished^ {
+    let observed = finished^;
+  }
+  return unit;
+}
+
+fn shutdown(engine: Shared<Bool>, completed: Shared<Bool>) -> result: unit pure waits {
+  atomic engine_state = &engine {
+    set engine_state^ = True();
+    wait_for_lazy_free(completed: move completed);
+  }
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure waits {
+  let initial = False();
+  let engine = shared_new::<Bool>(value: initial);
+  let completed = shared_new::<Bool>(value: initial);
+  let worker_engine = shared_share::<Bool>(shared: &engine);
+  let worker_done = shared_share::<Bool>(shared: &completed);
+  let worker = spawn lazy_free(engine: move worker_engine, completed: move worker_done);
+  shutdown(engine: move engine, completed: move completed);
+  let joined = worker;
+  return std::process::exit_status(code: 0_u8);
+}

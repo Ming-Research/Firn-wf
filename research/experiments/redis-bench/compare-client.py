@@ -17,6 +17,26 @@ import tempfile
 LINES = {"reference", "reference-io", "valkey", "valkey-io", "dragonfly", "garnet"}
 HEADER = ["test", "rps", "avg_latency_ms", "min_latency_ms", "p50_latency_ms",
           "p95_latency_ms", "p99_latency_ms", "max_latency_ms"]
+# The last index each lrange_* test reads, as redis-benchmark's own -t tests
+# do (lrange_500 reads 450 elements); any other lrange_* reads 600.
+LRANGE_LAST = {"lrange_100": 99, "lrange_300": 299, "lrange_500": 449, "lrange_600": 599}
+# The commands compare_client sends for its named tests, which redis-benchmark
+# prints as the CSV row's title, words joined by spaces.
+TITLES = {
+    "mset": "MSET (10 keys)",
+    "xadd_maxlen": "XADD mystream MAXLEN ~ 1000 * field __rand_int__",
+    "xrange_10": "XRANGE mystream - + COUNT 10",
+    "sismember": "SISMEMBER myset element:__rand_int__",
+    "srem": "SREM myset element:__rand_int__",
+    "hget": "HGET myhash element:__rand_int__",
+    "hdel": "HDEL myhash element:__rand_int__",
+}
+
+
+def title(test):
+    if test.startswith("lrange_"):
+        return f"LRANGE mylist 0 {LRANGE_LAST.get(test, 599)}"
+    return TITLES.get(test, test.upper())
 
 
 def selection(images, lines, reference):
@@ -81,12 +101,7 @@ def latency(path, test):
     if len(rows) != 2 or rows[0] != HEADER or len(rows[1]) != len(HEADER):
         raise ValueError(f"{path}: expected one Redis 7.2.16 benchmark CSV row and header")
     row = rows[1]
-    if test.startswith("lrange_"):
-        expected = f"LRANGE mylist 0 {int(test.split('_')[1]) - 1}"
-    elif test == "mset":
-        expected = "MSET (10 keys)"
-    else:
-        expected = test.upper()
+    expected = title(test)
     if row[0] != expected:
         raise ValueError(f"{path}: expected {expected!r}, got {row[0]!r}")
     try:
@@ -154,6 +169,12 @@ def selftest():
         rejected(aggregate, [], "set")
         write("LRANGE mylist 0 599")
         assert latency(path, "lrange_600") == (3, 7)
+        write("LRANGE mylist 0 449")
+        assert latency(path, "lrange_500") == (3, 7)
+        write("XADD mystream MAXLEN ~ 1000 * field __rand_int__")
+        assert latency(path, "xadd_maxlen") == (3, 7)
+        write("SREM myset element:__rand_int__")
+        assert latency(path, "srem") == (3, 7)
         write("MSET (10 keys)")
         assert latency(path, "mset") == (3, 7)
         rejected(latency, path, "get")

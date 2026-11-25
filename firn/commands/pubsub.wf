@@ -1,0 +1,291 @@
+alias Client = pkg::protocol::Client;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias arg = pkg::protocol::arg;
+alias name_is = pkg::bytes::name_is;
+alias reply_arity = pkg::protocol::reply_arity;
+alias reply_arity_word = pkg::protocol::reply_arity_word;
+alias reply_word = pkg::protocol::reply_word;
+
+const pubsub_subscribe_name: Array<u8, 9> = "SUBSCRIBE";
+
+const pubsub_unsubscribe_name: Array<u8, 11> = "UNSUBSCRIBE";
+
+const pubsub_publish_name: Array<u8, 7> = "PUBLISH";
+
+const pubsub_name: Array<u8, 6> = "PUBSUB";
+
+const pubsub_psubscribe_name: Array<u8, 10> = "PSUBSCRIBE";
+
+const pubsub_punsubscribe_name: Array<u8, 12> = "PUNSUBSCRIBE";
+
+const pubsub_ssubscribe_name: Array<u8, 10> = "SSUBSCRIBE";
+
+const pubsub_sunsubscribe_name: Array<u8, 12> = "SUNSUBSCRIBE";
+
+const pubsub_spublish_name: Array<u8, 8> = "SPUBLISH";
+
+const pubsub_channels_name: Array<u8, 8> = "CHANNELS";
+
+const pubsub_numsub_name: Array<u8, 6> = "NUMSUB";
+
+const pubsub_numpat_name: Array<u8, 6> = "NUMPAT";
+
+const pubsub_shardchannels_name: Array<u8, 13> = "SHARDCHANNELS";
+
+const pubsub_shardnumsub_name: Array<u8, 11> = "SHARDNUMSUB";
+
+const pubsub_help_name: Array<u8, 4> = "HELP";
+
+const pubsub_channels_full: Array<u8, 15> = "pubsub|channels";
+
+const pubsub_numsub_full: Array<u8, 13> = "pubsub|numsub";
+
+const pubsub_numpat_full: Array<u8, 13> = "pubsub|numpat";
+
+const pubsub_shardchannels_full: Array<u8, 20> = "pubsub|shardchannels";
+
+const pubsub_shardnumsub_full: Array<u8, 18> = "pubsub|shardnumsub";
+
+const pubsub_help_full: Array<u8, 11> = "pubsub|help";
+
+const pubsub_unknown_prefix: Array<u8, 25> = "-ERR unknown subcommand '";
+
+const pubsub_unknown_suffix: Array<u8, 21> = "'. Try PUBSUB HELP.\r\n";
+
+const subscriber_prefix: Array<u8, 20> = "-ERR Can't execute '";
+
+const subscriber_suffix: Array<u8, 93> = "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
+
+const pubsub_pong: Array<u8, 4> = "pong";
+
+fn pubsub_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "Redis 7.2.16 pub/sub command identities, matched as complete case-insensitive names.";
+  if name.length < 6_u64 {
+    return 0_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_subscribe_name[0_u64..9_u64]) {
+    return 190_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_unsubscribe_name[0_u64..11_u64]) {
+    return 191_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_publish_name[0_u64..7_u64]) {
+    return 192_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_name[0_u64..6_u64]) {
+    return 193_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_psubscribe_name[0_u64..10_u64]) {
+    return 194_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_punsubscribe_name[0_u64..12_u64]) {
+    return 195_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_ssubscribe_name[0_u64..10_u64]) {
+    return 196_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_sunsubscribe_name[0_u64..12_u64]) {
+    return 197_u64;
+  }
+  if name_is(input: input, start: name.start, length: name.length, word: &pubsub_spublish_name[0_u64..8_u64]) {
+    return 198_u64;
+  }
+  return 0_u64;
+}
+
+fn pubsub_command(kind: u64) -> marked: Bool pure {
+  let first = kind >= 190_u64;
+  let last = kind <= 198_u64;
+  return band(first, last);
+}
+
+fn pubsub_subscription(kind: u64) -> marked: Bool pure {
+  let direct = kind == 190_u64;
+  let undirect = kind == 191_u64;
+  let pattern = kind == 194_u64;
+  let unpattern = kind == 195_u64;
+  let shard = kind == 196_u64;
+  let unshard = kind == 197_u64;
+  let global = bor(direct, undirect);
+  let patterns = bor(pattern, unpattern);
+  let shards = bor(shard, unshard);
+  let ordinary = bor(global, patterns);
+  return bor(ordinary, shards);
+}
+
+fn pubsub_plan(input: &[u8], args: &Box<Slots<Span>>) -> kind: u64 reads(input), reads(args) {
+  doc "PUBSUB subcommands: 1 CHANNELS, 2 NUMSUB, 3 NUMPAT, 4 SHARDCHANNELS, 5 SHARDNUMSUB, 6 HELP; zero means no matching subcommand.";
+  if args^.inner.len < 2_u64 {
+    return 0_u64;
+  }
+  let sub = arg(args: args, index: 1_u64);
+  if name_is(input: input, start: sub.start, length: sub.length, word: &pubsub_channels_name[0_u64..8_u64]) {
+    return 1_u64;
+  }
+  if name_is(input: input, start: sub.start, length: sub.length, word: &pubsub_numsub_name[0_u64..6_u64]) {
+    return 2_u64;
+  }
+  if name_is(input: input, start: sub.start, length: sub.length, word: &pubsub_numpat_name[0_u64..6_u64]) {
+    return 3_u64;
+  }
+  if name_is(input: input, start: sub.start, length: sub.length, word: &pubsub_shardchannels_name[0_u64..13_u64]) {
+    return 4_u64;
+  }
+  if name_is(input: input, start: sub.start, length: sub.length, word: &pubsub_shardnumsub_name[0_u64..11_u64]) {
+    return 5_u64;
+  }
+  if name_is(input: input, start: sub.start, length: sub.length, word: &pubsub_help_name[0_u64..4_u64]) {
+    return 6_u64;
+  }
+  return 0_u64;
+}
+
+fn pubsub_arity(input: &[u8], args: &Box<Slots<Span>>) -> arity: i64 reads(input), reads(args) {
+  if args^.inner.len < 2_u64 {
+    return -2_i64;
+  }
+  let planned = pubsub_plan(input: input, args: args);
+  let numpat = planned == 3_u64;
+  let help = planned == 6_u64;
+  if bor(numpat, help) {
+    return 2_i64;
+  }
+  if planned != 0_u64 {
+    return -2_i64;
+  }
+  return 0_i64;
+}
+
+fn pubsub_fullname(client: &Client, planned: u64) -> result: unit writes(client) {
+  if planned == 1_u64 {
+    reply_word(client: client, word: &pubsub_channels_full[0_u64..15_u64]);
+    return unit;
+  }
+  if planned == 2_u64 {
+    reply_word(client: client, word: &pubsub_numsub_full[0_u64..13_u64]);
+    return unit;
+  }
+  if planned == 3_u64 {
+    reply_word(client: client, word: &pubsub_numpat_full[0_u64..13_u64]);
+    return unit;
+  }
+  if planned == 4_u64 {
+    reply_word(client: client, word: &pubsub_shardchannels_full[0_u64..20_u64]);
+    return unit;
+  }
+  if planned == 5_u64 {
+    reply_word(client: client, word: &pubsub_shardnumsub_full[0_u64..18_u64]);
+    return unit;
+  }
+  if planned == 6_u64 {
+    reply_word(client: client, word: &pubsub_help_full[0_u64..11_u64]);
+    return unit;
+  }
+  return unit;
+}
+
+fn pubsub_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> refused: Bool reads(input), reads(args), writes(client) {
+  doc "PUBSUB name and command-table arity checks before authentication and subscriber-mode admission; handler-specific excess arguments remain semantic errors.";
+  let count = args^.inner.len;
+  if count < 2_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_arity(client: client, input: input, name: name);
+    return True();
+  }
+  let planned = pubsub_plan(input: input, args: args);
+  if planned == 0_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    reply_word(client: client, word: &pubsub_unknown_prefix[0_u64..25_u64]);
+    let shown = pkg::protocol::reply_echoed(client: client, input: input, span: sub, limit: 128_u64);
+    reply_word(client: client, word: &pubsub_unknown_suffix[0_u64..21_u64]);
+    return True();
+  }
+  let arity = pubsub_arity(input: input, args: args);
+  let arity_fits = arity_holds(arity: arity, count: count);
+  if bnot(arity_fits) {
+    if planned == 3_u64 {
+      reply_arity_word(client: client, word: &pubsub_numpat_full[0_u64..13_u64]);
+    } else {
+      reply_arity_word(client: client, word: &pubsub_help_full[0_u64..11_u64]);
+    }
+    return True();
+  }
+  return False();
+}
+
+fn subscriber_mode(client: &Client) -> subscribed: Bool reads(client) {
+  let direct = client^.sub != 0_u64;
+  let pattern = client^.psub != 0_u64;
+  let shard = client^.ssub != 0_u64;
+  let global = bor(direct, pattern);
+  return bor(global, shard);
+}
+
+fn subscriber_name(input: &[u8], name: Span, client: &Client) -> result: unit reads(input), writes(client) {
+  for (offset in 0_u64..name.length) {
+    let at = name.start +wrap offset;
+    let byte = pkg::bytes::byte_at(input: input, index: at);
+    let lowercase = pkg::bytes::lower(byte: byte);
+    pkg::protocol::reply_byte(client: client, value: lowercase);
+  }
+  return unit;
+}
+
+fn subscriber_refused(kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> refused: Bool reads(input), reads(args), writes(client) {
+  doc "Redis 7.2.16 processCommand restricts only RESP2 subscriber mode, after ordinary admission; all subscription families, PING, QUIT and RESET remain allowed.";
+  if client^.resp != 2_u64 {
+    return False();
+  }
+  let in_subscriber_mode = subscriber_mode(client: client);
+  if bnot(in_subscriber_mode) {
+    return False();
+  }
+  let ping = kind == 22_u64;
+  let quit = kind == 179_u64;
+  let reset = kind == 189_u64;
+  let subscriptions = pubsub_subscription(kind: kind);
+  let leaving = bor(quit, reset);
+  let replies = bor(ping, leaving);
+  if bor(subscriptions, replies) {
+    return False();
+  }
+  reply_word(client: client, word: &subscriber_prefix[0_u64..20_u64]);
+  if kind == 193_u64 {
+    let planned = pubsub_plan(input: input, args: args);
+    pubsub_fullname(client: client, planned: planned);
+  } else {
+    let name = arg(args: args, index: 0_u64);
+    subscriber_name(input: input, name: name, client: client);
+    let command = kind == 166_u64;
+    let script = kind == 174_u64;
+    let config = kind == 176_u64;
+    let client_command = kind == 180_u64;
+    let function = kind == 182_u64;
+    let object = kind == 171_u64;
+    let administration = bor(config, client_command);
+    let containers = bor(command, script);
+    let others = bor(function, object);
+    let grouped = bor(administration, containers);
+    let subcommand = bor(grouped, others);
+    let argued = args^.inner.len >= 2_u64;
+    if band(subcommand, argued) {
+      pkg::protocol::reply_byte(client: client, value: 124_u8);
+      let sub = arg(args: args, index: 1_u64);
+      subscriber_name(input: input, name: sub, client: client);
+    }
+  }
+  reply_word(client: client, word: &subscriber_suffix[0_u64..93_u64]);
+  return True();
+}
+
+fn run_pubsub(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
+  let stage = pkg::connection_events::stage_new();
+  let unix_seconds = client^.unix_us / 1000000_u64;
+  let outside_exec = False();
+  atomic hub = &store^.pubsub {
+    pkg::connection_events::run(hub: hub, kind: kind, input: input, args: args, client: client, stage: &stage, in_exec: outside_exec, time: unix_seconds);
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: unix_seconds);
+  }
+  return unit;
+}

@@ -1,0 +1,33 @@
+struct SortedSet {
+  doc "Garnet ZTTL mutates a sorted set under read authority: https://github.com/microsoft/garnet/pull/1642 .";
+  member: Option<u64>;
+  expires_at: u64;
+}
+
+fn expiry_query(sorted: &SortedSet, now: u64) -> ttl: u64 reads(sorted.expires_at), writes(sorted.member) {
+  if sorted^.expires_at <= now {
+    set sorted^.member = None<u64>();
+    return 0_u64;
+  }
+  return sorted^.expires_at - now;
+}
+
+fn zttl(sorted: SharedRead<SortedSet>, now: u64) -> ttl: u64 pure waits {
+  let remaining = 0_u64;
+  atomic state = &sorted {
+    set remaining = expiry_query(sorted: state, now: now);
+  }
+  return remaining;
+}
+
+fn main() -> status: std::process::ExitStatus pure waits {
+  let member = Some<u64>(value: 7_u64);
+  let initial = SortedSet(member: member, expires_at: 10_u64);
+  let sorted = shared_new::<SortedSet>(value: initial);
+  let read_lock = shared_read::<SortedSet>(shared: &sorted);
+  let remaining = zttl(sorted: move read_lock, now: 11_u64);
+  if remaining == 0_u64 {
+    return std::process::exit_status(code: 0_u8);
+  }
+  return std::process::exit_status(code: 1_u8);
+}

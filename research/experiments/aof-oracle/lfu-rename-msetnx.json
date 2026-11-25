@@ -1,0 +1,775 @@
+[
+ {
+  "name": "lfu-rename-msetnx",
+  "resp": 2,
+  "replies": [
+   {
+    "cmd": [
+     "CONFIG",
+     "SET",
+     "maxmemory-policy",
+     "allkeys-lfu"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "CONFIG",
+     "SET",
+     "lfu-log-factor",
+     "0"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "CONFIG",
+     "SET",
+     "lfu-decay-time",
+     "0"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "src",
+     "x"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "EVAL",
+     "while redis.call('OBJECT','FREQ',KEYS[1]) < 6 do redis.call('GET',KEYS[1]) end return redis.call('OBJECT','FREQ',KEYS[1])",
+     "1",
+     "src"
+    ],
+    "reply": ":6\r\n"
+   },
+   {
+    "cmd": [
+     "RENAME",
+     "src",
+     "dst"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "dst"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "a",
+     "x"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "EVAL",
+     "while redis.call('OBJECT','FREQ',KEYS[1]) < 6 do redis.call('GET',KEYS[1]) end return redis.call('OBJECT','FREQ',KEYS[1])",
+     "1",
+     "a"
+    ],
+    "reply": ":6\r\n"
+   },
+   {
+    "cmd": [
+     "RENAMENX",
+     "a",
+     "b"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "b"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "same",
+     "x"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "EVAL",
+     "while redis.call('OBJECT','FREQ',KEYS[1]) < 6 do redis.call('GET',KEYS[1]) end return redis.call('OBJECT','FREQ',KEYS[1])",
+     "1",
+     "same"
+    ],
+    "reply": ":6\r\n"
+   },
+   {
+    "cmd": [
+     "RENAME",
+     "same",
+     "same"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "same"
+    ],
+    "reply": ":7\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":0\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "k"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "k",
+     "x",
+     "k",
+     "y"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "OBJECT",
+     "FREQ",
+     "k"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "k"
+    ],
+    "reply": "$1\r\ny\r\n"
+   }
+  ],
+  "file": "lfu-rename-msetnx.json"
+ }
+]

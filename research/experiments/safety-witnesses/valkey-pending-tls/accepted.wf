@@ -1,0 +1,35 @@
+struct Connection {
+  doc "Valkey tlsProcessPendingData use-after-free on CLIENT KILL: https://github.com/valkey-io/valkey/pull/4234 . Inspect the pending owner after the reentrant handler.";
+  connection_id: u8;
+}
+
+struct Pending {
+  current: Box<Connection>;
+  next: Option<Box<Connection>>;
+}
+
+fn run_handler(pending: &Pending) -> result: unit writes(pending.next) {
+  set pending^.next = None<Box<Connection>>();
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure {
+  let first = Connection(connection_id: 1_u8);
+  let second = Connection(connection_id: 2_u8);
+  let first_cell = box_new::<Connection>(value: first);
+  let second_cell = box_new::<Connection>(value: second);
+  let next = Some<Box<Connection>>(value: move second_cell);
+  let pending = Pending(current: move first_cell, next: move next);
+  run_handler(pending: &pending);
+  let pending_view = &pending;
+  match pending_view^.next {
+    Some(value: selected) => {
+      let live_connection = &selected^.inner;
+      let next_id = live_connection^.connection_id;
+      return std::process::exit_status(code: next_id);
+    }
+    None() => {
+      return std::process::exit_status(code: 0_u8);
+    }
+  }
+}

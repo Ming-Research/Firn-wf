@@ -3,6 +3,7 @@
 mod limiter;
 mod eviction;
 mod handshake;
+mod pubsub;
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -16,7 +17,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
-    "evict-zipf", "handshake", "client-list",
+    "evict-zipf", "handshake", "client-list", "pubsub-channel", "pubsub-pattern",
 ];
 
 #[derive(Clone)]
@@ -37,6 +38,10 @@ struct Options {
     maxmemory: Option<u64>,
     // File that receives client_work_fraction after the measured run.
     work_file: Option<String>,
+    // Pub/sub only: PUBLISH commands the publisher keeps unanswered, and how
+    // many messages it may send ahead of the slowest subscriber.
+    pipeline: usize,
+    window: usize,
 }
 
 impl Options {
@@ -48,8 +53,9 @@ impl Options {
             value: vec![b'x'; 200], workload: String::new(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
             sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None,
+            pipeline: 1, window: 1024,
         };
-        let (mut keys_given, mut value_given) = (false, false);
+        let (mut keys_given, mut value_given, mut pubsub_given) = (false, false, false);
         let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
             let value = args.next().ok_or("each option needs a value")?;
@@ -77,12 +83,30 @@ impl Options {
                 "--sample-ms" => opts.sample_interval = Duration::from_millis(value.parse()?),
                 "--maxmemory" => opts.maxmemory = Some(value.parse()?),
                 "--client-work-file" => opts.work_file = Some(value),
+                "--pipeline" => { opts.pipeline = value.parse()?; pubsub_given = true; }
+                "--window" => { opts.window = value.parse()?; pubsub_given = true; }
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
         }
         if opts.workload == "evict-zipf" {
             if !keys_given { opts.keys = 1_000_000; }
             if !value_given { opts.value = vec![b'x'; 64]; }
+        }
+        let pubsub = pubsub::is_pubsub(&opts.workload);
+        if pubsub && !value_given { opts.value = vec![b'x'; 64]; }
+        if pubsub_given && !pubsub {
+            return Err("--pipeline and --window only apply to the pub/sub workloads".into());
+        }
+        if pubsub {
+            if opts.requests.is_some() || opts.seconds.is_none() {
+                return Err("the pub/sub workloads take --seconds, not --requests".into());
+            }
+            if opts.value.len() < 16 {
+                return Err("a pub/sub payload holds a 16-byte header: --value-size is at least 16".into());
+            }
+            if opts.pipeline == 0 || opts.window < opts.pipeline {
+                return Err("--pipeline must be positive and --window at least --pipeline".into());
+            }
         }
         if !opts.zipf_s.is_finite() || opts.zipf_s < 0.0 || opts.sample_interval.is_zero() {
             return Err("--zipf-s must be finite and nonnegative; --sample-ms must be positive".into());
@@ -585,6 +609,7 @@ fn run(opts: Options) -> Result<()> {
     if let Some(count) = opts.fill { return fill(&opts, count); }
     if opts.workload == "evict-zipf" { return eviction::run(&opts); }
     if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
+    if pubsub::is_pubsub(&opts.workload) { return pubsub::run(&opts); }
     if matches!(opts.workload.as_str(), "handshake" | "client-list") && !opts.warmup.is_zero() {
         let mut warm = opts.clone();
         warm.seconds = Some(opts.warmup);
@@ -602,7 +627,9 @@ fn run(opts: Options) -> Result<()> {
 fn main() {
     if let Err(e) = Options::parse().and_then(run) {
         eprintln!("firn-workload: {e}");
-        std::process::exit(1);
+        // Exit status 3 says that the server lacks the workload's commands, so
+        // that the harness can record a skip; every other failure is 1.
+        std::process::exit(if e.downcast_ref::<pubsub::Unsupported>().is_some() { 3 } else { 1 });
     }
 }
 
@@ -614,7 +641,8 @@ mod tests {
         Options { port, connections: 2, threads: 2, seconds: None, requests: Some(3),
             keys: 1, value: vec![b'x'], workload: workload.into(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::ZERO,
-            sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None }
+            sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None,
+            pipeline: 1, window: 1024 }
     }
 
     pub(super) fn expect_command(socket: &mut TcpStream, args: &[&[u8]]) {
@@ -638,8 +666,9 @@ mod tests {
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
-            // Cache-aside and connection workloads have separate checked cases.
-            if matches!(workload, "evict-zipf" | "handshake" | "client-list") { continue; }
+            // Cache-aside, connection and pub/sub workloads have separate checked cases.
+            if matches!(workload, "evict-zipf" | "handshake" | "client-list"
+                | "pubsub-channel" | "pubsub-pattern") { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {

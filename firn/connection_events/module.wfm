@@ -1,0 +1,165 @@
+alias CancelWatch = std::time::CancelWatch;
+alias CancelSource = std::time::CancelSource;
+alias Instant = std::time::Instant;
+alias Clock = std::time::Clock;
+alias WallClock = std::time::WallClock;
+alias Client = pkg::protocol::Client;
+alias Span = pkg::protocol::Span;
+alias Key = pkg::bytes::Key;
+alias HashMap = std::collections::hash_map::HashMap;
+alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
+
+public const extent: u64 = 18446744073709551615_u64;
+
+public struct Frame {
+  doc "Two immutable wire segments and the sum of their reserved byte capacities. Each recipient is charged the complete shared body capacity until its frame is released. Allocator block overhead, reference-control storage and queue entries are not included, so this is not Redis allocator accounting.";
+  public prefix: Frozen<Box<Slots<u8>>>;
+  public body: Frozen<Box<Slots<u8>>>;
+  public charge: u64;
+}
+
+public struct InputQueue {
+  public chunks: Box<Ring<Box<Slots<u8>>>>;
+  public bytes: u64;
+  public ended: Bool;
+}
+
+public struct OutputQueue {
+  public frames: Box<Ring<Frame>>;
+  public closed: Bool;
+}
+
+public struct ReceiveState {
+  public subscribed: Bool;
+  public activity: Option<Instant>;
+  public wake: CancelSource;
+}
+
+public struct ReceiveSnapshot {
+  public subscribed: Bool;
+  public activity: Option<Instant>;
+  public cancel: CancelWatch;
+}
+
+public struct Connection {
+  public id: u64;
+  public input: Shared<InputQueue>;
+  public output: Shared<OutputQueue>;
+  public receive_state: Shared<ReceiveState>;
+  public stop: CancelSource;
+}
+
+public struct Counts {
+  public sub: u64;
+  public psub: u64;
+  public ssub: u64;
+}
+
+public struct RegistryCounts {
+  public channels: u64;
+  public patterns: u64;
+  public shards: u64;
+}
+
+public struct Record {
+  client_id: u64;
+  connection: Connection;
+  resp: u64;
+  channels: Box<Slots<Key>>;
+  patterns: Box<Slots<Key>>;
+  shards: Box<Slots<Key>>;
+  pending: u64;
+  soft: Option<u64>;
+}
+
+public struct Delivery {
+  id: u64;
+  frame: Frame;
+}
+
+public enum Action {
+  Send(connection: Connection, frame: Frame);
+  Close(connection: Connection);
+  Finish(connection: Connection);
+  Membership(connection: Connection, subscribed: Bool);
+  Fire(source: CancelSource);
+}
+
+public struct Deadline {
+  id: u64;
+  started: u64;
+  due: u64;
+}
+
+public struct Stage {
+  publications: Box<Ring<Delivery>>;
+}
+
+public struct Hub {
+  records: HashMap<u64, Record, extent>;
+  clients: HashMap<u64, u64, extent>;
+  channels: HashMap<Key, Box<Slots<u64>>, extent>;
+  patterns: HashMap<Key, Box<Slots<u64>>, extent>;
+  shards: HashMap<Key, Box<Slots<u64>>, extent>;
+  committed: Box<Ring<Action>>;
+  deadlines: PriorityQueue<Deadline, extent>;
+  wake: CancelSource;
+  next: u64;
+  stopping: Bool;
+}
+
+public fn hub_new() -> made: Shared<Hub> pure doc "Creates the event hub. Connection ids are never reused during this process; the supported execution contains fewer than 2^64 promotions.";
+
+public fn hub_share(hub: &Shared<Hub>) -> made: Shared<Hub> reads(hub) doc "Retains the same event hub.";
+
+public fn hub_stop(hub: &Shared<Hub>) -> result: unit reads(hub) waits doc "Removes every registration and queues cancellation of all promoted connections, then stops delivery after its committed actions drain.";
+
+public fn dispatch(hub: Shared<Hub>) -> result: unit pure waits doc "Delivers committed actions in order without holding the hub during inbox publication or cancellation and without waiting for network progress.";
+
+public fn timer(hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure waits doc "Waits on armed soft-limit deadlines or their replacement generation; it never polls an empty queue. time arguments elsewhere are Unix whole seconds.";
+
+public fn connection_get(hub: &Shared<Hub>, id: u64) -> found: Option<Connection> reads(hub) waits doc "Retains a live promoted connection, or returns None after cleanup invalidated its never-reused id.";
+
+public fn connection_live(hub: &Hub, id: u64) -> live: Bool reads(hub) doc "Checks the registration under the caller's hub hold. Promoted command admission uses this boundary before execution, so invalidation prevents later commands even while cancellation delivery is pending.";
+
+public fn connection_share(connection: &Connection) -> made: Connection reads(connection) doc "Retains the connection's independent input, output and cancellation handles.";
+
+public fn forget(hub: &Shared<Hub>, id: u64) -> result: unit reads(hub) waits doc "Idempotently invalidates the registration and removes its subscriptions, then cancels its owners outside the hub hold.";
+
+public fn forget_idle(hub: &Shared<Hub>, connection: &Connection, last: Instant, now: Instant, interval: u64) -> expired: Bool reads(hub), reads(connection) waits doc "Checks authoritative committed membership and latest socket activity together with invalidation. A delayed membership notification cannot expire a subscribed client. interval is monotonic nanoseconds; cancellation fires outside the holds.";
+
+public fn stage_new() -> made: Stage pure doc "Creates an empty attempt-local publication stage.";
+
+public fn stage_has(stage: &Stage) -> present: Bool reads(stage) doc "Whether the attempt has selected at least one external delivery.";
+
+public fn run(hub: &Hub, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, stage: &Stage, in_exec: Bool, time: u64) -> result: unit reads(input), reads(args), writes(hub), writes(client), writes(stage) doc "Runs pub/sub semantics under the caller's hub hold. Acknowledgments accumulate in the caller's reply group; publications retain selected recipients only in the attempt stage until commit.";
+
+public fn commit(hub: &Hub, client: &Client, stage: &Stage, time: u64) -> result: unit writes(hub), writes(client), writes(stage) doc "Commits the promoted client's entire reply prefix first, then accepted staged publications in order; no abandoned attempt calls this function.";
+
+public fn reset(hub: &Hub, client: &Client) -> result: unit writes(hub), writes(client) doc "Quietly removes all three subscription kinds while preserving the promoted connection's identity and owners.";
+
+public fn output_done(hub: &Shared<Hub>, id: u64, bytes: u64, time: u64) -> result: unit reads(hub) waits doc "Releases the retained payload-capacity charge only after the output owner has finished and released an entire frame. The shared body capacity is charged in full per recipient; allocator and queue-control overhead are not represented.";
+
+public fn input_push(connection: &Connection, chunk: Box<Slots<u8>>) -> accepted: Bool reads(connection) waits doc "Enqueues received bytes, refusing a closed input or queued query bytes beyond one GiB. The receiver must close the connection on refusal.";
+
+public fn input_take(connection: &Connection) -> chunk: Option<Box<Slots<u8>>> reads(connection) waits doc "Waits for one received chunk or input termination without polling.";
+
+public fn input_end(connection: &Connection) -> result: unit reads(connection) waits doc "Publishes peer input termination and wakes a waiting command owner.";
+
+public fn output_take(connection: &Connection) -> frame: Option<Frame> reads(connection) waits doc "Waits for the next complete frame or output closure without polling.";
+
+public fn stop(connection: &Connection) -> result: unit reads(connection) waits doc "Closes and empties both inboxes, then fires host cancellation after releasing their holds.";
+
+public fn input_seed(connection: &Connection, bytes: u64) -> accepted: Bool reads(connection) waits doc "Charges the unconsumed input transferred at promotion before the receiver starts.";
+
+public fn input_used(connection: &Connection, bytes: u64) -> result: unit reads(connection) waits doc "Releases query-byte charge after the command owner parses or discards those bytes; taking a chunk does not release it.";
+
+public fn finish(hub: &Shared<Hub>, id: u64) -> result: unit reads(hub) waits doc "Commits output termination after preceding replies; the output owner drains those frames before forgetting the connection.";
+
+public fn receive_snapshot(connection: &Connection) -> snapshot: ReceiveSnapshot reads(connection) waits doc "Reads the receiver idle-exemption class and retains its current membership wake generation together.";
+
+public fn activity(connection: &Connection, instant: Instant) -> result: unit reads(connection) waits doc "Publishes the latest completed receive or frame send; an unsubscribed receiver wakes to recompute its idle deadline.";
+
+public fn client_counts(hub: &Hub, client_id: u64) -> counts: Counts reads(hub) doc "Reads all three membership counts under the caller-held hub using the network client id. Unpromoted and forgotten connections return zero; CLIENT LIST can hold its metadata table and this hub together.";
+
+public fn registry_counts(hub: &Hub) -> counts: RegistryCounts reads(hub) doc "Reads the number of distinct ordinary channels, patterns and shard channels under one hub snapshot for INFO stats.";

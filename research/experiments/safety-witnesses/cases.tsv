@@ -1,0 +1,11 @@
+case	class	rule	kind	source
+redis-blocked-client	use-after-free	REF-2	InvalidReferenceUse	let next_id = cached_next^.inner.client_id;
+valkey-pending-tls	use-after-free	REF-2	InvalidReferenceUse	let next_id = cached_connection^.connection_id;
+dragonfly-reply-lifetime	use-after-free	REF-2	InvalidReferenceUse	let first = queued^[0_u64];
+valkey-acl-user	use-after-free	REF-2	InvalidReferenceUse	let first_name_byte = client_user^.name[0_u64];
+redis-xackdel	bounds	OP-4	UndischargedBoundsObligation	set fixed[at] = ids^[at];
+redis-xautoclaim	bounds	OP-4	UndischargedBoundsObligation	set deleted.inner[removed] = at;
+garnet-zttl	data-race	SHARE-2	ReadonlyWriteTarget	set remaining = expiry_query(sorted: state, now: now);
+redis-script-timeout	data-race	WAIT-3	InvalidSpawn	let observed = spawn read_busy(script: &script);
+keydb-lock-order	deadlock	SHARE-2	WaitInsideAtomic	atomic global_state = &global
+valkey-shutdown	deadlock	SHARE-2	WaitInsideAtomic	wait_for_lazy_free(completed: move completed);

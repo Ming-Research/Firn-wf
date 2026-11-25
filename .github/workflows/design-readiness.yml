@@ -1,12 +1,20 @@
-# Nothing unapproved reaches main.
+# Nothing unlogged reaches main.
 #
 # On a draft branch the agent changes the design tree freely. `make
-# design-ready` fails while it differs from its base without a new
-# owner-approved entry in `design/log.md`, which the agent writes only after
-# the owner approves. A draft shows the job as skipped, so work in progress
-# never turns it red; it runs where its answer decides something: a pull
-# request that is ready for review, and main.
+# design-ready` fails while it differs from its base without a new entry in
+# `design/log.md` that names every changed node. A draft shows the job as
+# skipped, so work in progress never turns it red; it runs where its answer
+# decides something: a pull request that is ready for review, and main.
+#
+# It is also one of the project's full workflows (`ci.full` of
+# wf-agents.toml): before the engine of wf-agents merges a work, it runs this
+# file as main holds it, by hand, with the commit to test and a value only
+# its request knows, which the run's name holds. Each check, a target in
+# TESTS of the Makefile, runs by itself through
+# whitefoot-kit/ci/run-tests.py, and what became of each is JUnit XML in the
+# artifact `test-results`, which the engine reads.
 name: design-readiness
+run-name: ${{ inputs.call && format('design-readiness {0}', inputs.call) || '' }}
 
 on:
   pull_request:
@@ -14,10 +22,24 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit to check out and check; empty for the commit the run is asked on
+        required: false
+        default: ''
+      call:
+        description: A value only the request that asks for this run knows, which the run's name holds; empty for a run asked by hand
+        required: false
+        default: ''
+      test_stop:
+        description: How long one check may run before it is stopped, in whole seconds; empty for no stop but the job's limit
+        required: false
+        default: ''
 
+# Every run the engine asks for is kept.
 concurrency:
-  group: design-readiness-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: design-readiness-${{ inputs.call || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !inputs.call }}
 
 jobs:
   design-readiness:
@@ -25,9 +47,16 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 2
+    env:
+      TESTS_JUNIT: ${{ github.workspace }}/build/test-results/Design readiness.xml
+      TESTS_SUITE: Design readiness
+      TESTS_STOP: ${{ inputs.test_stop }}
     steps:
       - uses: actions/checkout@v4
         with:
+          # The commit the engine gives; for any other run, empty, which is
+          # the commit of the event.
+          ref: ${{ inputs.commit }}
           fetch-depth: 0
 
       # The readiness check runs Design-skill's lint, and the Makefile
@@ -45,20 +74,42 @@ jobs:
           fi
 
       # A pull request checks out its merge commit, so the review base is
-      # main's tip; a main push compares with its previous tip.
+      # main's tip; a main push compares with its previous tip. A commit the
+      # engine gives is reviewed as a work branch is, against its fork point
+      # from main: the one it checks before a merge merges main into the
+      # work's branch, so its first parent is not main.
       - name: Select the design review base
         env:
           PUSH_BEFORE: ${{ github.event.before }}
+          COMMIT: ${{ inputs.commit }}
         run: |
-          design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
+          if [ -n "$COMMIT" ]; then
+            design_review_base=$(git merge-base refs/remotes/origin/main HEAD)
+          else
+            design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
+          fi
           echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
           git log --oneline -1 "$design_review_base"
 
-      - name: Require owner approval of design-tree changes
-        run: make design-ready
+      - name: Require a change-log entry for design-tree changes
+        run: whitefoot-kit/ci/run-tests.py design-ready
 
       # An experiment release of an unmerged Whitefoot commit may be pinned
       # on a work branch, never on a revision bound for main
       # (whitefoot-kit/downstream.md, "Main pins a main release").
       - name: Refuse an experiment Whitefoot pin
-        run: make pin-ready
+        run: whitefoot-kit/ci/run-tests.py pin-ready
+
+      - name: Name the job's end in its results
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ job.status }}
+        run: whitefoot-kit/ci/run-tests.py --end "$STATUS"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: test-results
+          path: build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

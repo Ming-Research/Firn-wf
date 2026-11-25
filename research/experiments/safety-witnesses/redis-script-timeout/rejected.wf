@@ -1,0 +1,22 @@
+struct ScriptState {
+  doc "Redis IO reads the main context's script timeout flag without synchronization: https://github.com/redis/redis/pull/15781 .";
+  timed_out: Bool;
+}
+
+fn read_busy(script: &ScriptState) -> busy: Bool reads(script.timed_out) waits {
+  return script^.timed_out;
+}
+
+fn leave_timeout(script: &ScriptState) -> result: unit writes(script.timed_out) {
+  set script^.timed_out = False();
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure waits {
+  let busy = True();
+  let script = ScriptState(timed_out: busy);
+  let observed = spawn read_busy(script: &script);
+  leave_timeout(script: &script);
+  let finished = observed;
+  return std::process::exit_status(code: 0_u8);
+}

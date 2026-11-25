@@ -9,7 +9,7 @@ scripting through Halo, the Lua engine of
 
 firn serves Whitefoot: it is the real server that shows what Whitefoot gives a
 concurrent, persistent network program under its guarantees, and exposes what
-Whitefoot still lacks. Its milestones ([design](design/firn.md)) are
+Whitefoot still lacks. Its milestones ([design](design/decisions/milestones.md)) are
 standalone Redis application workloads, cache and session storage and
 scripted conditional updates, used by existing applications through their
 ordinary clients with their business logic unchanged, and then the keyspace
@@ -37,30 +37,33 @@ When priorities conflict, first:
 
 ## Paths
 
+- Release packaging: `packaging/` holds the runtime Dockerfile and the
+  quickstart checker; `docs/quickstart.md` holds the user commands it executes.
 - Research record: `research/investigations/` (`firn/` holds the server's
   design, rulings, criteria and measurements) and `research/experiments/`
   (the instruments and their results). Records from before firn moved here
   cite Whitefoot's paths of their time, such as `apps/firn/`.
-- Maintained TODO: the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip),
-  the only TODO; repositories keep no TODO file. firn's backlog is in
-  `firn-server` and `firn-ops`; Whitefoot gaps are in "firn 需要的 Whitefoot 工作"
-  (`firn-wf`) and Whitefoot's own areas. Code, documents and checks that
-  refer to unfinished work cite its board item key.
 - Review checklist: [docs/review-checklist.md](docs/review-checklist.md).
 - Performance comparisons build firn with `make firn-lto` and run
   `research/experiments/redis-bench/redis-bench.sh` on the 14900K through the
   `redis-bench.yml` workflow; an upgrade of Whitefoot uses them for the
   comparison
   [downstream.md](whitefoot-kit/downstream.md#upgrading-whitefoot) asks for.
+  The servers run on P-cores and the load clients on all 16 E-cores
+  (CPUs 16-31), for every competitor alike; a cell whose clients average over
+  90% busy is marked client-limited.
 
 ## Checks
 
-- `make check`, the gate, runs in CI on every push, its targets in three
+- `make check`, the gate, runs in CI on every push, its targets in four
   parallel jobs (`check.yml`) so that the answer takes as long as the
   slowest: it downloads the pinned compiler (`make compiler`), builds firn
   and runs the Redis 7.2.16 suite ratchet (`tests/redis-suite/`, without
-  `--tolerant`); builds firn and runs its network cases (`tests/`); and runs
-  the design lint and the measurement instrument's pure `placement-selftest`.
+  `--tolerant`); builds firn and runs its network cases (`tests/`); runs
+  the design lint and the measurement instrument's pure `placement-selftest`;
+  and compiles the paired safety witnesses
+  (`research/experiments/safety-witnesses/`). Each faulty program must receive
+  its specified source diagnostic and each correction must build with the pin.
   `make gate-sync` fails when the targets `check.yml` runs
   and those of `make check` differ, so a target added to one is added to the
   other. The suite runs as two shards side by side
@@ -73,7 +76,8 @@ When priorities conflict, first:
   dispatch-only `redis-suite-record.yml` workflow produces both lists for
   review and commit, running the suite in the gate's two shards so that its
   evidence holds under the gate's load.
-- The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
+- The gate needs git, curl, GNU `patch`, Python 3, Rust stable with Cargo,
+  `tclsh` 8.5 or
   later, a C compiler and `make` (the suite builds the Redis 7.2.16 tools it
   needs from source and caches them), the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of
@@ -92,16 +96,32 @@ When priorities conflict, first:
   as the oracle, runs `check-writeback` (a file made before a 40 s failure
   must survive it), runs `make aof-sync-fault` and
   removes the device with `teardown MOUNT` even when a step failed. The
-  target runs the two sync-failure cases of `tests/aof_sync_fault.rs`,
+  target runs the eight cases of `tests/aof_sync_fault.rs` that it selects,
   ignored in `make check`, against firn and the oracle, one after the other,
   each on a filesystem made anew by `reset` (`remount` fails the run when
   `e2fsck -fn` finds the metadata damaged),
   and fails unless `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER`
-  names the oracle and both cases passed. It needs Linux with passwordless
+  names the oracle and all eight cases passed. It needs Linux with passwordless
   sudo, `dmsetup` and the dm-flakey module; `setup` may install
   `linux-modules-extra-$(uname -r)` through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
+- Each test is a target in `TESTS` of the Makefile: the gate's targets but
+  `compiler`, then `aof-sync-fault`, `design-ready` and `pin-ready`. CI runs
+  each in a step by itself through `whitefoot-kit/ci/run-tests.py`, which
+  reports it as JUnit XML; `fast.yml` runs, by hand only, just the tests it is
+  given ([downstream.md](whitefoot-kit/downstream.md#tests-in-ci)). A push to
+  a branch the engine of wf-agents makes (`work-…`, `wf-try/…`) runs no check.
+- `release.yml` is separate from `make check`: packaging pull requests and
+  manual dispatches build `make firn-lto`, check its shared libraries, package
+  the Linux x86-64 program and Docker image, and execute the quickstart's
+  commands against both. Only a pushed `v*` tag publishes the checked tarball,
+  SHA-256 file and image to GitHub Releases and GHCR; write permissions belong
+  only to that publish job. Only tags matching `^v[0-9]+\.[0-9]+\.[0-9]+$`
+  are stable; all other accepted tags are prereleases and do not move `latest`.
+  A stable publication checks the quickstart's public defaults and requires
+  its resolved release to match the pushed tag; dispatch with `check_latest` runs that check
+  alone against the latest published release.
 
 ## Whitefoot
 
@@ -114,10 +134,7 @@ Whitefoot gap; a change to them is made in
 
 Before writing Whitefoot code, read the kit's
 [README.md](whitefoot-kit/README.md) and its writing guide
-[docs/writing.md](whitefoot-kit/docs/writing.md). Where the guide does not
-cover a form, or a compiler diagnostic does not lead to the accepted form,
-file a request into Whitefoot-kit on the status board with the source
-written, the compiler output and the form finally accepted.
+[docs/writing.md](whitefoot-kit/docs/writing.md).
 
 ## Reports
 
@@ -128,6 +145,4 @@ Whitefoot gap filed.
 
 `README.md` introduces and navigates, `firn/README.md` describes the server's
 commands and invocation, `docs/review-checklist.md` holds the review items,
-the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)
-tracks open defects and Whitefoot requirements in the areas named above, and
-`research/` holds questions, experiments and results.
+and `research/` holds questions, experiments and results.

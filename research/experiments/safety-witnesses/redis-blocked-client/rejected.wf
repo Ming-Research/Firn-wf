@@ -1,0 +1,30 @@
+struct Waiter {
+  doc "Redis handleClientsBlockedOnKey use-after-free: https://github.com/redis/redis/pull/15594 . Cache the next waiter before a callback can evict it.";
+  client_id: u8;
+  next: Option<Box<Waiter>>;
+}
+
+fn reprocess(current: &Waiter) -> result: unit writes(current.next) {
+  set current^.next = None<Box<Waiter>>();
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure {
+  let end = None<Box<Waiter>>();
+  let second = Waiter(client_id: 2_u8, next: move end);
+  let second_cell = box_new::<Waiter>(value: move second);
+  let next = Some<Box<Waiter>>(value: move second_cell);
+  let first = Waiter(client_id: 1_u8, next: move next);
+  let head = box_new::<Waiter>(value: move first);
+  let list_view = &head.inner;
+  match list_view^.next {
+    Some(value: cached_next) => {
+      reprocess(current: &head.inner);
+      let next_id = cached_next^.inner.client_id;
+      return std::process::exit_status(code: next_id);
+    }
+    None() => {
+      return std::process::exit_status(code: 0_u8);
+    }
+  }
+}
