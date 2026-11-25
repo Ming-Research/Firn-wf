@@ -929,3 +929,97 @@ finds. A second counting run follows with 2,000,000 operations and 100 repetitio
 the reading rule unchanged: shorter runs interleave the three builds more finely,
 and more of them narrow the interval. The target now also prints the mean of the ten
 lowest costs for cycles, described only.
+
+#### Second counting run, results
+
+[Run 45672136007](https://github.com/Ming-Research/Firn-wf/actions/runs/45672136007)
+(commit fec1baa, job 197 s): 2,000,000 operations, 100 repetitions, CPU 4. The other
+CPUs were 66.1% busy over the measurement and the load average read 37.
+
+| operation, cycles | old | new/old (95% interval) | twin/old (95% interval) | reading |
+| --- | ---: | --- | --- | --- |
+| `replace` | 525.34 per op | 1.0071 [0.9866, 1.0281] | 1.0257 [1.0058, 1.0459] | unresolved: the twin excludes 1 |
+| `lookup` | 414.88 per op | 0.9716 [0.9518, 0.9919] | 1.0087 [0.9857, 1.0324] | unresolved: the twin is 4.7% wide |
+
+Retired instructions again agree with the earlier runs: the new build executes 0.9948
+of the old build's instructions per `replace` (613.90 per operation) and 0.9934 per
+`lookup` (475.21), the twin 1.0000, and the new build executes more in none of the 100
+repetitions; `fill` runs 60,013,137 instructions with the old build and 59,188,390
+with the new. Described and not read: the mean of the ten lowest costs gives
+`replace` new/old 1.0146 against a twin's 1.0535, and `lookup` 0.9717 against 1.0015.
+Wall time is unresolved as well (`replace` 1.0005 [0.9616, 1.0410] with its twin 1.0190
+[0.9810, 1.0586]; `lookup` 0.9424 [0.9049, 0.9814] with its twin 0.9875 [0.9425, 1.0346]).
+
+**Reading of the program.** Both counting runs leave both operations unresolved, so
+by the rule stated before them the program neither reproduces the slowdown nor
+rejects it, and by the owner's answer there is no third run. What the two runs do
+fix is instructions: the library map built by the new release executes 0.47% to
+0.66% fewer instructions per operation than the old release's build, exactly, in
+three runs, which is the opposite of the instruction increase the first profile
+read in `hash_map_lookup`. Cycles are not read, and the twin shows why: an identical
+binary run from a second path costs up to 2.6% more cycles per `replace` (twin/old
+1.0257, an interval that excludes 1) on this machine, whose other CPUs were 46% to 66%
+busy, so a difference of the size looked for lies inside what the machine does to one
+binary. The point estimates point where the first run's exploratory ones did: `lookup`
+at 0.9493 and 0.9716 (new faster, with twins at 0.9575 and 1.0087) and `replace` at
+1.0134 and 1.0071 (twins 1.0149 and 1.0257); none of them is a reading. This program
+is therefore **not** a reproduction, and it is not handed over as one. It has one
+thread, no entry holding the map, no lock and no network, which the server has; a
+quiet machine, which the shared 14900K was not, may resolve it, and nothing here says
+that the library map alone is exonerated.
+
+## Attribution
+
+What each slow cell's cause is, from the runs above, and what is still open.
+
+**`hset` and `hget`: the release, that is the compiler with its standard library and
+runtime.** `head` against `cross` (the same new source, the old release against the
+new) is 0.9478 [0.9363, 0.9529] and 0.9435 [0.9340, 0.9624] in throughput over 16
+clean passes (run 45631892786), and server CPU per request is 5.6% and 6.2% higher
+(medians of the per-pass ratios, 16 and 15 of 16 passes); `cross` against `base` (new
+source against old, old release) holds 1 for both, so neither Halo's nor firn's edits
+are in it. The release is the only difference between `cross` and `head`, so it
+includes the compiler, `std::collections::hash_map` and the runtime together; the
+images cannot split them. What the profiles and listings add:
+
+- the whole profile retires the same instructions per request in all four images
+  (`hset` 4948 to 4951, `hget` 5174 to 5182 in the first run, 4946 to 4962 and 5094 to
+  5115 in the second), so the release makes no image do more work in total, and IPC
+  is lower in `head` (`hset` 1.842 against `cross`'s 1.917);
+- the profile rule names the keyspace lock group (`try_entry`, the runtime's take of
+  a key's lock) for the compiler's share, and not the hash-map group by itself;
+- the code the two releases build differs, in the annotated functions, only in
+  `hash_map_lookup` and `hash_map_try_put` (the home bucket from `imul`, a shift and a
+  conditional move, where the old release divides) and in the offsets of the fields
+  the callers read from the map's header, which has a word more (`shift`); the
+  entry-level functions (`try_entry`, `acquire_entry`, `execute_client` and the
+  others) have the same instructions;
+- the cycles the map functions gain sit at one instruction, the compare after the
+  load of a probed slot's tag byte (+19% in `hash_map_lookup` and +86% in
+  `hash_map_try_put` against `cross` in the second run), the first touch of a slot
+  in a 25 MB table; a model of the test's keys gives the new home function fewer
+  probes (1.288 against 1.351), not more;
+- the program of the library map alone, built by both releases, executes fewer
+  instructions in the new build and does not resolve a cycle difference (above).
+
+So the cause of `hset` and `hget` is the release, and not firn's or Halo's code;
+which part of the release (the map's code or layout, the runtime's lock, or how
+either sits in the server) the evidence does not tell. The Whitefoot item that this
+work hands to the owner states the firn numbers with their run ids and the listings'
+differences, says that the library-only program does not reproduce it, and asks
+Whitefoot to look at the pair on a quiet machine. Nothing in firn is changed for it
+(constitution, article 4).
+
+**`lpush` (and `sismember`): the source edits.** `cross` against `base` is 0.9793
+[0.9730, 0.9997] for `lpush` and 0.9719 [0.9606, 0.9811] for `sismember`, `head`
+against `cross` holds 1 for both, and `base-twin` against `base` holds 1. Every
+annotated function of the `lpush` path (`execute_client`, `push_body`, `push_item`,
+`acquire_entry`, `try_entry`, `record_memory_peak`) has the same instructions in
+`base`, `base-twin` and `cross` and starts at a different address in every image, so
+the edits changed no code of the path; they moved it, and the cause is how it sits
+(Whitefoot item 287, the placement of code, is the related item there). Whether
+Halo's or firn's edits move it was not split, because no edit changes an instruction
+of the path, so a build with the old Halo could say only which side's addresses move.
+No firn change that is not itself a placement of the same code is available, none is
+made, and the 2% stays; whether to spend an experiment on placement is the owner's
+choice.
