@@ -1,7 +1,10 @@
-//! Blocking-list witnesses use Redis 7.2.16 recordings, never Firn output.
-//! Each expectation cites the Redis 7.2.16 recording it came from. A step whose
-//! expectation is ORACLE-pending fails before the server starts, so a missing
-//! recording can never pass.
+//! Blocking-list witnesses are of two kinds. The scenario cases use Redis
+//! 7.2.16 recordings, never Firn output: each expectation cites the recording
+//! it came from, and a step whose expectation is ORACLE-pending fails before the
+//! server starts, so a missing recording can never pass. The race cases
+//! (`creation_race`) have no recording, since a race has no fixed order to
+//! record: their expectations are what Redis's one-command-at-a-time model
+//! gives every interleaving, stated beside each case.
 
 use super::*;
 use std::collections::BTreeMap;
