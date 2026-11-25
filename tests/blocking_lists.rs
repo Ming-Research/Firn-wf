@@ -357,3 +357,105 @@ fn blocking_lists_negative_finite_errors_resp2() { run("negative-finite-errors-r
 #[test]
 #[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
 fn blocking_lists_negative_finite_errors_resp3() { run("negative-finite-errors-resp3"); }
+
+/// A blocking pop races the push or move that creates its list. Redis 7.2.16
+/// runs one command at a time, so whichever of the two it runs first, the
+/// pop's client receives the element, the list is gone afterwards and nobody
+/// stays blocked; a wake-up lost between the pop's registration and the
+/// creating command, which reads a bound on the waited keys, would leave the
+/// client blocked with the element in the list. The expectations are what
+/// Redis's one-command-at-a-time model gives every interleaving (the BLPOP,
+/// BRPOP, BLMOVE, LPUSH, RPUSH and LMOVE pages of the Redis 7.2 command
+/// reference), not a recording.
+fn creation_race(drivers: &str, standing_waiter: bool, rounds: usize) {
+    let scenario = "creation-race";
+    let program = CompiledProgram::from_environment();
+    let lease = support::lease_port();
+    let mut child = Some(spawn(&program, &lease, 3, false, drivers));
+    let mut waiter = connect_when_ready(lease.port(), child.as_ref().unwrap());
+    let mut producer = connect_when_ready(lease.port(), child.as_ref().unwrap());
+    let mut standing = connect_when_ready(lease.port(), child.as_ref().unwrap());
+    for stream in [&mut waiter, &mut producer, &mut standing] {
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    }
+    let others = if standing_waiter {
+        // A client waiting on another key keeps the bound above zero, so a
+        // creating command takes the event hub's statement as well.
+        standing.write_all(&resp(&["BLPOP", "standing", "0"])).unwrap();
+        wait_blocked(&mut producer, 1, scenario);
+        1
+    } else {
+        0
+    };
+    for round in 0..rounds {
+        for variant in 0..4_usize {
+            let key = format!("race{round}v{variant}");
+            let source = format!("{key}s");
+            let output = format!("{key}o");
+            let element = "v";
+            let (waiter_request, producer_request): (Vec<&str>, Vec<&str>) = match variant {
+                0 => (vec!["BLPOP", key.as_str(), "0"], vec!["LPUSH", key.as_str(), element]),
+                1 => (vec!["BRPOP", key.as_str(), "0"], vec!["RPUSH", key.as_str(), element]),
+                2 => (vec!["BLPOP", key.as_str(), "0"], vec!["LMOVE", source.as_str(), key.as_str(), "LEFT", "RIGHT"]),
+                _ => (vec!["BLMOVE", key.as_str(), output.as_str(), "LEFT", "RIGHT", "0"], vec!["LPUSH", key.as_str(), element]),
+            };
+            if variant == 2 {
+                producer.write_all(&resp(&["RPUSH", source.as_str(), element])).unwrap();
+                assert_eq!(integer_reply(&mut producer, "seed the move's source"), 1, "{scenario}: seed");
+            }
+            let delays = [0_u64, 20, 100, 400];
+            let waiter_delay = Duration::from_micros(if round % 2 == 0 { delays[round / 2 % 4] } else { 0 });
+            let producer_delay = Duration::from_micros(if round % 2 == 1 { delays[round / 2 % 4] } else { 0 });
+            let barrier = std::sync::Barrier::new(2);
+            let (waiter_reply, producer_reply) = std::thread::scope(|scope| {
+                let waiter_thread = scope.spawn(|| {
+                    barrier.wait();
+                    std::thread::sleep(waiter_delay);
+                    waiter.write_all(&resp(&waiter_request)).unwrap();
+                    wire_frame(&mut waiter)
+                });
+                let producer_thread = scope.spawn(|| {
+                    barrier.wait();
+                    std::thread::sleep(producer_delay);
+                    producer.write_all(&resp(&producer_request)).unwrap();
+                    wire_frame(&mut producer)
+                });
+                (waiter_thread.join(), producer_thread.join())
+            });
+            let waiter_reply = waiter_reply.unwrap_or_else(|_| panic!(
+                "{scenario}, {drivers} drivers, standing {standing_waiter}, round {round}, variant {variant}: the blocked pop got no reply (lost wake-up)"));
+            let producer_reply = producer_reply.unwrap_or_else(|_| panic!(
+                "{scenario}, {drivers} drivers, round {round}, variant {variant}: the producer got no reply"));
+            let expected_waiter: Vec<u8> = if variant == 3 {
+                b"$1\r\nv\r\n".to_vec()
+            } else {
+                format!("*2\r\n${}\r\n{key}\r\n$1\r\nv\r\n", key.len()).into_bytes()
+            };
+            assert_eq!(waiter_reply, expected_waiter,
+                "{scenario}, {drivers} drivers, standing {standing_waiter}, round {round}, variant {variant}: the pop's reply");
+            let expected_producer: &[u8] = if variant == 2 { b"$1\r\nv\r\n" } else { b":1\r\n" };
+            assert_eq!(producer_reply, expected_producer,
+                "{scenario}, {drivers} drivers, standing {standing_waiter}, round {round}, variant {variant}: the producer's reply");
+            wait_blocked(&mut producer, others, scenario);
+            let mut state: Vec<(String, &[u8])> = vec![(key.clone(), &b":0\r\n"[..]), (source.clone(), &b":0\r\n"[..])];
+            if variant == 3 { state.push((output.clone(), &b":1\r\n"[..])); }
+            for (name, expected) in state {
+                producer.write_all(&resp(&["LLEN", name.as_str()])).unwrap();
+                assert_eq!(wire_frame(&mut producer), expected,
+                    "{scenario}, {drivers} drivers, round {round}, variant {variant}: LLEN {name}");
+            }
+        }
+    }
+    drop((waiter, producer, standing));
+    assert_eq!(finished(child.take().unwrap()).0, 0, "{scenario}: clean server exit with {drivers} drivers");
+}
+
+#[test]
+fn blocking_lists_pop_racing_the_command_that_creates_its_list_with_no_other_waiter() {
+    for drivers in ["1", "4"] { creation_race(drivers, false, 60); }
+}
+
+#[test]
+fn blocking_lists_pop_racing_the_command_that_creates_its_list_with_a_waiter_elsewhere() {
+    for drivers in ["1", "4"] { creation_race(drivers, true, 60); }
+}
