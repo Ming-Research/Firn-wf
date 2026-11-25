@@ -5,6 +5,14 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-14 Measure the four competitors by the baseline rules
+
+Nodes: decisions/testing/benchmarks (written there as nine decisions; the older node firn/measurement-sessions is gone)
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-instrument-tree, which asked to approve PR #109's nine new design decisions at head 8019e34 (the tree is unchanged at the current head): competitors run in compare mode with the firn images' server CPUs, alternating passes and durability settings; strict version and provenance checks with installer receipts binding version, URL, archive SHA-256 and executable path and hash; Garnet's net8.0 apphost with a compatible .NET 8 runtime; Dragonfly refused in AOF cells; Garnet's AOF results labelled durability-not-equal until disk synchronization is established; exactly 50 client connections; multi-process quantiles labelled upper bounds; and one extra single-process threaded pass whose exact merged p99 alone decides the latency verdict.
+
+Summary: All nine are additions written from the six comparison rules of PR #108 (card firn-q-rebase-rules); none changes or removes an earlier decision. If those rules change, especially the p99 and durability ones, the matching decisions are rewritten. The PR merges only after review, the gate, the readiness check and the competitor-install card pass, and the merge is the owner's.
+
 ## 2026-10-24 Date the file-descriptor limit decision's ground
 
 Nodes: firn/startup
@@ -146,14 +154,6 @@ Nodes: firn/orderly-stop
 Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-replay-stop-tree, which asked to approve PR #124's design change at head 0059406: the stop listener opens before the replay, so a host that refuses it stops firn with status 3 before the replay and ahead of status 4; a stop requested during the replay stops it at the next check (before the first command, then every 1024 commands, as Redis 7.2.16 does) and firn exits with status 0 without creating or opening an incremental file, truncating, deleting history or writing the manifest; an upgrade of an old single file stays before the replay as in Redis; having the replay poll a cancellation handle is rejected.
 
 Summary: A SIGTERM or SIGINT during the startup replay used to end firn by the host default, where Redis 7.2.16 installs its handlers before loading and exits with status 0 leaving the append-only directory unchanged. The listener now opens first and the replay reads the server's stop request. A request arriving after the last check is taken as the ordinary orderly stop once firn listens. The first signal still closes the listener, so a later signal ends firn at once; matching Redis there needs a Whitefoot immediate exit, requested from Whitefoot.
-
-## 2026-10-14 Measure the four competitors by the baseline rules
-
-Nodes: firn/measurement-sessions
-
-Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-instrument-tree, which asked to approve PR #109's nine new design decisions at head 8019e34 (the tree is unchanged at the current head): competitors run in compare mode with the firn images' server CPUs, alternating passes and durability settings; strict version and provenance checks with installer receipts binding version, URL, archive SHA-256 and executable path and hash; Garnet's net8.0 apphost with a compatible .NET 8 runtime; Dragonfly refused in AOF cells; Garnet's AOF results labelled durability-not-equal until disk synchronization is established; exactly 50 client connections; multi-process quantiles labelled upper bounds; and one extra single-process threaded pass whose exact merged p99 alone decides the latency verdict.
-
-Summary: All nine are additions written from the six comparison rules of PR #108 (card firn-q-rebase-rules); none changes or removes an earlier decision. If those rules change, especially the p99 and durability ones, the matching decisions are rewritten. The PR merges only after review, the gate, the readiness check and the competitor-install card pass, and the merge is the owner's.
 
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 

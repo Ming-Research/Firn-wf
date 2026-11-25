@@ -310,7 +310,7 @@ jobs:
         run: whitefoot-kit/ci/run-tests.py design-lint
 
       - name: Check the measurement instrument without starting servers
-        run: make placement-selftest
+        run: whitefoot-kit/ci/run-tests.py placement-selftest
 
       - name: Check that these jobs run every target of make check
         run: whitefoot-kit/ci/run-tests.py gate-sync

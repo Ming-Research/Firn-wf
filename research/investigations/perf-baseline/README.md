@@ -75,13 +75,14 @@ single-threaded server is offered the same CPUs as the threaded ones.
 
 ## Workloads and settings
 
-**redis-benchmark cells.** Redis 7.0's 19 default tests (`SUITE_DEFAULT`:
+**redis-benchmark cells.** Redis 7.2.16's 20 default tests (`SUITE_DEFAULT`:
 ping_inline, ping_mbulk, set, get, incr, lpush, rpush, lpop, rpop, sadd,
 hset, spop, zadd, zpopmin, lrange_100, lrange_300, lrange_500, lrange_600,
-mset) at pipeline depths 1 and 16, 50 connections, 100,000 random keys,
-3-byte values, the redis-benchmark that `tests/redis-suite/reference.sh`
-builds from Redis 7.2.16. Redis 7.2.16's default suite adds XADD; it joins
-when firn's minimal streams land (`firn-scope-min-streams`). No
+mset, xadd) at pipeline depths 1 and 16, 50 connections, 100,000 random
+keys, 3-byte values, the redis-benchmark that `tests/redis-suite/reference.sh`
+builds from Redis 7.2.16. The lrange tests read the first 100, 300, 450 and
+600 elements, as redis-benchmark's own tests do; a measurement of lrange_500
+that read 500 elements is not comparable with one that reads 450. No
 persistence on any line: Redis and Valkey `--save "" --appendonly no`,
 Dragonfly `--dbfilename=` (no snapshot), Garnet without `--aof` (its
 default), firn without an append-only file.
@@ -214,7 +215,7 @@ and 16, 2 passes of 5 seconds, every installed line and the twin. From it:
   found.
 - The full run is dispatched one server-CPU count at a time, so that each
   dispatch holds the machine for a bounded slot (at 3 passes of 5 seconds,
-  19 tests × 2 depths × 8 lines × 15 s ≈ 76 minutes before overhead), and
+  20 tests × 2 depths × 8 lines × 15 s ≈ 80 minutes before overhead), and
   the probe's own duration is used to check that estimate before the first
   dispatch.
 
@@ -249,34 +250,50 @@ of the two runs' twin spreads in that cell.
 
 ## Gaps in the instrument against these rules
 
-`research/experiments/redis-bench/redis-bench.sh` and `redis-bench.yml` at
-Firn-wf f12587f do not yet run this baseline:
+At Firn-wf f12587f the instrument did not run this baseline. Each of the
+nine gaps found then is listed below with what closes it now, in
+`research/experiments/redis-bench/` (the instrument), or where it still
+holds. The instrument is not the verdict: it does not calculate rule 6.
 
-1. No mode measures competitors under the comparison's conditions.
-   `compare` mode has the twin, the reversed order, p99 and the
-   client-limited record, but measures only firn images and Redis.
-   `scale` mode measures `reference valkey-io dragonfly-n garnet-n firn-n
-   firn-base-n` in a fixed order every pass, with no plain `valkey`, no Redis
-   I/O-thread line, a twin only when `FIRN_BASELINE` names the same
-   executable, ten tests (`SCALE_TESTS`) by default, no client-busy record,
-   and no p99 for tests its multi-process client runs.
-2. `compare` mode's multi-process client opens 3 connections per client CPU
-   (48 with 16 client CPUs, not 50) and keeps only the first process's p50
-   and p99.
-3. `workloads` mode runs AOF only for `reference-aof` and `firn-aof-n`;
-   lines selected by `WORKLOAD_SERVERS` always run without AOF, and there
-   is no AOF start for Valkey or Garnet.
-4. `garnet-*` starts with `--port` and `--bind` only: no `--lua`, so
-   `limiter-script` cannot run on it, and no AOF options.
-5. `dragonfly-*` leaves `--proactor_affinity_mode` at its default; whether
-   its threads stay inside the server list is unchecked.
-6. `valkey-io` passes `--io-threads-do-reads yes`, a no-op in Valkey 9.1.2,
-   and at one CPU equals `valkey`; there is no `reference-io` line.
-7. `host.txt` records competitor versions without checking them ("none of
-   them stops the run"), and no competitor archive hash.
-8. The AOF start check (`INFO persistence`, `CONFIG SET
-   auto-aof-rewrite-percentage`) is Redis-specific and runs only in
-   `compare` mode; `workloads` mode checks the Redis version only for its
-   memory and connection workloads, not for the application workloads.
-9. Memory is recorded only after `session-get`'s fill; redis-benchmark
-   lines record none.
+1. *No mode measured competitors under the comparison's conditions.*
+   Closed in `compare` mode: `COMPARE_LINES` (the `workload_servers`
+   input) selects `reference`, `reference-io`, `valkey`, `valkey-io`,
+   `dragonfly` and `garnet` beside the firn images and their twin, with the
+   images' server CPU list, reversed pass order and client-busy record
+   (`competitors_selftest`, `compare-client.py selftest`).
+2. *48 connections, and only the first process's p50 and p99.* Closed: the
+   client opens exactly 50 connections (`compare-client.py` allocation), the
+   rows of several processes are labelled upper bounds, and one extra
+   single-process threaded pass per line gives the exact merged p99
+   (`compare_rows_selftest`).
+3. *`workloads` mode ran AOF only for two lines.* Closed for the baseline,
+   which uses `compare` mode with `aof=true` (Valkey and Garnet start with
+   AOF, Dragonfly is refused). Still open in `workloads` mode, which runs
+   the selected lines without AOF.
+4. *Garnet started without `--lua` and AOF options.* Closed in `compare`
+   mode (`competitor_args`). Garnet's disk synchronization stays
+   unverified, so its AOF results carry `durability=not_equal_unverified_fsync`.
+5. *Dragonfly's affinity was unchecked.* Closed in `compare` mode
+   (`compare_affinity_check`; a restart with affinity off when startup
+   escapes the server list).
+6. *`valkey-io` passed a no-op flag and there was no `reference-io` line.*
+   Closed in `compare` mode (`competitor_args`, with a `reference-io` line
+   from two CPUs up).
+7. *Versions and archive hashes were recorded and not checked.* Closed for
+   everything but the version line of Dragonfly and Garnet: a full
+   (non-probe) run fails on a missing executable, a version that is not
+   the pinned release or a missing or mismatched installer receipt
+   (`versions_selftest`, `compare_versions_selftest`). The version line itself is open: by
+   its source (`src/server/dfly_main.cc`, `config.version_string`) Dragonfly
+   2.0.2 prints `dragonfly v2.0.2-<git sha>`, which the matcher rejects, and
+   Garnet 2.2.1's `--version` output is not known from its source, so a
+   full run selecting either fails on its version line until the rule
+   accepts what they print.
+8. *The AOF start check was Redis-specific and ran only in `compare` mode.*
+   Closed for the baseline: `compare` mode checks firn, Redis and Valkey
+   through `INFO persistence`, and Garnet through its log
+   (`compare_garnet_aof_check`). The application `workloads` mode still
+   does not enforce versions or AOF.
+9. *Memory was recorded only after `session-get`'s fill.* Closed for
+   redis-benchmark lines in `compare` mode (`compare-memory.csv`, written by
+   `compare_memory`); the session-fill record stays in `workloads` mode.

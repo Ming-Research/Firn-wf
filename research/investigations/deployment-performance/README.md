@@ -364,8 +364,8 @@ are reported but decide nothing. An image-only comparison adds no pass.
 
 The exact pass uses the same request counts selected by the throughput
 pilot, so its cost is one additional complete pass plus fresh-server setup
-and LRANGE fills. For example, 19 tests at two depths on eight lines would
-add 25 minutes 20 seconds if every added sample lasted five seconds, before
+and LRANGE fills. For example, 20 tests at two depths on eight lines would
+add 26 minutes 40 seconds if every added sample lasted five seconds, before
 startup overhead. Its duration is the request count divided by the threaded
 client's observed rate, which can exceed `COMPARE_SECONDS`. Earlier runs
 put that client's ceiling near 6.7 million requests per second on the
@@ -480,7 +480,7 @@ start any server. Runtime startup, logging and memory checks require CI.
 | 8. Redis-only AOF check | Compare uses Redis/Valkey/firn INFO and configuration checks, Garnet log observation. Application-workload version enforcement is not extended. |
 | 9. No redis-benchmark memory | End-of-pass allocator memory, RSS and VmHWM CSV; session-fill measurements remain in workloads mode. |
 
-For the redis-benchmark baseline, set `tests=SUITE_DEFAULT` to select its 19 names
+For the redis-benchmark baseline, set `tests=SUITE_DEFAULT` to select its 20 names
 (the empty compare default remains `mset set get`),
 `depths=1 16`, `profile=false`, and the server/client CPU lists in the
 baseline rules. Probe sizing and full-run sizing remain the dispatcher's
@@ -545,11 +545,9 @@ workloads are not recorded.
   server after it starts, read back with `CONFIG GET`; empty sets none.
 - `aof`: described above.
 - `compare_reference`: described above.
-- The correctness pass of scale and suite modes runs Redis 7.0's
-  redis-benchmark default suite, its 19 tests named explicitly
-  (`SUITE_DEFAULT`), on every line. Redis 7.2.16's default suite adds XADD;
-  it is left out only because firn has no streams yet, and goes back in when
-  firn's minimal streams (board item `firn-scope-min-streams`) land.
+- The correctness pass of scale and suite modes runs Redis 7.2.16's
+  redis-benchmark default suite, its 20 tests named explicitly
+  (`SUITE_DEFAULT`, XADD included), on every line.
 - `drivers`: sets the Whitefoot driver count of each image, apart from the
   number of server CPUs; empty gives one driver per server CPU.
 - `c2c`: with `profile`, also records `perf c2c` on each profiled test,

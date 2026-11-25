@@ -445,5 +445,80 @@ versions_selftest() (
         exit 1
     fi
     competitor_receipt_check --selftest || exit 1
+    compare_versions_selftest || exit 1
     echo 'versions-selftest: passed'
+)
+
+# compare_versions itself, run on fake executables in a temporary HOME and OUT.
+# Only dragonfly and garnet lines are selected, so the reference build is not
+# touched. The same fakes run as a full run (COMPARE_PROBE=false), which must
+# fail on a missing executable, a wrong version, no receipt or a receipt that
+# no longer matches the executable, and pass with a valid receipt, and as a
+# probe, which records the same findings without failing.
+compare_versions_selftest() (
+    cvs_dir=$(mktemp -d) || exit 1
+    trap 'rm -rf "$cvs_dir"' EXIT
+    cvs_dir=$(cd "$cvs_dir" && pwd -P) || exit 1
+    mkdir "$cvs_dir/home" "$cvs_dir/bin" || exit 1
+    cvs_good=$cvs_dir/bin/good
+    cvs_wrong=$cvs_dir/bin/wrong
+    printf '#!/bin/sh\necho "dragonfly version v2.0.2"\n' >"$cvs_good"
+    printf '#!/bin/sh\necho "dragonfly version v2.0.20"\n' >"$cvs_wrong"
+    chmod 755 "$cvs_good" "$cvs_wrong" || exit 1
+    cvs_expect() {
+        # probe, line, executable, expected exit (0 or 1), text host.txt holds
+        rm -rf "$cvs_dir/out"
+        mkdir "$cvs_dir/out" || exit 1
+        if ( HOME=$cvs_dir/home OUT=$cvs_dir/out COMPARE_PROBE=$1 DRAGONFLY=$3 GARNET=$3 \
+                compare_versions "$2" ) >/dev/null 2>&1; then
+            cvs_got=0
+        else
+            cvs_got=1
+        fi
+        if [ "$cvs_got" != "$4" ]; then
+            echo "versions-selftest: compare_versions probe=$1 $2 $3 exited $cvs_got, expected $4" >&2
+            exit 1
+        fi
+        if [ -n "$5" ] && ! grep -q -F -- "$5" "$cvs_dir/out/host.txt"; then
+            echo "versions-selftest: compare_versions probe=$1 $2 $3 left no '$5' in host.txt" >&2
+            exit 1
+        fi
+    }
+    cvs_expect false dragonfly "$cvs_dir/bin/absent" 1 'receipt_check=executable-missing'
+    cvs_expect true dragonfly "$cvs_dir/bin/absent" 0 'receipt_check=executable-missing'
+    cvs_expect false garnet "$cvs_dir/bin/absent" 1 'receipt_check=executable-missing'
+    cvs_expect true garnet "$cvs_dir/bin/absent" 0 'receipt_check=executable-missing'
+    cvs_expect false dragonfly "$cvs_wrong" 1 'version_status=mismatched'
+    cvs_expect true dragonfly "$cvs_wrong" 0 'archive_provenance=unverified'
+    cvs_expect false dragonfly "$cvs_good" 1 'version_status=matched'
+    cvs_expect true dragonfly "$cvs_good" 0 'archive_provenance=unverified'
+    # A valid receipt, written as the installer writes one, for the pinned
+    # release and the executable's real path and hash.
+    cvs_pins=$(competitor_pin dragonfly) || exit 1
+    cvs_release=$(printf '%s\n' "$cvs_pins" | sed -n '1p')
+    cvs_receipt_dir=$cvs_dir/home/.local/opt/dragonfly-$cvs_release
+    mkdir -p "$cvs_receipt_dir" || exit 1
+    cvs_write_receipt() {
+        python3 - "$cvs_receipt_dir/firn-install-receipt" "$cvs_release" \
+            "$(printf '%s\n' "$cvs_pins" | sed -n '2p')" "$(printf '%s\n' "$cvs_pins" | sed -n '3p')" "$1" <<'PY' || exit 1
+import hashlib
+import json
+import sys
+from pathlib import Path
+output, version, url, archive_sha, executable = sys.argv[1:]
+target = Path(executable).resolve(strict=True)
+record = dict(version=version, archive_url=url, archive_sha256=archive_sha,
+              executable_path=str(target), executable_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+              executable_kind="native")
+Path(output).write_text(json.dumps(record))
+PY
+    }
+    cvs_write_receipt "$cvs_good"
+    cvs_expect false dragonfly "$cvs_good" 0 'archive_provenance=verified'
+    cvs_expect true dragonfly "$cvs_good" 0 'archive_provenance=verified'
+    cvs_expect false dragonfly "$cvs_wrong" 1 'version_status=mismatched'
+    # The receipt binds the executable's bytes: a changed file is not verified.
+    printf '#!/bin/sh\necho "dragonfly version v2.0.2"\n# changed\n' >"$cvs_good"
+    cvs_expect false dragonfly "$cvs_good" 1 'receipt_check=executable-digest-mismatch'
+    echo 'compare-versions-selftest: passed'
 )
