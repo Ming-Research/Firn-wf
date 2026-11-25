@@ -116,7 +116,7 @@ firn refused.conf
 | 0 | After startup, an orderly `SHUTDOWN`, SIGTERM or SIGINT drains clients and attempts a final AOF append and sync before exiting. A SIGTERM or SIGINT during AOF replay also exits with status 0, at once and with `appendonlydir` as the replay found it. A failed final append or sync can still lose acknowledged writes; status 0 does not certify durability. |
 | 1 | Invalid invocation or configuration, an unreadable configuration file or `include`, a `dir` that cannot be entered, an unopenable `logfile`, a configuration with no enabled listener, or an open-files limit too low for even one client. Read stderr and the log's last line and correct the startup settings. |
 | 3 | firn cannot register delivery of stop signals, which it does before replaying the AOF, or cannot open its TCP listener. Check the listening address, port availability and host facilities; these failures currently have no diagnostic. |
-| 4 | Any AOF startup refusal, including a missing or malformed listed file, unreadable persistence state, or failure to prepare the log for appending or truncate its incomplete tail. firn has not begun listening; preserve the files and investigate or restore a known-good backup. The log's last line is `Fatal error loading the DB, check server logs. Exiting.`, the text Redis gives for a failed load; the cause is not logged. |
+| 4 | Any AOF startup refusal, including a missing or malformed listed file, unreadable persistence state, or failure to prepare the log for appending or truncate its incomplete tail. firn has not begun listening; preserve the files and investigate or restore a known-good backup. The log's last line is `Fatal error loading the DB, check server logs. Exiting.`, Redis's line for a failed load, which Redis writes only for a snapshot and exits with status 1 for an append-only file; the cause is not logged. |
 
 These are the current implementation's statuses: AOF startup refusals use
 4, not 1. A SIGTERM or SIGINT during AOF replay ends firn at the replay's
@@ -319,8 +319,9 @@ error looks solved, Redis can write again.`, the first failed sync (`Fail to
 fsync the AOF file: reason`), the stop signal, `User requested shutdown...`,
 `Calling fsync() on the AOF file.` and `firn is now ready to exit, bye bye...`.
 These differences from Redis's log remain: the product name is `firn`, there
-is no version line, the rewrite line has no `by pid` because firn rewrites in
-a thread, `pidfile` and `syslog-enabled` are refused, `CONFIG SET dir` is
+is no version line, the line for a stop signal is an ordinary log line where
+Redis writes `pid:signal-handler (unix time) message` from its handler, the
+rewrite line has no `by pid` because firn rewrites in a thread, `pidfile` and `syslog-enabled` are refused, `CONFIG SET dir` is
 refused where Redis changes the directory, and messages Redis writes for features firn does not have do not
 appear. A write that fails drops the line, as Redis ignores a failed log write.
 Accepting an excess client or failing to accept still writes to stderr as the

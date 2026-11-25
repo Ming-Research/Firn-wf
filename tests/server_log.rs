@@ -223,3 +223,34 @@ fn config_set_loglevel_changes_the_level_while_running_and_logfile_is_immutable(
             "{label}: notice lines stop once the level is raised: {output:?}");
     }
 }
+
+/// A stop signal is logged and then followed by the lines Redis logs for a shutdown. Redis writes the
+/// signal's own line from its signal handler, as `pid:signal-handler (unix time) message`, so only that
+/// line's message is compared and the others must have the usual form.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stop_signal_is_logged_and_followed_by_the_shutdown_lines() {
+    let fixture = fixture_directory();
+    for (label, binary) in servers() {
+        for (signal, name) in [("TERM", "SIGTERM"), ("INT", "SIGINT")] {
+            let lease = support::lease_port();
+            let port = lease.port().to_string();
+            let child = start(&binary, fixture.path(), &["--bind", "127.0.0.1", "--port", &port]).with_port(&lease);
+            let ready = connect_when_ready(lease.port(), &child);
+            drop(ready);
+            send_signal(&child, signal);
+            let output = child.wait_with_output().expect("bounded stop");
+            assert_eq!(output.status.code(), Some(0), "{label} {signal}: {output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let received = format!("Received {name} scheduling shutdown...");
+            assert!(stdout.lines().any(|line| line.ends_with(&received)), "{label} {signal}: {stdout}");
+            let ordinary: Vec<&str> = stdout.lines().filter(|line| !line.contains(":signal-handler (")).collect();
+            assert!(ordinary.iter().all(|line| is_log_line(line)), "{label} {signal}: {stdout}");
+            let events = messages(&ordinary.join("\n"));
+            let has = |mark: char, body: &str| events.iter().any(|(m, text)| *m == mark && text.starts_with(body));
+            assert!(has('*', "User requested shutdown..."), "{label} {signal}: {stdout}");
+            assert!(has('#', "firn is now ready to exit, bye bye...") || has('#', "Redis is now ready to exit, bye bye..."),
+                "{label} {signal}: {stdout}");
+        }
+    }
+}

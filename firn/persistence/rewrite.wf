@@ -160,8 +160,12 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
 }
 
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
-  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush, aof_rw_switch or a publication's failed directory sync, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
+  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A failed attempt logs Redis's error line unless a stop is under way, which Redis ends by killing the child without a line. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush, aof_rw_switch or a publication's failed directory sync, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
+  let stopped = pkg::store::shutdown_requested(store: store);
   atomic m = &store^.meta {
+    if m^.stopping {
+      set stopped = True();
+    }
     if accepted {
       set m^.aof_sync_error = None<std::io::IoError>();
     }
@@ -187,6 +191,7 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
     if accepted {
       event_text(store: store, level: level_notice, word: &event_rewrite_terminated[0_u64..46_u64]);
       event_text(store: store, level: level_notice, word: &event_rewrite_finished[0_u64..44_u64]);
+    } else if stopped {
     } else {
       event_text(store: store, level: level_warning, word: &event_rewrite_error[0_u64..44_u64]);
     }
@@ -834,7 +839,15 @@ fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pendin
         set log^.manifest = move candidate;
         swap(first: &log^.file, second: &opened);
         set log^.boundary = aof_boundary_empty();
+        let recovered = False();
         atomic m = &store^.meta {
+          match m^.aof_append_error {
+            Some(..) => {
+              set recovered = True();
+            }
+            None() => {
+            }
+          }
           set m^.aof_incr_size = 0_u64;
           set m^.aof_synced_size = 0_u64;
           set m^.aof_current_size = size;
@@ -845,6 +858,9 @@ fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pendin
           set m^.aof_pending_capacity = pending^.inner.cap;
           set m^.aof_pending_length = pending^.inner.len;
           set m^.rewrite.rotating = False();
+        }
+        if recovered {
+          event_text(store: store, level: level_notice, word: &event_solved[0_u64..52_u64]);
         }
         match std::fs::close_write(factory: factory, file: move opened) {
           Ok(value: closed) => {
