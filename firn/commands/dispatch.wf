@@ -502,8 +502,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let fresh = False();
-      run_rename(store: store, input: input, args: args, client: client, env: env, time: time, fresh: fresh);
+      run_list_producer(store: store, kind: 37_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -514,8 +513,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let fresh = True();
-      run_rename(store: store, input: input, args: args, client: client, env: env, time: time, fresh: fresh);
+      run_list_producer(store: store, kind: 38_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -526,7 +524,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_copy(store: store, input: input, args: args, client: client, env: env, time: time);
+      run_list_producer(store: store, kind: 39_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
     }
     return unit;
   }
@@ -893,8 +891,12 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let creating = False();
-      run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: head, existing: creating);
+      let lpush_front = True();
+      let lpush_creating = False();
+      let lpush_done = run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: lpush_front, existing: lpush_creating);
+      if bnot(lpush_done) {
+        run_list_producer(store: store, kind: 60_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      }
     }
     return unit;
   }
@@ -905,8 +907,12 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let creating = False();
-      run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: tail, existing: creating);
+      let rpush_front = False();
+      let rpush_creating = False();
+      let rpush_done = run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: rpush_front, existing: rpush_creating);
+      if bnot(rpush_done) {
+        run_list_producer(store: store, kind: 61_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      }
     }
     return unit;
   }
@@ -1005,7 +1011,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_linsert(store: store, input: input, args: args, client: client, env: env, time: time);
+      let linsert_done = run_linsert(store: store, input: input, args: args, client: client, env: env, time: time);
     }
     return unit;
   }
@@ -1027,8 +1033,9 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let existing = True();
-      run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: head, existing: existing);
+      let lpushx_front = True();
+      let lpushx_existing = True();
+      let lpushx_done = run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: lpushx_front, existing: lpushx_existing);
     }
     return unit;
   }
@@ -1039,8 +1046,9 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let existing = True();
-      run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: tail, existing: existing);
+      let rpushx_front = False();
+      let rpushx_existing = True();
+      let rpushx_done = run_push(store: store, input: input, args: args, client: client, env: env, time: time, front: rpushx_front, existing: rpushx_existing);
     }
     return unit;
   }
@@ -1051,7 +1059,10 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_lmove_named(store: store, input: input, args: args, client: client, env: env, time: time);
+      let lmove_done = run_lmove_named(store: store, input: input, args: args, client: client, env: env, time: time);
+      if bnot(lmove_done) {
+        run_list_producer(store: store, kind: 74_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      }
     }
     return unit;
   }
@@ -1064,7 +1075,12 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
         refused(client: client, input: input, name: name, fits: fits);
       }
       if go {
-        run_lmove(store: store, input: input, args: args, client: client, env: env, time: time, from_head: tail, to_head: head);
+        let rotate_head = True();
+        let rotate_tail = False();
+        let rotate_done = run_lmove(store: store, input: input, args: args, client: client, env: env, time: time, from_head: rotate_tail, to_head: rotate_head);
+        if bnot(rotate_done) {
+          run_list_producer(store: store, kind: 75_u64, input: input, args: args, client: client, env: env, time: time, clock: clock);
+        }
       }
       return unit;
     }
@@ -1292,6 +1308,10 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_client {
+    if client_unblock_command(input: input, args: args) {
+      run_client_unblock(store: store, input: input, args: args, client: client);
+      return unit;
+    }
     let fits = count >= 2_u64;
     if fits {
       run_client(input: input, args: args, client: client);
@@ -1336,6 +1356,19 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   }
   let streamed = stream_command(store: store, input: input, args: args, client: client, env: env, time: time, code: code, name: name);
   if streamed {
+    return unit;
+  }
+  let blocking = blocking_kind(input: input, name: name);
+  if blocking != 0_u64 {
+    let arity = held_arity(kind: blocking);
+    let fits = arity_holds(arity: arity, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_blocking_list(store: store, kind: blocking, input: input, args: args, client: client, time: time, clock: clock);
+    }
     return unit;
   }
   reply_unknown(client: client, input: input, args: args);
@@ -1405,6 +1438,16 @@ fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
   let admitted = band(fits, open);
   if bnot(admitted) {
     execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    return unit;
+  }
+  if blocking_command(kind: kind) {
+    prepare_access(client: client, time: time);
+    run_blocking_list(store: store, kind: kind, input: input, args: args, client: client, time: time, clock: clock);
+    return unit;
+  }
+  if list_producer(kind: kind) {
+    prepare_access(client: client, time: time);
+    run_list_producer(store: store, kind: kind, input: input, args: args, client: client, env: env, time: time, clock: clock);
     return unit;
   }
   prepare_access(client: client, time: time);

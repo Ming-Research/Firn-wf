@@ -4,7 +4,8 @@ acceptance rows.
 
   summary.py pubsub DIR [--firn LINE] [--twin LINE] [--floor PERCENT]
       pubsub.csv and pubsub-limited.csv of a workloads run with the pub/sub
-      workloads: per workload and pipeline depth, each line's median rate and
+      workloads or blocking-handoff, which write the same columns: per workload
+      and pipeline depth, each line's median rate and
       p99 over the passes, firn's multiple of the fastest competitor, whether
       the cell's criteria hold, and the twin's ratio to firn per pass with its
       95% interval (the noise; its largest half-width over the cells of a run
@@ -126,7 +127,8 @@ def pubsub(args):
         firn = args.firn or next((l for l in sorted(lines)
                                   if is_firn(l) and not l.endswith("-twin")), None)
         competitors = [l for l in lines if not is_firn(l)]
-        print(f"== {cpus} server CPUs, {workload}, {subscribers} subscribers, "
+        who = "consumers" if workload == "blocking-handoff" else "subscribers"
+        print(f"== {cpus} server CPUs, {workload}, {subscribers} {who}, "
               f"pipeline {depth}, passes {max(len(v) for v in lines.values())}")
         print(f"{'line':<22}{'rate (msg/s)':>14}{'p99 (ms)':>10}{'client work':>13}")
         for line in sorted(lines):
@@ -283,6 +285,19 @@ def selftest():
             assert "largest twin half-width over 1 cells:" in text, text
             assert ("does not count" in text) == (not counts), text
             assert text.rstrip().endswith(f"{0 if counts else 1} cells above the floor of {floor:.2f}%"), text
+        # The hand-off workload shares the files and the criteria; its cell
+        # names its connections consumers.
+        data = [header]
+        for p in (1, 2, 3):
+            for line, rate in (("reference", 100), ("firn-2", 150)):
+                data.append(f"{line},{p},2,blocking-handoff,50,16,10,10,5,{rate},1.0,1.0")
+        (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
+        text = out.getvalue()
+        assert "2 server CPUs, blocking-handoff, 50 consumers, pipeline 16" in text, text
+        assert "firn-2 / reference (the fastest competitor): 1.500, needs at least 1.4: ok" in text, text
     print("summary selftest: passed")
 
 

@@ -1,0 +1,254 @@
+[
+ {
+  "name": "waiter-survives-an-expired-string-then-push",
+  "steps": [
+   {
+    "conn": "a",
+    "send": [
+     "BLPOP",
+     "k",
+     "0"
+    ]
+   },
+   {
+    "conn": "p",
+    "pipe": [
+     [
+      "SET",
+      "k",
+      "v",
+      "PXAT",
+      "1"
+     ],
+     [
+      "LPUSH",
+      "k",
+      "x"
+     ]
+    ],
+    "replies": [
+     "+OK\r\n",
+     ":1\r\n"
+    ]
+   },
+   {
+    "conn": "a",
+    "read": "*2\r\n$1\r\nk\r\n$1\r\nx\r\n"
+   },
+   {
+    "aof": "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nk\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nk\r\n$1\r\nx\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nk\r\n"
+   }
+  ]
+ },
+ {
+  "name": "waiter-survives-an-expired-string-then-move",
+  "steps": [
+   {
+    "conn": "a",
+    "send": [
+     "BLPOP",
+     "d",
+     "0"
+    ]
+   },
+   {
+    "conn": "p",
+    "pipe": [
+     [
+      "RPUSH",
+      "s",
+      "w"
+     ],
+     [
+      "SET",
+      "d",
+      "v",
+      "PXAT",
+      "1"
+     ],
+     [
+      "LMOVE",
+      "s",
+      "d",
+      "LEFT",
+      "LEFT"
+     ]
+    ],
+    "replies": [
+     ":1\r\n",
+     "+OK\r\n",
+     "$1\r\nw\r\n"
+    ]
+   },
+   {
+    "conn": "a",
+    "read": "*2\r\n$1\r\nd\r\n$1\r\nw\r\n"
+   },
+   {
+    "aof": "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$1\r\nw\r\n*5\r\n$3\r\nSET\r\n$1\r\nd\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nd\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\ns\r\n$1\r\nd\r\n$4\r\nLEFT\r\n$4\r\nLEFT\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nd\r\n"
+   }
+  ]
+ },
+ {
+  "name": "waiter-survives-a-live-string-and-a-refused-push",
+  "steps": [
+   {
+    "conn": "a",
+    "send": [
+     "BLPOP",
+     "k",
+     "0"
+    ]
+   },
+   {
+    "conn": "p",
+    "pipe": [
+     [
+      "SET",
+      "k",
+      "v"
+     ],
+     [
+      "LPUSH",
+      "k",
+      "x"
+     ],
+     [
+      "LPUSHX",
+      "k",
+      "x"
+     ],
+     [
+      "RPUSH",
+      "k",
+      "x"
+     ]
+    ],
+    "replies": [
+     "+OK\r\n",
+     "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+     "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+     "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    ]
+   },
+   {
+    "conn": "p",
+    "pipe": [
+     [
+      "DEL",
+      "k"
+     ],
+     [
+      "LPUSH",
+      "k",
+      "y"
+     ]
+    ],
+    "replies": [
+     ":1\r\n",
+     ":1\r\n"
+    ]
+   },
+   {
+    "conn": "a",
+    "read": "*2\r\n$1\r\nk\r\n$1\r\ny\r\n"
+   },
+   {
+    "aof": "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$1\r\nk\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nk\r\n$1\r\ny\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nk\r\n"
+   }
+  ]
+ },
+ {
+  "name": "pushes-onto-a-live-list-with-a-waiter-elsewhere",
+  "steps": [
+   {
+    "conn": "a",
+    "send": [
+     "BLPOP",
+     "w",
+     "0"
+    ]
+   },
+   {
+    "conn": "p",
+    "pipe": [
+     [
+      "RPUSH",
+      "l",
+      "a"
+     ],
+     [
+      "LPUSH",
+      "l",
+      "b"
+     ],
+     [
+      "LPUSHX",
+      "l",
+      "c"
+     ],
+     [
+      "RPUSHX",
+      "l",
+      "d"
+     ],
+     [
+      "LINSERT",
+      "l",
+      "BEFORE",
+      "a",
+      "e"
+     ],
+     [
+      "LMOVE",
+      "l",
+      "l",
+      "LEFT",
+      "RIGHT"
+     ],
+     [
+      "RPOPLPUSH",
+      "l",
+      "l"
+     ],
+     [
+      "LRANGE",
+      "l",
+      "0",
+      "-1"
+     ]
+    ],
+    "replies": [
+     ":1\r\n",
+     ":2\r\n",
+     ":3\r\n",
+     ":4\r\n",
+     ":5\r\n",
+     "$1\r\nc\r\n",
+     "$1\r\nc\r\n",
+     "*5\r\n$1\r\nc\r\n$1\r\nb\r\n$1\r\ne\r\n$1\r\na\r\n$1\r\nd\r\n"
+    ]
+   },
+   {
+    "conn": "p",
+    "pipe": [
+     [
+      "LPUSH",
+      "w",
+      "z"
+     ]
+    ],
+    "replies": [
+     ":1\r\n"
+    ]
+   },
+   {
+    "conn": "a",
+    "read": "*2\r\n$1\r\nw\r\n$1\r\nz\r\n"
+   },
+   {
+    "aof": "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$1\r\na\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nl\r\n$1\r\nb\r\n*3\r\n$6\r\nLPUSHX\r\n$1\r\nl\r\n$1\r\nc\r\n*3\r\n$6\r\nRPUSHX\r\n$1\r\nl\r\n$1\r\nd\r\n*5\r\n$7\r\nLINSERT\r\n$1\r\nl\r\n$6\r\nBEFORE\r\n$1\r\na\r\n$1\r\ne\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\nl\r\n$1\r\nl\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*3\r\n$9\r\nRPOPLPUSH\r\n$1\r\nl\r\n$1\r\nl\r\n*3\r\n$5\r\nLPUSH\r\n$1\r\nw\r\n$1\r\nz\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nw\r\n"
+   }
+  ]
+ }
+]

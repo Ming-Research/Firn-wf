@@ -101,7 +101,8 @@ fn record_new(hub: &Hub, client: &Client) -> record: Record reads(client.id), re
   let patterns = box_slots_new::<Key>(capacity: 0_u64);
   let shards = box_slots_new::<Key>(capacity: 0_u64);
   let soft = None<u64>();
-  return Record(client_id: client^.id, connection: move connection, resp: client^.resp, channels: move channels, patterns: move patterns, shards: move shards, pending: 0_u64, soft: soft);
+  let resume = None<BlockResume>();
+  return Record(client_id: client^.id, connection: move connection, resp: client^.resp, channels: move channels, patterns: move patterns, shards: move shards, pending: 0_u64, soft: soft, resume: resume);
 }
 
 fn sync_counts(client: &Client, record: &Record) -> result: unit reads(record.channels), reads(record.patterns), reads(record.shards), writes(client.sub), writes(client.psub), writes(client.ssub) {

@@ -32,6 +32,11 @@ clients send on their own:
   without a count, `LRANGE`, `LLEN`, `LINDEX`, `LSET`, `LREM`, `LTRIM`,
   `LINSERT`, `LPOS` with `RANK`, `COUNT` and `MAXLEN`, and `LMOVE` and
   `RPOPLPUSH`, which move an element in one statement holding both keys;
+  `BLPOP`, `BRPOP`, `BRPOPLPUSH` and `BLMOVE` block the connection until a
+  push serves it, and currently accept only the literal timeout `0`. Other
+  timeout spellings return an explicit capability error pending
+  `firn-req-extended-float`; finite timeouts are not implemented.
+  `CLIENT UNBLOCK` can release an infinite wait;
 - sets: `SADD`, `SREM`, `SPOP` and `SRANDMEMBER` with or without a count,
   `SCARD`, `SMEMBERS`, `SSCAN key cursor [MATCH pattern] [COUNT count]`,
   `SISMEMBER`, `SMISMEMBER`, `SMOVE`, `SINTER`,
@@ -169,12 +174,13 @@ exact allocation-based disconnect point. CONFIG client-output-buffer-limit
 is unsupported. Keyspace notifications remain unsupported.
 
 Lists intentionally hold at most 4294967296 (2^32) elements, unlike Redis
-7.2.16 on 64-bit. `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LINSERT`, `LMOVE`
-and `RPOPLPUSH` reject an addition beyond that limit with
+7.2.16 on 64-bit. `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LINSERT`, `LMOVE`,
+`RPOPLPUSH`, `BRPOPLPUSH` and `BLMOVE` reject an addition beyond that limit with
 `ERR list would exceed the maximum of 4294967296 elements`, before changing
 any entry, including access metadata. A multi-element push is rejected as a
-whole. A move checks its destination before popping its source; a rotation
-within the same list needs no extra room. `LINSERT` still returns -1 for an absent
+whole. A move checks its destination before popping its source, and a blocking
+move whose source has an element answers that error at once instead of waiting;
+a rotation within the same list needs no extra room. `LINSERT` still returns -1 for an absent
 pivot, since that command would add nothing. The shared command bodies apply
 the same rule on the network, in transactions, in scripts and during AOF
 replay.
@@ -606,8 +612,8 @@ The rewrite below is the reconciled-scan route under comparison ([investigation]
 With append-only persistence enabled, `BGREWRITEAOF` answers started after
 S0 admission. The worker scans the live map in separate statements while
 mutations journal a changed key's complete image at its first write in the
-rewrite and, for a command on that one key afterwards, the command's AOF
-bytes. Statements stage complete records in bounded memory; the sole AOF
+rewrite and, for a command that changes only that key afterwards, such as a
+`BRPOP` over several queues that serves one, the command's AOF bytes. Statements stage complete records in bounded memory; the sole AOF
 writer drains them outside atomic statements into `temp-F.journal`. The
 writer seals the old increment and rotates once at S1 after draining the
 frozen journal, then the worker reads the journal in bounded chunks to

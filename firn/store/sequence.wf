@@ -4,13 +4,14 @@ fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(met
   let serving = bnot(loading);
   let capturing = band(meta^.rewrite.active, serving);
   let allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
+  let subject = None<Box<Slots<u8>>>();
   let images = None<Box<Slots<RewriteImage>>>();
   let no_reason = RewriteAbortReason::None();
-  return WriteSequence(value: meta^.commit_seq, taken: taken, inert: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, failure: no_reason, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
+  return WriteSequence(value: meta^.commit_seq, taken: taken, inert: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, failure: no_reason, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, subject_live: taken, subject: move subject, images: move images);
 }
 
 fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) {
-  doc "The statement holds one key, so its append-only bytes change that key alone.";
+  doc "The statement's append-only bytes name only keys it changes and it normally changes one; sequence_capture checks at run time that it changed only one and revokes single at a second.";
   let sequence = sequence_new(meta: meta, loading: loading);
   set sequence.single = True();
   return move sequence;
@@ -20,9 +21,10 @@ fn sequence_inert() -> sequence: WriteSequence pure {
   doc "Without an append-only file no rewrite captures and nothing reads the sequence or the stamps, so a statement that holds no Meta needs neither.";
   let none = False();
   let inert = True();
+  let subject = None<Box<Slots<u8>>>();
   let images = None<Box<Slots<RewriteImage>>>();
   let no_reason = RewriteAbortReason::None();
-  return WriteSequence(value: 0_u64, taken: none, inert: inert, exhausted: none, capturing: none, failed: none, failure: no_reason, allowance: 0_u64, retained: 0_u64, single: none, start: 0_u64, log_start: 0_u64, anchor_seen: none, anchored: none, effect: none, images: move images);
+  return WriteSequence(value: 0_u64, taken: none, inert: inert, exhausted: none, capturing: none, failed: none, failure: no_reason, allowance: 0_u64, retained: 0_u64, single: none, start: 0_u64, log_start: 0_u64, anchor_seen: none, anchored: none, effect: none, subject_live: none, subject: move subject, images: move images);
 }
 
 fn sequence_anchor(sequence: &WriteSequence, previous: u64) -> result: unit writes(sequence) {

@@ -1,0 +1,7 @@
+alias MemoryMeter = std::process::MemoryMeter;
+alias hash_map_new = std::collections::hash_map::hash_map_new;
+
+fn main() -> status: std::process::ExitStatus pure {
+  let requests = hash_map_new::<u64, Option<MemoryMeter>, 8>(capacity: 1_u64);
+  return std::process::exit_status(code: 0_u8);
+}

@@ -41,8 +41,10 @@
 #                                 appear under two names as a noise control;
 #                                 each pass starts every image in turn, the
 #                                 order reversed on even passes, and runs
-#                                 COMPARE_TESTS (default mset set get; also
-#                                 xadd_maxlen and xrange_10 for streams) at each
+#                                 COMPARE_TESTS (default mset set get; any
+#                                 test of the default suite, linsert, lmove
+#                                 and lpush_new, and xadd_maxlen and xrange_10 for
+#                                 streams, which compare_client defines) at each
 #                                 depth in COMPARE_DEPTHS (default 16 1) for
 #                                 COMPARE_SECONDS (default 10) each, on
 #                                 each server CPU count in COMPARE_CPUS (default 1 2), for
@@ -187,6 +189,26 @@
 #                                 --value-size (default 64) and --window, and the
 #                                 default lines are Redis and firn.
 #                                 summary.py reads these files.
+#                                 Opt-in blocking-handoff measures the hand-off
+#                                 of list elements to blocked clients:
+#                                 WORKLOAD_CONNECTIONS consumers (default 50)
+#                                 each hold BLPOP on a key of their own, and one
+#                                 producer LPUSHes each depth of WORKLOAD_DEPTHS
+#                                 (default 16 1) elements at a time, each to a
+#                                 consumer that has received its previous one,
+#                                 so that no key holds more than one element. It
+#                                 runs as the pub/sub workloads do and writes
+#                                 the same files, with rate the elements
+#                                 received a second and the latencies running
+#                                 from the producer's write to the consumer's
+#                                 read. It accepts --warmup-seconds and
+#                                 --value-size in WORKLOAD_OPTIONS, not
+#                                 --window, skips a server that answers BLPOP
+#                                 with an unknown-command error, and keeps each
+#                                 firn line's server log as workload-server-
+#                                 <line>-<cpus>-<pass>-<workload>.txt, which
+#                                 ends with the Whitefoot runtime's scheduling
+#                                 counts when WF_SCHED_REPORT is set.
 #                                 Where /proc/stat exists, workload-limited.csv has
 #                                 line,pass,cpus,workload,connections,
 #                                 client_busy_mean,client_work_fraction,
@@ -1374,6 +1396,18 @@ server_ticks() {
     sed 's/^.*) //' "/proc/$server/stat" | awk '{ print $12 + $13 }'
 }
 
+# The commands compare_client sends for the linsert, lmove and lpush_new tests,
+# which the timed runs and verify_list_forms both use. linsert_form and
+# lpush_new_form take the depth.
+linsert_form() { echo "LINSERT ins$1:__rand_int__ AFTER pivot xxx"; }
+lmove_form() { echo "LMOVE mylist mylist RIGHT LEFT"; }
+lpush_new_form() { echo "LPUSH new$1:__rand_int__ xxx"; }
+# The key range of the lpush_new test. redis-benchmark reads -r as a C int, and
+# a range of two thousand million draws a key the server has not yet seen for
+# all but a fraction of a percent of the requests of a run of some ten million.
+# The other tests draw from 100,000 keys.
+NEW_LIST_RANGE=2000000000
+
 # One redis-benchmark run of <test> at depth <depth> for <requests> against
 # the started server, its client threads on CLIENT_CPUS; prints the rate over
 # the run's wall time, the server's CPU microseconds per request, and the
@@ -1385,7 +1419,38 @@ server_ticks() {
 # timed interval, for cpu_busy.
 compare_client() {
     what="-t $1"
+    key_range=100000
     case $1 in
+        linsert)
+            # One of 100,000 short lists, each filled with copies of one pivot
+            # outside the timed span, takes an element after its first pivot,
+            # so that the scan is one step and a list grows by the number of
+            # inserts its key draws (a few hundred); the lists are named by the
+            # depth, so that no run starts from another's. A key the filling
+            # missed makes its LINSERT a miss that writes nothing, the same for
+            # every image.
+            redis-benchmark -p "$PORT" -r 100000 -n 1000000 -P 16 -q \
+                RPUSH "ins$2:__rand_int__" pivot >/dev/null 2>&1
+            what=$(linsert_form "$2")
+            ;;
+        lmove)
+            # The one list rotates onto itself, so that it keeps its length.
+            redis-cli -p "$PORT" DEL mylist >/dev/null
+            redis-cli -p "$PORT" RPUSH mylist a b c d e >/dev/null
+            what=$(lmove_form)
+            ;;
+        lpush_new)
+            # Nearly every request pushes onto a key that does not exist, so
+            # that nearly every push creates its list: the list write that the
+            # head runs with an event-hub check beside its entry hold, and
+            # that the first two versions ran under the whole-keyspace hold.
+            # The lists stay in the server for the rest of its pass and are
+            # named by the depth, so that no run pushes onto another's;
+            # COMPARE_TESTS names it last, as the record's runs do, so that the
+            # larger keyspace changes no other cell of a pass.
+            key_range=$NEW_LIST_RANGE
+            what=$(lpush_new_form "$2")
+            ;;
         lrange_*)
             # redis-benchmark fills the list an LRANGE test reads inside its own
             # run, which the timed span would include, and prints that fill as
@@ -1423,7 +1488,7 @@ compare_client() {
     set -f
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
-            -c 50 -n "$3" -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
+            -c 50 -n "$3" -r "$key_range" -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
     else
         # One process per client CPU, three connections each: one process's
         # threads stop near 6.6M requests a second on the 14900K, below what
@@ -1432,7 +1497,7 @@ compare_client() {
         index=0
         for cpu in $(echo "$CLIENT_CPUS" | tr ',' ' '); do
             taskset -c "$cpu" redis-benchmark -p "$PORT" -c 3 -n $(($3 / CLIENT_THREADS)) \
-                -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
+                -r "$key_range" -d 3 -P "$2" --csv $what >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
             pids="$pids $!"
             index=$((index + 1))
         done
@@ -1449,6 +1514,35 @@ compare_client() {
         $1 != "\"test" {
             printf "%.0f,%.3f,%s,%s\n", n / (ns / 1e9), ticks / hz * 1e6 / n, $5, $7
         }' "$OUT/compare-client.csv"
+}
+
+# The linsert, lmove and lpush_new forms change the keys as the tests assume:
+# the first is sent 100, the second 101 and the third 100 times by
+# redis-benchmark itself to a server with keys the timed runs never use, and
+# the lists must show it. A form that misses its key, or a command that does
+# not write, would otherwise be measured as a miss and pass for a fast server.
+verify_list_forms() {
+    start "$1"
+    redis-cli -p "$PORT" RPUSH ins0:000000000000 pivot >/dev/null
+    redis-benchmark -p "$PORT" -c 1 -n 100 -r 1 -q $(linsert_form 0) >/dev/null 2>&1
+    length=$(redis-cli -p "$PORT" LLEN ins0:000000000000)
+    redis-cli -p "$PORT" DEL mylist >/dev/null
+    redis-cli -p "$PORT" RPUSH mylist a b c d e >/dev/null
+    redis-benchmark -p "$PORT" -c 1 -n 101 -q $(lmove_form) >/dev/null 2>&1
+    rotated=$(redis-cli -p "$PORT" LRANGE mylist 0 -1 | tr '\n' ' ')
+    keys=$(redis-cli -p "$PORT" DBSIZE)
+    redis-benchmark -p "$PORT" -c 1 -n 100 -r "$NEW_LIST_RANGE" -q $(lpush_new_form 0) >/dev/null 2>&1
+    created=$(($(redis-cli -p "$PORT" DBSIZE) - keys))
+    stop
+    # 100 insertions after the one pivot make 101 elements; 101 rotations of
+    # five move the last element to the front; 100 pushes onto keys drawn from
+    # two thousand million create 100 lists, or 99 if two draws agree.
+    if [ "$length" != 101 ] || [ "$rotated" != "e a b c d " ]; then
+        fail "$1" "the linsert and lmove forms (LLEN '$length', list '$rotated')"
+    fi
+    if [ "$created" -lt 99 ]; then
+        fail "$1" "the lpush_new form (created $created lists of 100 pushes)"
+    fi
 }
 
 # The comparison of prebuilt images. A line whose replies fail verify stops
@@ -1532,6 +1626,9 @@ if [ "$MODE" = compare ]; then
         placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
         for name in $names; do
             verify "$(compare_arg "$name")"
+            case " $tests " in
+                *" linsert "*|*" lmove "*|*" lpush_new "*) verify_list_forms "$(compare_arg "$name")" ;;
+            esac
         done
         sizes="$OUT/compare-sizes-$n.txt"
         : >"$sizes"
@@ -1645,25 +1742,28 @@ if [ "$MODE" = workloads ]; then
     fi
     memory_workloads=
     connection_workloads=
-    pubsub_workloads=
+    # The workloads that send a publisher's or producer's commands in batches
+    # of a depth: pub/sub delivery and blocking hand-off. Their files keep the
+    # pub/sub names.
+    delivery_workloads=
     for workload in $workloads; do
         case $workload in
             limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
             evict-zipf|session-set-limits|session-get-limits) memory_workloads=1 ;;
             handshake|client-list) connection_workloads=1 ;;
-            pubsub-channel|pubsub-pattern) pubsub_workloads=1 ;;
+            pubsub-channel|pubsub-pattern|blocking-handoff) delivery_workloads=1 ;;
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
-    if [ -n "$memory_workloads$connection_workloads$pubsub_workloads" ]; then
+    if [ -n "$memory_workloads$connection_workloads$delivery_workloads" ]; then
         reference_version=$(redis-server --version)
         case " $reference_version " in
             *" v=7.2.16 "*) ;;
             *)
                 if [ -n "$connection_workloads" ]; then
                     echo "handshake/client-list workloads require Redis 7.2.16: $reference_version" >&2
-                elif [ -n "$pubsub_workloads" ]; then
-                    echo "pub/sub workloads require Redis 7.2.16: $reference_version" >&2
+                elif [ -n "$delivery_workloads" ]; then
+                    echo "pub/sub and blocking-handoff workloads require Redis 7.2.16: $reference_version" >&2
                 else
                     echo "memory workloads require Redis 7.2.16: $reference_version" >&2
                 fi
@@ -1760,13 +1860,21 @@ if [ "$MODE" = workloads ]; then
             shift 2
         done
     fi
-    if [ -n "$pubsub_workloads" ]; then
+    if [ -n "$delivery_workloads" ]; then
         set -f
         set -- ${WORKLOAD_OPTIONS:-}
         while [ "$#" -gt 0 ]; do
             case $1 in
-                --warmup-seconds|--value-size|--window) ;;
-                *) echo "pub/sub workloads do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
+                --warmup-seconds|--value-size) ;;
+                --window)
+                    case " $workloads " in
+                        *" blocking-handoff "*)
+                            echo "blocking-handoff does not support WORKLOAD_OPTIONS flag: $1" >&2
+                            exit 1
+                            ;;
+                    esac
+                    ;;
+                *) echo "pub/sub and blocking-handoff workloads do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
             esac
             [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
             shift 2
@@ -1839,9 +1947,10 @@ if [ "$MODE" = workloads ]; then
             for workload in $workloads; do
                 workload_order=$order
                 case $workload in
-                    pubsub-channel|pubsub-pattern)
-                        # The AOF lines add nothing to a command that is never
-                        # written to the file.
+                    pubsub-channel|pubsub-pattern|blocking-handoff)
+                        # No AOF lines: a publication is never written to the
+                        # append-only file, and the hand-off is measured without
+                        # it.
                         if [ -z "${WORKLOAD_SERVERS:-}${WORKLOAD_IMAGES:-}" ]; then
                             workload_order="reference firn-$n"
                             if [ $((pass % 2)) -eq 0 ]; then
@@ -1875,8 +1984,24 @@ if [ "$MODE" = workloads ]; then
                                         unsupported=1
                                         continue
                                     fi
+                                    # Status 4: the consumers got no element for 30
+                                    # seconds. For a competitor that is its result,
+                                    # not a failure of the run: the line has no cell
+                                    # from here on in this pass. Firn losing an
+                                    # element is a failure.
+                                    if [ "$status" -eq 4 ]; then
+                                        case $line in
+                                            firn-*|image-*)
+                                                echo "$line stopped handing out elements in $workload" >&2
+                                                exit 1
+                                                ;;
+                                        esac
+                                        echo "skip,$line,$workload incomplete: the server stopped handing out elements (connections=$conns pipeline=$depth)"
+                                        unsupported=1
+                                        continue
+                                    fi
                                     if [ "$status" -ne 0 ]; then
-                                        echo "pub/sub workload failed: line=$line pass=$pass cpus=$n workload=$workload connections=$conns pipeline=$depth (exit $status)" >&2
+                                        echo "$workload failed: line=$line pass=$pass cpus=$n connections=$conns pipeline=$depth (exit $status)" >&2
                                         exit "$status"
                                     fi
                                     workload_end "$line" "$conns" "$depth"
@@ -1920,6 +2045,11 @@ if [ "$MODE" = workloads ]; then
                                 done
                             fi
                             stop
+                            # The log of a firn line ends with the runtime's
+                            # scheduling counts when WF_SCHED_REPORT is set.
+                            case $line in
+                                firn-*|image-*) cp "$OUT/server.log" "$OUT/workload-server-$line-$n-$pass-$workload.txt" ;;
+                            esac
                             server=
                         done
                         continue

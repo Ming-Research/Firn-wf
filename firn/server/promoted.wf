@@ -246,7 +246,7 @@ fn promoted_input(input: &Box<Slots<u8>>, held: u64, chunk: Box<Slots<u8>>) -> n
 }
 
 fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown: &CancelSource, connection: &EventConnection, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, initial: u64, transaction: Transaction) -> graceful: Bool reads(store), reads(wall), reads(connection), writes(clock), writes(shutdown) waits {
-  doc "Owns parsing, client settings and the transaction after promotion. The unconsumed pipeline suffix enters unchanged. Every command completes before the suffix runs; its entire output group is committed before another command is parsed. Input bytes remain charged until parsing consumes them. QUIT and protocol errors request an ordered output finish; receive, send, pressure or shutdown cancellation abandons pending commands.";
+  doc "Owns parsing, client settings and the transaction after promotion. The unconsumed pipeline suffix enters unchanged. A suspended list command takes its committed scalar continuation before the suffix runs, restoring its random stream and peak cache while receive and output owners remain independent. Every command completes before the suffix runs; its entire output group is committed before another command is parsed. Input bytes remain charged until parsing consumes them. QUIT and protocol errors request an ordered output finish; receive, send, pressure or shutdown cancellation abandons pending commands.";
   let env = KeyEnv();
   let held = initial;
   let watch = std::time::cancel_watch(source: &connection^.stop);
@@ -283,6 +283,25 @@ fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown
     let consumed = 0_u64;
     let need_more = False();
     loop @commands {
+      if client.blocked {
+        let resumed = pkg::connection_events::block_wait(hub: &store^.pubsub, connection: connection);
+        match resumed {
+          Some(value: resumed_state) => {
+            set client.random = resumed_state.random;
+            set client.seen_peak = imax(client.seen_peak, resumed_state.seen_peak);
+          }
+          None() => {
+            return False();
+          }
+        }
+        set client.blocked = False();
+        let current = read_time(wall: wall);
+        set time = current.time;
+        set client.unix_us = current.unix_us;
+        atomic access = &store^.server {
+          pkg::store::access_settings(server: access, client: &client);
+        }
+      }
       let cancelled = False();
       atomic s = &stopped {
         set cancelled = s^.fired;
@@ -329,6 +348,9 @@ fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown
       set consumed = parsed.next;
       if client.closing {
         return True();
+      }
+      if client.blocked {
+        break @commands;
       }
       if consumed >= held {
         break @commands;
