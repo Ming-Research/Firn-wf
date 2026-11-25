@@ -130,7 +130,8 @@ fn a_hard_limit_below_the_request_lowers_maxclients_as_redis_does() {
             .unwrap_or_else(|| panic!("{label}: no warning in {bodies:?}"));
         assert_eq!(bodies[position], "You requested maxclients of 5000 requiring at least 5032 max file descriptors.", "{label}");
         // The host's reason in the next line is the host's own text, which differs between the two.
-        assert!(bodies[position + 1].starts_with("Server can't set maximum open files to 5032 because of OS error: "), "{label}");
+        assert!(bodies[position + 1].starts_with("Server can't set maximum open files to 5032 because of OS error: ")
+            && bodies[position + 1].ends_with('.'), "{label}");
         assert_eq!(bodies[position + 2],
             "Current maximum open files is 2040. maxclients has been reduced to 2008 to compensate for low ulimit. If you need higher maxclients increase 'ulimit -n'.",
             "{label}");

@@ -309,6 +309,6 @@ fn a_cut_append_only_tail_is_logged_as_redis_logs_it() {
         }).collect();
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{label}: the lines are out of order in {stdout}");
         let kept = std::fs::read(aof.join(name)).expect("read the increment");
-        assert!(kept.starts_with(&whole), "{label}: the whole command stays in the file");
+        assert_eq!(kept, whole, "{label}: the file is cut after its last whole command");
     }
 }
