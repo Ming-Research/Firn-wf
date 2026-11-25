@@ -61,7 +61,13 @@ def verdict(new, twin):
     return "no difference seen"
 
 
+def low_mean(values, count):
+    """The mean of the count lowest values: interference only adds cycles, so the low end is the least disturbed."""
+    return sum(sorted(values)[:count]) / count
+
+
 def selftest():
+    assert low_mean([5.0, 1.0, 9.0, 3.0], 2) == 2.0
     quiet = (1.0, 0.995, 1.005)
     assert verdict((1.04, 1.03, 1.05), quiet) == "slower"
     assert verdict((0.96, 0.95, 0.97), quiet) == "faster"
@@ -240,6 +246,9 @@ def main():
             median = sorted(cost["old"])[args.reps // 2]
             slower = sum(1 for rep in range(args.reps) if cost["new"][rep] > cost["old"][rep])
             print(f"{entry:7} {metric:12} old {median:9.2f} {unit}/op  new/old {ratios['new'][0]:.4f} [{ratios['new'][1]:.4f}, {ratios['new'][2]:.4f}]  twin/old {ratios['twin'][0]:.4f} [{ratios['twin'][1]:.4f}, {ratios['twin'][2]:.4f}]  new slower in {slower}/{args.reps}  {verdict(ratios['new'], ratios['twin'])}")
+            if metric == "cycles":
+                lows = {role: low_mean(cost[role], 10) for role in ("old", "new", "twin")}
+                print(f"{'':7} {'':12} mean of the 10 lowest (described, not read): new/old {lows['new'] / lows['old']:.4f}  twin/old {lows['twin'] / lows['old']:.4f}")
     for entry in ("fill",):
         for metric in metrics:
             values = {role: sorted(results[(rep, entry, role)][metric] for rep in range(args.reps))[args.reps // 2] for role in ("old", "new", "twin")}

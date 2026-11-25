@@ -894,3 +894,36 @@ reading, and `run.py selftest` holds a case for each (slower, faster, no
 difference, the sample's own intervals as unresolved, a twin that excludes 1, a
 twin too wide); each mutation tried, a threshold that reads a slower build from a
 lower bound of 0.9 and a resolution of 0.5 to 2.0, fails the self-test.
+
+#### First counting run, results
+
+[Run 45661551696](https://github.com/Ming-Research/Firn-wf/actions/runs/45661551696)
+(commit ce116cc, job 135 s): 3,000,000 operations, 40 repetitions, CPU 4. The other
+CPUs were 64.3% busy over the measurement and the load average read 63, so the
+machine was more loaded than in the sample.
+
+| operation, cycles | old | new/old (95% interval) | twin/old (95% interval) | reading |
+| --- | ---: | --- | --- | --- |
+| `replace` | 589.71 per op | 1.0134 [0.9791, 1.0490] | 1.0149 [0.9840, 1.0468] | unresolved |
+| `lookup` | 483.66 per op | 0.9493 [0.9164, 0.9833] | 0.9575 [0.9176, 0.9991] | unresolved |
+
+The twin's intervals are 6% and 8% wide, against the 3% the rule allows, so neither
+operation is read, and the two ratios move with their twins' (1.0134 with 1.0149,
+0.9493 with 0.9575): the machine, not the build, moved them. Retired instructions are
+exact and agree with the sample: the new build executes 0.9953 of the old build's
+instructions per `replace` (612.15 per operation) and 0.9942 per `lookup` (473.79), the
+twin 1.0000 of both, in 0 of 40 repetitions more; `fill` runs 60,013,027
+instructions with the old build and 59,188,400 with the new one. Wall time is
+unresolved as well (`replace` 1.0048 [0.9541, 1.0581] against its twin's 1.0240
+[0.9710, 1.0799]; `lookup` 0.9164 [0.8462, 0.9923] against 0.9186 [0.8501, 0.9926]).
+
+Read after the result and not part of the reading rule, from the 40 per-repetition
+costs the target printed: the lowest cost and the mean of the ten lowest give
+`replace` new/old 1.040 and 1.024 with twin/old 1.021 and 1.002, and `lookup` 0.954
+and 0.971 with twin/old 1.007 and 0.987. They point to `replace` slower and
+`lookup` faster in the new build by a few percent and do not agree with each other
+within the twin's spread, so they say where a resolved run would look, not what it
+finds. A second counting run follows with 2,000,000 operations and 100 repetitions,
+the reading rule unchanged: shorter runs interleave the three builds more finely,
+and more of them narrow the interval. The target now also prints the mean of the ten
+lowest costs for cycles, described only.
