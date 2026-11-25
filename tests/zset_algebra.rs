@@ -7,7 +7,8 @@
 //! compares every reply byte for byte, under RESP2 and RESP3 and directly, in
 //! MULTI/EXEC and from scripts; with the append-only file on it compares the
 //! bytes each server appended. The one command whose answer is random,
-//! ZRANDMEMBER with a count, is compared by its shape and by what it may hold.
+//! ZRANDMEMBER with a count, is compared by its shape and by what it may hold,
+//! and its draws are counted to show every member is as likely as any other.
 
 use super::*;
 use super::streams::{Server, ask, firn_in, increment, redis, stop, words};
@@ -646,6 +647,56 @@ fn zrandmember_draws_have_redis_shape() {
     }
     stop(server);
     stop(oracle);
+}
+
+/// Pearson's chi-square statistic of observed counts against the same count
+/// expected of each of them.
+fn chi_square(counts: &std::collections::HashMap<String, u64>, members: usize, expected: f64) -> f64 {
+    assert!(counts.len() <= members, "only members are drawn: {counts:?}");
+    let drawn: f64 = counts.values().map(|&count| (count as f64 - expected).powi(2) / expected).sum();
+    drawn + (members - counts.len()) as f64 * expected
+}
+
+/// Every member of a sorted set is as likely to be drawn as any other. Its
+/// 24 members lie in hash buckets with gaps of unlike lengths, so a draw that
+/// takes the first member after a random bucket favours the members after the
+/// long gaps. Each way ZRANDMEMBER draws is counted: one member at a time, a
+/// negative count (each draw from the whole set), a count up to a third of the
+/// set (draws kept until that many are distinct) and a larger count (one pass
+/// over the buckets). A fair draw's statistic has 23 degrees of freedom and
+/// passes the bound of 80 except with a chance below one in 10^7; a draw with
+/// the gaps' bias gives thousands.
+#[test]
+fn zrandmember_draws_every_member_alike() {
+    const MEMBERS: usize = 24;
+    const BOUND: f64 = 80.0;
+    let program = CompiledProgram::from_environment();
+    let mut server = firn_in(&program, false);
+    for index in 0..MEMBERS {
+        ask(&mut server, &["ZADD", "spread", &index.to_string(), &format!("member{index}")]);
+    }
+    // (count text, commands, members drawn by each) per way of drawing.
+    let ways: [(&str, usize, usize); 4] = [("", 2400, 1), ("-2400", 1, 2400), ("5", 600, 5), ("12", 600, 12)];
+    for (count, commands, each) in ways {
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..commands {
+            let reply = if count.is_empty() {
+                ask(&mut server, &["ZRANDMEMBER", "spread"])
+            } else {
+                ask(&mut server, &["ZRANDMEMBER", "spread", count])
+            };
+            let members = drawn(&parse(&reply), false);
+            assert_eq!(members.len(), each, "ZRANDMEMBER spread {count}: {}", lossy(&reply));
+            for (member, _) in members {
+                *counts.entry(member).or_insert(0_u64) += 1;
+            }
+        }
+        let expected = (commands * each) as f64 / MEMBERS as f64;
+        let statistic = chi_square(&counts, MEMBERS, expected);
+        assert!(statistic < BOUND,
+            "ZRANDMEMBER spread {count:?} drew the 24 members unevenly, chi-square {statistic:.1} (bound {BOUND}): {counts:?}");
+    }
+    stop(server);
 }
 
 /// DENYOOM and WRITE flags: the four stores are refused over the memory limit,
