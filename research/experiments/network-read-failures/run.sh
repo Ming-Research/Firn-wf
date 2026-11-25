@@ -127,10 +127,6 @@ suite() {
   echo "suite: passes=$pass failed=$failed"
 }
 
-# Runs the soft-limit case, with soft-limit-stall.patch applied, again and
-# again, each run a process of its own with its own server, a new one every
-# INTERVAL seconds, and summarises them. The first run also prints a sample of
-# a send that waits for its reader.
 # Builds the network cases with soft-limit-stall.patch applied and names the
 # test program in $binary.
 build_patched() {
@@ -140,6 +136,10 @@ build_patched() {
   binary=$(ls -t "$root"/tests/target/debug/deps/network-* | grep -v '\.d$' | head -n 1)
 }
 
+# Runs the soft-limit case, with soft-limit-stall.patch applied, again and
+# again, each run a process of its own with its own server, a new one every
+# INTERVAL seconds, and summarises them. The first run also prints a sample of
+# a send that waits for its reader.
 soft_limit() {
   budget=$(( $1 * 60 ))
   interval=$2
