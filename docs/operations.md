@@ -339,8 +339,10 @@ because firn rewrites in a thread, `pidfile` and `syslog-enabled` are refused,
 `CONFIG SET dir` answers the unknown-option error where Redis answers `can't
 set protected config` or, with `enable-protected-configs` set, changes the
 directory, and Redis's other messages do not appear: those of features firn
-does not have, `Revert incomplete MULTI/EXEC transaction` and the lines for a
-truncation that fails, and the lines that name the append-only files Redis
+does not have, the verbose and debug lines (accepted and closed clients,
+keyspace statistics: `loglevel verbose` and `debug` show what `notice` shows),
+`Revert incomplete MULTI/EXEC transaction` and the lines for a truncation that
+fails, and the lines that name the append-only files Redis
 creates, opens and removes, and the logo Redis prints instead of `Running mode=...` on a
 terminal. The lines above are not all that firn writes: it also logs `Reading
 config from stdin`, `Unable to obtain the current NOFILE limit`, `Fatal error,
