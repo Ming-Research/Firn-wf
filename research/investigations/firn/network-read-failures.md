@@ -173,6 +173,21 @@ as it took 140 to 142 s on main on the same kind of machine.
 The comment above the trace step of `check.yml`, "SIGCHLD ... has no handler
 in the test process and so cannot interrupt a read", is wrong.
 
+### The fix's tests, tried on commits that are on no branch
+
+Two tests are to guard the fix in `tests/support.rs`. In the first, a thread
+starts 4000 `/bin/true` children with a raw `Command` (so by `posix_spawn`),
+64 at a time before it waits for them, while the test's thread reads an idle
+connection with a 20 ms bound and fails if a read is interrupted. In the
+second, the test's thread must block SIGCHLD and a child the harness starts
+must have the mask the process started with. Written before the runs:
+
+| Variant | Prediction | The tests are not fit if |
+| --- | --- | --- |
+| SIGCHLD blocked before `main`, the mask given back in each child | both pass in 20 of 20 runs; the suite passes with them in it and no SIGCHLD is dequeued | either fails |
+| not blocked | the first fails in every one of 20 runs with reads interrupted; the second fails at its own thread's mask | the first passes in any run: 4000 children are then too few to show the fault every time |
+| blocked, the mask not given back | the first passes; the second fails at the child's mask in 5 of 5 runs | the second passes |
+
 ## The 10 s read stall: hypotheses
 
 Both failures stopped receiving the second 14 MiB frame, which firn had held
