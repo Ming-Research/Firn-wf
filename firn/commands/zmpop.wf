@@ -185,8 +185,8 @@ fn zmpop_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ZmpopWork, input: &[u8]
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records the expired keys' removals in lookup order, then, as Redis rewrites the command it propagates, ZPOPMIN or ZPOPMAX with the key and the number of members actually popped, returning the number of records.";
-  let unchanged = False();
-  let appended = set_operands_meta(log: log, logged: logged, removed: &work^.removed, changed: unchanged, input: input, args: args, budget: budget);
+  let no_change = False();
+  let appended = set_operands_meta(log: log, logged: logged, removed: &work^.removed, changed: no_change, input: input, args: args, budget: budget);
   if work^.popped > 0_u64 {
     if logged {
       let key_span = arg(args: args, index: work^.at);

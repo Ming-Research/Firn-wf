@@ -46,9 +46,9 @@ fn pick_scored(scores: &HashMap<Key, f64, ceiling>, start: u64) -> found: Option
     let index = offset % buckets;
     let slot = &scores^.cells.inner[index];
     match slot^ {
-      HashMapFilled(key: member, value: held) => {
+      HashMapFilled(key: member, value: current) => {
         let copied = copy_key(key: member);
-        let drawn = ScoredKey(member: move copied, score: held^);
+        let drawn = ScoredKey(member: move copied, score: current^);
         return Some<ScoredKey>(value: move drawn);
       }
       HashMapVacant() => {
@@ -165,11 +165,11 @@ fn random_ranked(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
           }
           let slot = &sorted^.scores.cells.inner[index];
           match slot^ {
-            HashMapFilled(key: member, value: held) => {
+            HashMapFilled(key: member, value: current) => {
               set env^.random = next_random(state: env^.random);
               let draw = env^.random % remaining;
               if draw < needed {
-                scored_emit(env: env, member: member, score: held^);
+                scored_emit(env: env, member: member, score: current^);
                 set needed = needed -wrap 1_u64;
               }
               set remaining = remaining -wrap 1_u64;

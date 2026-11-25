@@ -193,8 +193,8 @@ fn zalg_find(slot: &Option<Entry>, member: &Key, keys: &KeyEnv) -> probe: ScoreP
           let seen = hash_map_lookup::<KeyHash, f64, ScoreProbe, u64, fn score_probe, ceiling>(map: &sorted^.scores, key: member, key_env: keys, visit_env: &probe);
         }
         Members(members: set_of) => {
-          let held = set_holds(members: set_of, member: member, keys: keys);
-          if held {
+          let holds = set_holds(members: set_of, member: member, keys: keys);
+          if holds {
             set probe.score = 1.0_f64;
             set probe.found = True();
           }
@@ -419,8 +419,8 @@ fn zalg_scan(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, p
           for @cells (index in 0_u64..buckets) {
             let cell = &sorted^.scores.cells.inner[index];
             match cell^ {
-              HashMapFilled(key: member, value: held) => {
-                let taken = zalg_member(slots: slots, ranks: ranks, client: client, plan: plan, order: order, member: member, raw: held^, rank0: rank0, weight0: weight0, mode: mode, counting: counting, acc: acc);
+              HashMapFilled(key: member, value: current) => {
+                let taken = zalg_member(slots: slots, ranks: ranks, client: client, plan: plan, order: order, member: member, raw: current^, rank0: rank0, weight0: weight0, mode: mode, counting: counting, acc: acc);
                 if taken {
                   set count = count +wrap 1_u64;
                   if limit != 0_u64 {
@@ -477,7 +477,7 @@ fn zalg_scan(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, p
 }
 
 fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, operation: u64, counting: Bool, result: &Sorted) -> size: u64 reads(slots), reads(ranks), reads(client), reads(plan), writes(result) {
-  doc "Computes the operation over the sets, which are all live or absent: the sets are put in order of size, the smallest first, ties in argument order, unless the operation is a difference; a union visits every set in that order aggregating into the result, an intersection the smallest only, and a difference the first, which a later set named by the same key empties. The result's scores are filled in, its order is not. Returns the size of the result, or for a count the members every set holds, up to the limit.";
+  doc "Computes the operation over the sets, which are all live or absent: the sets are put in order of size, the smallest first, ties in argument order, unless the operation is a difference; a union visits every set in that order aggregating into the result, an intersection the smallest only, and a difference the first, which a later set named by the same key empties. The result's scores are filled in, its order is not, and are sized beforehand for the most the operation can give, so that they are not grown and moved while it is built. Returns the size of the result, or for a count the members every set holds, up to the limit.";
   let numkeys = plan^.end -wrap plan^.first;
   let order = box_slots_new::<u64>(capacity: numkeys);
   let summed = 0_u64;
@@ -506,8 +506,6 @@ fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client
   if operation != zop_diff {
     zalg_sort(order: &order);
   }
-  // The result's scores are sized for the most the operation can give, so that
-  // they are not grown and moved while it is built.
   let hint = summed;
   if operation == zop_inter {
     set hint = least;
@@ -581,9 +579,9 @@ fn zalg_order(result: &Sorted, keys: &KeyEnv) -> size: u64 reads(keys), writes(r
   for @cells (index in 0_u64..buckets) {
     let cell = &result^.scores.cells.inner[index];
     match cell^ {
-      HashMapFilled(key: member, value: held) => {
+      HashMapFilled(key: member, value: current) => {
         let copied = copy_key(key: member);
-        let rank = Rank(score: held^, member: move copied);
+        let rank = Rank(score: current^, member: move copied);
         let placed = ordered_map_put::<RankOrder, unit, ceiling>(map: &result^.order, key: move rank, value: unit, env: keys);
       }
       HashMapVacant() => {
