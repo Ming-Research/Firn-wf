@@ -1,8 +1,10 @@
+alias DirectoryRead = std::fs::DirectoryRead;
+alias DirectoryWrite = std::fs::DirectoryWrite;
 alias HandleFactory = std::io::HandleFactory;
+alias HostPaths = std::fs::HostPaths;
 alias IoError = std::io::IoError;
 alias OutputStream = std::io::OutputStream;
 alias WallClock = std::time::WallClock;
-alias WriteFile = std::fs::WriteFile;
 
 public const level_debug: u64 = 0_u64;
 
@@ -28,10 +30,16 @@ public struct ServerLog {
   public level: u64;
 }
 
+public struct LogFile {
+  doc "A log file named below a held directory: the write half of the directory its path names the parent of, and the file's own name. Each line opens the name for appending and closes it again, as Redis opens its log file for every line, so a file renamed away is created anew.";
+  public directory: DirectoryWrite;
+  public name: Box<Slots<u8>>;
+}
+
 public enum LogSink {
-  doc "Where serverlog_run writes the lines: standard output, or a file opened for appending, which serverlog_run closes.";
+  doc "Where serverlog_run writes the lines: standard output, or a log file, which serverlog_run closes.";
   Stream(public output: OutputStream);
-  File(public file: WriteFile);
+  File(public file: LogFile);
 }
 
 public fn serverlog_new(clock: WallClock, pid: u64, level: u64) -> made: ServerLog pure doc "Creates an empty log whose lines carry pid and whose lowest written level is level, one of level_debug to level_warning, as Redis's loglevel orders them.";
@@ -46,9 +54,17 @@ public fn log_message_number(message: &Box<Slots<u8>>, number: u64) -> result: u
 
 public fn log_message_error(message: &Box<Slots<u8>>, problem: &IoError) -> result: unit reads(problem), writes(message) doc "Appends the host's description of problem, the text strerror gives Redis, within the message limit.";
 
-public fn serverlog_line(pid: u64, level: u64, unix_ms: u64, offset: i64, message: &Box<Slots<u8>>) -> line: Box<Slots<u8>> reads(message) doc "Returns the complete line Redis's serverLogRaw writes for a message: the process id, the role M, the local time of the Unix millisecond unix_ms moved by offset seconds as dd Mon yyyy hh:mm:ss.mmm, the level's mark and the message, ending in a newline.";
+public fn serverlog_line(pid: u64, role: u8, level: u64, unix_ms: u64, offset: i64, message: &Box<Slots<u8>>) -> line: Box<Slots<u8>> reads(message) doc "Returns the complete line Redis's serverLogRaw writes for a message: the process id, the role byte (C before the server is initialized, M after), the local time of the Unix millisecond unix_ms moved by offset seconds as dd Mon yyyy hh:mm:ss.mmm, the level's mark and the message, ending in a newline.";
 
-public fn serverlog_write(log: &ServerLog, level: u64, message: &Box<Slots<u8>>) -> result: unit reads(log), reads(message) waits doc "Queues the message as one line stamped with the present time, unless level is below the log's level.";
+public fn serverlog_stamped(clock: &WallClock, pid: u64, role: u8, level: u64, message: &Box<Slots<u8>>) -> line: Box<Slots<u8>> reads(clock), reads(message) doc "Returns the line for a message stamped with the present time in the host's local time, without the level filter.";
+
+public fn serverlog_write(log: &ServerLog, role: u8, level: u64, message: &Box<Slots<u8>>) -> result: unit reads(log), reads(message) waits doc "Queues the message as one line stamped with the present time, unless level is below the log's level.";
+
+public fn logfile_open(factory: &HandleFactory, paths: &HostPaths, base: &DirectoryRead, path: &[u8]) -> result: Result<LogFile, IoError> reads(paths), reads(base), reads(path), writes(factory) waits doc "Opens the directory the host path names the parent of, looked up from base, and checks that the last name can be opened for appending, creating it as fopen with mode a does; the parent of a name with no slash is base itself. Nothing stays open but the directory.";
+
+public fn logfile_close(factory: &HandleFactory, file: LogFile) -> result: unit writes(factory) waits doc "Closes the directory of the log file.";
+
+public fn serverlog_emit(factory: &HandleFactory, paths: &HostPaths, base: &DirectoryRead, output: &OutputStream, logfile: &[u8], line: &Box<Slots<u8>>) -> result: unit reads(paths), reads(base), reads(logfile), reads(line), writes(factory), writes(output) waits doc "Writes one finished line at once, to output when logfile is empty and otherwise to the file logfile names from base, opened for this line alone; a line the sink refuses is dropped.";
 
 public fn serverlog_enqueue(log: &ServerLog, line: Box<Slots<u8>>) -> result: unit reads(log) waits doc "Queues a finished line as it is, which the level filter and the clock do not touch.";
 
