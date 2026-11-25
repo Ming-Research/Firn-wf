@@ -9,7 +9,7 @@ scripting through Halo, the Lua engine of
 
 firn serves Whitefoot: it is the real server that shows what Whitefoot gives a
 concurrent, persistent network program under its guarantees, and exposes what
-Whitefoot still lacks. Its milestones ([design](design/firn.md)) are
+Whitefoot still lacks. Its milestones ([design](design/decisions/milestones.md)) are
 standalone Redis application workloads, cache and session storage and
 scripted conditional updates, used by existing applications through their
 ordinary clients with their business logic unchanged, and then the keyspace

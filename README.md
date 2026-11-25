@@ -17,7 +17,7 @@ server and to expose what it still lacks. It began as the subset of Redis
 that `redis-benchmark`'s default suite needs and is growing toward
 standalone application workloads: cache and session storage and scripted
 conditional updates, used by existing applications through their ordinary
-clients ([design](design/firn.md)).
+clients ([design](design/decisions/milestones.md)).
 
 ## Status
 
@@ -68,10 +68,11 @@ configuration refusals, connection limits, persistence, backup and restore.
   `whitefoot-kit/`, a submodule of
   [Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit), fetches
   and checks it.
-- `design/`: the decisions firn is built on, and their change log;
+- `design/`: the decisions firn is built on (`design/decisions/`), its
+  constitution, and the change log of the tree's older form (`log.md`);
   `design/skill/`, a submodule of
   [Design-skill](https://github.com/Ming-Research/Design-skill), holds the
-  tree's lint.
+  older form's lint.
 - `research/`: the server's design and measurements
   (`research/investigations/firn/`) and the instruments behind them
   (`research/experiments/`).
