@@ -761,6 +761,48 @@ fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock, cancel: CancelWat
   return unit;
 }
 
+const log_starting: Array<u8, 44> = "oO0OoO0OoO0Oo firn is starting oO0OoO0OoO0Oo";
+
+const log_configured: Array<u8, 20> = "Configuration loaded";
+
+const log_unconfigured: Array<u8, 123> = "Warning: no config file specified, using the default config. In order to specify a config file use firn /path/to/redis.conf";
+
+const log_running_head: Array<u8, 30> = "Running mode=standalone, port=";
+
+const log_period: Array<u8, 1> = ".";
+
+const log_initialized: Array<u8, 18> = "Server initialized";
+
+const log_ready: Array<u8, 31> = "Ready to accept connections tcp";
+
+const log_requested: Array<u8, 26> = "User requested shutdown...";
+
+const log_fsync: Array<u8, 32> = "Calling fsync() on the AOF file.";
+
+const log_bye: Array<u8, 37> = "firn is now ready to exit, bye bye...";
+
+const log_sigterm: Array<u8, 39> = "Received SIGTERM scheduling shutdown...";
+
+const log_sigint: Array<u8, 38> = "Received SIGINT scheduling shutdown...";
+
+fn log_line(log: &ServerLog, role: u8, level: u64, word: &[u8]) -> result: unit reads(log), reads(word) waits {
+  doc "Queues a log line whose whole message is word, from the server's context role: C before the server is initialized, M after.";
+  let message = pkg::serverlog::log_message_new();
+  pkg::serverlog::log_message_append(message: &message, source: word);
+  pkg::serverlog::serverlog_write(log: log, role: role, level: level, message: &message);
+  return unit;
+}
+
+fn log_running(log: &ServerLog, port: u64) -> result: unit reads(log) waits {
+  doc "Queues Redis's line for the mode and port the server runs with.";
+  let message = pkg::serverlog::log_message_new();
+  pkg::serverlog::log_message_append(message: &message, source: &log_running_head[0_u64..30_u64]);
+  pkg::serverlog::log_message_number(message: &message, number: port);
+  pkg::serverlog::log_message_append(message: &message, source: &log_period[0_u64..1_u64]);
+  pkg::serverlog::serverlog_write(log: log, role: 77_u8, level: 2_u64, message: &message);
+  return unit;
+}
+
 fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, shutdown: CancelSource) -> result: unit pure waits {
   doc "Waits in a context of its own, from before the append-only file's replay, for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either; during the replay the request is what the replay reads to end early. The listener is closed before the request is recorded, the receive generation fired and the separate shutdown source fired, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops, during the replay too. The wait has no deadline: shutdown by another context cancels it, including main stopping after the client limit or after a replay that did not load or that a request ended. Cancellation or another wait failure closes the listener without making a new request.";
   let heard = False();
@@ -769,6 +811,14 @@ fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspac
   match stop_next(factory: &factory, listener: &listener, deadline: limit, cancel: &cancel) {
     Ok(value: kind) => {
       set heard = True();
+      match kind {
+        Interrupt() => {
+          log_line(log: &store.log, role: 77_u8, level: 3_u64, word: &log_sigint[0_u64..38_u64]);
+        }
+        Terminate() => {
+          log_line(log: &store.log, role: 77_u8, level: 3_u64, word: &log_sigterm[0_u64..39_u64]);
+        }
+      }
     }
     Err(error: problem) => {
     }
@@ -837,6 +887,7 @@ struct Options {
   dir: Box<Slots<u8>>;
   loglevel: u64;
   logfile: Box<Slots<u8>>;
+  configured: Bool;
   valid: Bool;
 }
 
@@ -1029,6 +1080,12 @@ const option_rewrite_min_size: Array<u8, 25> = "AUTO-AOF-REWRITE-MIN-SIZE";
 
 fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Clock, wall_clock: WallClock, stops: StopSignals, memory_meter: MemoryMeter, cwd: DirectoryRead, cwd_write: DirectoryWrite, log: &ServerLog) -> status: ExitStatus pure waits {
   doc "Starts the server once the invocation is read: raises the open-files limit, replays the append-only file, listens and serves until the stop, and returns the status firn ends with. Everything it logs is queued on log, which the caller closes after run returns.";
+  log_line(log: log, role: 67_u8, level: 2_u64, word: &log_starting[0_u64..44_u64]);
+  if options.configured {
+    log_line(log: log, role: 67_u8, level: 2_u64, word: &log_configured[0_u64..20_u64]);
+  } else {
+    log_line(log: log, role: 67_u8, level: 3_u64, word: &log_unconfigured[0_u64..123_u64]);
+  }
   let no_port = options.port == 0_u64;
   let no_bind = options.bind.inner.len == 0_u64;
   if bor(no_port, no_bind) {
@@ -1066,6 +1123,8 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
     close_directory(factory: &handles, directory: move cwd);
     return exit_status(code: 1_u8);
   }
+  log_running(log: log, port: options.port);
+  log_line(log: log, role: 77_u8, level: 2_u64, word: &log_initialized[0_u64..18_u64]);
   let keyspace_log = serverlog_share(log: log);
   let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms, server_log: move keyspace_log);
   atomic v = &root.server {
@@ -1154,6 +1213,7 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
   let listened = True();
   match tcp_listen(factory: &handles, address: &address) {
     Ok(value: listener) => {
+      log_line(log: log, role: 77_u8, level: 2_u64, word: &log_ready[0_u64..31_u64]);
       let accepted = 0_u64;
       let cancel = std::time::cancel_watch(source: &shutdown);
       let next_diagnostic = None<Instant>();
@@ -1255,6 +1315,13 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
   }
   atomic m = &keyspace.meta when m^.clients == 0_u64 {
   }
+  let requested = shutdown_requested(store: &keyspace);
+  if requested {
+    log_line(log: log, role: 77_u8, level: 2_u64, word: &log_requested[0_u64..26_u64]);
+    if logging {
+      log_line(log: log, role: 77_u8, level: 2_u64, word: &log_fsync[0_u64..32_u64]);
+    }
+  }
   pkg::connection_events::hub_stop(hub: &keyspace.pubsub);
   let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
@@ -1272,6 +1339,9 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
   }
   std::time::cancel_fire(source: &shutdown);
   std::time::close_cancel_source(source: move shutdown);
+  if requested {
+    log_line(log: log, role: 77_u8, level: 3_u64, word: &log_bye[0_u64..37_u64]);
+  }
   if listened {
     return exit_status(code: 0_u8);
   }

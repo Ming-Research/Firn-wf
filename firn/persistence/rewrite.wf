@@ -4,6 +4,8 @@ alias HandleFactory = std::io::HandleFactory;
 alias Keyspace = pkg::store::Keyspace;
 alias Time = pkg::store::Time;
 alias WriteFile = std::fs::WriteFile;
+alias level_notice = pkg::serverlog::level_notice;
+alias level_warning = pkg::serverlog::level_warning;
 
 const aof_rw_base_suffix: Array<u8, 9> = ".base.aof";
 
@@ -181,6 +183,14 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
       }
     }
   }
+  if started {
+    if accepted {
+      event_text(store: store, level: level_notice, word: &event_rewrite_terminated[0_u64..46_u64]);
+      event_text(store: store, level: level_notice, word: &event_rewrite_finished[0_u64..44_u64]);
+    } else {
+      event_text(store: store, level: level_warning, word: &event_rewrite_error[0_u64..44_u64]);
+    }
+  }
   return unit;
 }
 
@@ -349,6 +359,19 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
       Err(error: problem) => {
         let counted = aof_sync_counts(error: &problem);
         if counted {
+          let first_failure = True();
+          atomic m = &store^.meta {
+            match m^.aof_sync_error {
+              Some(..) => {
+                set first_failure = False();
+              }
+              None() => {
+              }
+            }
+          }
+          if first_failure {
+            event_sync_failed(store: store, problem: &problem);
+          }
           atomic m = &store^.meta {
             set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
           }
@@ -871,6 +894,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
   let overhead = aof_rw_overhead(log: &log);
   let admitted = aof_rw_admit(store: store, manual: manual, overhead: overhead);
   if admitted {
+    event_text(store: store, level: level_notice, word: &event_rewrite_start[0_u64..45_u64]);
   } else {
     aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
     return move log;
@@ -1100,10 +1124,27 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
   } else {
     set log^.boundary.whole = False();
   }
+  let failed_at = std::time::unix_nanoseconds(clock: &store^.log.clock);
+  let failed_seconds = cvt.wrap::<i64, u64>(failed_at) / 1000000000_u64;
+  if failed {
+    let since = failed_seconds -sat log^.error_logged;
+    if since > 30_u64 {
+      set log^.error_logged = failed_seconds;
+      event_write_failed(store: store, written: appended.written, expected: length, problem: &appended.error);
+    }
+  }
+  let recovered = False();
   atomic m = &store^.meta {
     set m^.aof_current_size = m^.aof_current_size +wrap progress;
     set m^.aof_incr_size = m^.aof_incr_size +wrap progress;
     if drained {
+      match m^.aof_append_error {
+        Some(..) => {
+          set recovered = True();
+        }
+        None() => {
+        }
+      }
       set m^.aof_append_error = None<std::io::IoError>();
       set m^.aof_append_partial = False();
       set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
@@ -1119,6 +1160,9 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
     }
     set m^.aof_pending_capacity = pending^.inner.cap;
     set m^.aof_pending_length = pending^.inner.len;
+  }
+  if recovered {
+    event_text(store: store, level: level_notice, word: &event_solved[0_u64..52_u64]);
   }
   return drained;
 }

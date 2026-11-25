@@ -226,6 +226,7 @@ fn aof_history(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, pref
 fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, boundary: &AofBoundary, time: &Time, clock: &Clock) -> result: Result<WriteFile, AofStartError> reads(store), reads(cwd), reads(directory), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(writable), writes(manifest), writes(boundary), writes(clock) waits {
   doc "Reads the manifest, upgrades an old-style file before the replay as Redis 7.2.16's loadAppendOnlyFiles does (aof.c:1668-1676), replays every listed file, and only then removes the unlisted rewrite journal, creates any missing base or increment, persists the manifest and opens the last increment, as Redis opens its file for appending only after loading (server.c:7332-7333). A stop request the replay saw is returned before every step after the replay.";
   let failed = AofStartError::Failed();
+  let began = std::time::now(clock: clock);
   let parsed = aof_read_manifest(factory: factory, directory: directory, prefix: prefix, manifest: manifest);
   if parsed {
   } else {
@@ -242,6 +243,12 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
     Err(error: refusal) => {
       return Err<WriteFile, AofStartError>(error: refusal);
     }
+  }
+  let present = manifest^.parts.inner.len;
+  if present > 0_u64 {
+    let loaded_at = std::time::now(clock: clock);
+    let loading = std::time::nanoseconds_from(earlier: began, later: loaded_at);
+    event_loaded(store: store, nanoseconds: loading);
   }
   let cleaned = aof_rw_journal_cleanup(store: store, factory: factory, writable: writable, prefix: prefix, manifest: manifest);
   let no_base = manifest^.base_sequence == 0_i64;
@@ -323,7 +330,7 @@ fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd
           match aof_prepare(store: store, factory: factory, cwd: cwd, cwd_write: cwd_write, directory: &directory, writable: &writable, prefix: prefix, manifest: &manifest, boundary: &boundary, time: time, clock: clock) {
             Ok(value: opened) => {
               let filename = aof_copy(input: prefix);
-              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened, boundary: boundary);
+              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened, boundary: boundary, error_logged: 0_u64);
               return Ok<AofLog, AofStartError>(value: move log);
             }
             Err(error: problem) => {

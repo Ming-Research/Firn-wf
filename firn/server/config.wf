@@ -1121,7 +1121,7 @@ fn read_options(args: &std::text::Args, factory: &HandleFactory, paths: &HostPat
   set memory[5_u64] = 10_u64;
   let dir = box_slots_new::<u8>(capacity: 0_u64);
   let logfile = box_slots_new::<u8>(capacity: 0_u64);
-  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, maxclients: 10000_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, memory: memory, pid: pid, dir: move dir, loglevel: 2_u64, logfile: move logfile, valid: readable);
+  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, maxclients: 10000_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, memory: memory, pid: pid, dir: move dir, loglevel: 2_u64, logfile: move logfile, configured: off, valid: readable);
   let total = std::text::args_count(args: args);
   if total <= 1_u64 {
     return move options;
@@ -1142,6 +1142,10 @@ fn read_options(args: &std::text::Args, factory: &HandleFactory, paths: &HostPat
     let from_stdin = False();
     if length == 1_u64 {
       set from_stdin = first.bytes.inner[0_u64] == 45_u8;
+    }
+    if from_stdin {
+    } else {
+      set options.configured = True();
     }
     let read = if from_stdin {
       give config_read_stdin(factory: factory, input: input, output: output, buffer: &config);

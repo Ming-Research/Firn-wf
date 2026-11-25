@@ -142,7 +142,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     }
   }
   std::time::close_cancel_watch(watch: move never);
-  let AofLog(directory: directory, writable: writable, prefix: prefix, manifest: manifest, file: file, boundary: boundary) = move log;
+  let AofLog(directory: directory, writable: writable, prefix: prefix, manifest: manifest, file: file, boundary: boundary, error_logged: unused_logged) = move log;
   close_write(factory: &factory, file: move file);
   std::fs::close_directory(factory: &factory, directory: move directory);
   std::fs::close_directory_write(factory: &factory, directory: move writable);
