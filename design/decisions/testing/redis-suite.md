@@ -15,6 +15,11 @@ The gate skips from the start each test that `tests/redis-suite/hung.tsv` lists 
 Before each run, for every target, a zero-fuzz forward-only patch makes the suite's five argument-free pub/sub removals drain and check their known acknowledgments.
 - rejected: an agent proposed excluding the affected tests, or changing their wire commands or expected recipient counts; the owner rejected it, because the patch keeps every original command and recipient-count assertion, and firn and Redis run the same patched tests.
 
+### decision redis-suite-failed-test-gets-a-fresh-connection
+Before each run, for every target, a zero-fuzz forward-only patch replaces the shared connection after a failed test with a new one in the mode the failed test started in.
+- rejected: an agent proposed waiting for the blocking-pop item and leaving the suite unchanged; the owner rejected it, because about 75 cases of the ten sorted-set commands would stay out of the gate until then, and reply differences could hide among them.
+- rejected: an agent proposed listing the two blocking-pop RESP3 tests in `hung.tsv`; the owner rejected it, because that list is for tests that hang, these two fail at once, and excluding the affected tests was already rejected.
+
 ### decision redis-suite-recording-skips-hangs-and-reports-them-apart
 The recording runs skip the listed hung tests as the gate does; one more run of their units without the list names a test a candidate to leave it only if it passes.
 - replaced: recording every run without the list was on main; the owner changed it, because a listed test run anyway can fail instead of hanging and leave its connection's state, such as an open MULTI, to the tests after it, so those runs lose passes the gate keeps.
