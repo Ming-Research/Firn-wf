@@ -349,4 +349,3 @@ the increment both hold records, then copies the directory and requires firn
 to answer reads for those keys exactly as Redis did. It does not validate an
 arbitrary Redis deployment's migration: other commands, expiry times and other
 Redis versions are not checked.
-
