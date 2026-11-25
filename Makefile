@@ -26,6 +26,11 @@ DESIGN_REVIEW_BASE ?= origin/main
 # projects written in Whitefoot (whitefoot-kit/downstream.md).
 include $(ROOT)/whitefoot-kit/whitefoot.mk
 
+# The tests, as CI and the engine of wf-agents name them: each a target that
+# CI runs in a step by itself through whitefoot-kit/ci/run-tests.py, which
+# reports it as JUnit XML (whitefoot-kit/downstream.md, "Tests in CI").
+include $(ROOT)/whitefoot-kit/tests.mk
+
 # firn is one module program; any of its sources changes the build, Halo's
 # among them, which deps/halo-wf brings.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
@@ -41,6 +46,11 @@ SUITE_SHARDS ?= 2
 CHECK_TARGETS := compiler firn test redis-suite design-lint gate-sync safety-witnesses
 
 check: $(CHECK_TARGETS)
+
+# The gate's targets but the compiler's download, which is a job's setup; the
+# target of check.yml's aof-sync-fault job; and the two checks of
+# design-readiness.yml.
+TESTS := $(filter-out compiler,$(CHECK_TARGETS)) aof-sync-fault design-ready pin-ready
 
 # Real server bug patterns: each faulty transcription must receive its named
 # source diagnostic and each corrected program must build with this pin.
@@ -144,17 +154,18 @@ design-lint:
 design-ready:
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)" --require-approval,echo "design ready: no live tree")
 
-# CI runs every target of the gate: each `make TARGET` step of check.yml is
-# one line, and the targets they name, less the host setup of `make
+# CI runs every target of the gate: each step of check.yml that runs one,
+# `make TARGET` for setup or `whitefoot-kit/ci/run-tests.py TARGET` for a
+# test, is one line, and the targets they name, less the host setup of `make
 # toolchain` and the aof-sync-fault job's own target, are exactly
-# CHECK_TARGETS. The comparison must also refuse a
-# workflow without `make redis-suite` and one with an extra `make firn-lto`.
+# CHECK_TARGETS. The comparison must also refuse a workflow without the
+# redis-suite step and one with an extra `make firn-lto`.
 gate-sync:
 	@workflow=$(ROOT)/.github/workflows/check.yml; \
 	want="$$(printf '%s\n' $(CHECK_TARGETS) | sort -u | tr '\n' ' ')"; \
-	runs() { sed -n -E 's/^ +run: make ([a-z-]+)$$/\1/p' | grep -vx -e toolchain -e aof-sync-fault | sort -u | tr '\n' ' '; }; \
+	runs() { sed -n -E 's#^ +run: (make|whitefoot-kit/ci/run-tests\.py) ([a-z-]+)$$#\2#p' | grep -vx -e toolchain -e aof-sync-fault | sort -u | tr '\n' ' '; }; \
 	[ "$$(runs < $$workflow)" = "$$want" ] || { echo "gate-sync: check.yml runs [$$(runs < $$workflow)] but make check runs [$$want]" >&2; exit 1; }; \
-	[ "$$(grep -v 'run: make redis-suite$$' $$workflow | runs)" != "$$want" ] \
+	[ "$$(grep -v 'run: whitefoot-kit/ci/run-tests.py redis-suite$$' $$workflow | runs)" != "$$want" ] \
 		&& [ "$$({ cat $$workflow; echo '        run: make firn-lto'; } | runs)" != "$$want" ] \
 		|| { echo "gate-sync: the comparison accepted a changed workflow" >&2; exit 1; }; \
 	echo "gate-sync: check.yml runs every target of make check: $$want"
