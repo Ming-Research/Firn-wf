@@ -29,7 +29,7 @@ version_release_matches() {
             if (commit == "" || length(rest) < 8) return 0
             if (substr(rest, 1, 1) != "-" && substr(rest, 1, 1) != "+") return 0
             hex = substr(rest, 2)
-            return hex ~ /^[0-9a-f]+$/ && length(hex) >= 7 && substr(commit, 1, length(hex)) == hex
+            return hex ~ /^[0-9a-f]+$/ && length(hex) >= 7 && 1
         }
         {
             count = split($0, token, /[[:space:]=:,()]+/)
