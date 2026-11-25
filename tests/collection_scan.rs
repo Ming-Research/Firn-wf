@@ -1,8 +1,9 @@
 //! Redis 7.2.16 src/db.c scanGenericCommand/parseScanCursorOrReply and
 //! t_set.c/t_hash.c/t_zset.c command wrappers define these expectations.
 //! Collection order and the values of dict cursors are deliberately not
-//! compared: design/firn/enumeration.md selects firn's order, whole replies for
-//! compact collections and Whitefoot's hash-position cursor for larger ones.
+//! compared: design/decisions/commands/enumeration.md selects firn's order,
+//! whole replies for compact collections and Whitefoot's hash-position cursor
+//! for larger ones.
 //! Recorder inputs for the literal Redis transcripts below live in
 //! collection-scan-oracle.json; RESP selection is outside each transcript.
 
@@ -436,10 +437,10 @@ fn assert_scan(client: &mut TcpStream, scan: &str, key: &str, compact: bool, exp
     assert_eq!(grouped(&all, width), grouped(expected, width), "{scan} {key}: every member once");
 }
 
-/// Compact bounds are Redis's default listpack limits: 128 members of a set or
-/// sorted set, 512 fields of a hash, each at most 64 bytes, a hash's values too.
-/// firn applies them to the current content, with no encoding history, and
-/// treats an all-integer set as it treats any other set.
+/// Compact bounds are Redis's default listpack and intset limits: 128 members of
+/// a set or sorted set, 512 fields of a hash, each at most 64 bytes, a hash's
+/// values too, and 512 members of a set of integers. firn applies them to the
+/// current content, with no encoding history.
 #[test]
 fn compact_collections_return_whole_and_larger_ones_scan_in_steps() {
     for protocol in [2, 3] {
@@ -465,7 +466,7 @@ fn compact_collections_return_whole_and_larger_ones_scan_in_steps() {
             let size = index + 1;
             if [1, 128, 129, 512, 513].contains(&size) {
                 assert_scan(&mut client, "SSCAN", "many:s", size <= 128, &members, 1);
-                assert_scan(&mut client, "SSCAN", "many:i", size <= 128, &integers, 1);
+                assert_scan(&mut client, "SSCAN", "many:i", size <= 512, &integers, 1);
                 assert_scan(&mut client, "HSCAN", "many:h", size <= 512, &pairs, 2);
                 assert_scan(&mut client, "ZSCAN", "many:z", size <= 128, &scored, 2);
             }
@@ -713,6 +714,180 @@ fn expired_collections_are_missing_in_direct_exec_and_script_reads() {
             assert_eq!(request(&mut client, &["EVAL", &source, "1", key]), EMPTY_SCAN);
             let source = format!("return redis.pcall('{scan}',KEYS[1],'bad','COUNT',0)");
             assert_eq!(request(&mut client, &["EVAL", &source, "1", key]), INVALID_CURSOR);
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// SADD/HSET/ZADD (or SREM/HDEL/ZREM) of the members `{prefix}{index:05}` for
+/// `range`, 500 to a command so that a collection of 20000 takes few requests.
+fn change_many(client: &mut TcpStream, scan: &str, key: &str, add: bool, prefix: &str, range: std::ops::Range<usize>) {
+    let indexes: Vec<usize> = range.collect();
+    for chunk in indexes.chunks(500) {
+        let mut args: Vec<String> = Vec::new();
+        match (scan, add) {
+            ("SSCAN", true) => args.push("SADD".into()),
+            ("SSCAN", false) => args.push("SREM".into()),
+            ("HSCAN", true) => args.push("HSET".into()),
+            ("HSCAN", false) => args.push("HDEL".into()),
+            ("ZSCAN", true) => args.push("ZADD".into()),
+            _ => args.push("ZREM".into()),
+        }
+        args.push(key.into());
+        for index in chunk {
+            let name = format!("{prefix}{index:05}");
+            match (scan, add) {
+                ("HSCAN", true) => { args.push(name); args.push("v".into()); }
+                ("ZSCAN", true) => { args.push("1".into()); args.push(name); }
+                _ => args.push(name),
+            }
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        request(client, &refs);
+    }
+}
+
+/// Follows a scan from cursor zero to cursor zero and gives the number of
+/// items each call returned, in order, the cursor having ended at zero.
+fn call_sizes(client: &mut TcpStream, scan: &str, key: &str, options: &[&str]) -> Vec<usize> {
+    scan_all(client, scan, key, options).1
+}
+
+/// Redis 7.2.16's scanGenericCommand keeps stepping a hash table until it has
+/// sampled COUNT entries (counting before MATCH), the cursor reaches zero, or it
+/// has made 10*COUNT+1 steps. So every call but the last returns at least COUNT
+/// entries when nothing is filtered, an unfiltered scan takes about
+/// members/COUNT calls, and a scan whose MATCH takes nothing still takes at most
+/// members/COUNT+1 calls, each with an empty array and a nonzero cursor.
+#[test]
+fn a_step_samples_at_least_count_entries_before_match() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        for (scan, width, prefix) in [("SSCAN", 1, "m"), ("HSCAN", 2, "m"), ("ZSCAN", 2, "m")] {
+            for size in [1000usize, 10000] {
+                let key = format!("sampled:{scan}:{size}");
+                change_many(&mut client, scan, &key, true, prefix, 0..size);
+                for count in [10usize, 100] {
+                    let count_text = count.to_string();
+                    let sizes = call_sizes(&mut client, scan, &key, &["COUNT", &count_text]);
+                    let steps = sizes.len();
+                    assert!(steps >= size / (2 * count), "{scan} {size} COUNT {count}: only {steps} calls, a step must stay near COUNT");
+                    let last = steps - 1;
+                    let counts: Vec<usize> = sizes[..last].iter().map(|items| items / width).collect();
+                    assert!(counts.iter().all(|&members| members >= count), "{scan} {size} COUNT {count}: a step before the last returned fewer than COUNT: {counts:?}");
+                    assert!(counts.iter().all(|&members| members < 4 * count), "{scan} {size} COUNT {count}: a step returned far more than COUNT");
+                    let mean = counts.iter().sum::<usize>() as f64 / counts.len() as f64;
+                    assert!(mean < 2.0 * count as f64, "{scan} {size} COUNT {count}: mean step {mean}");
+                    // Nothing matches: every call still samples COUNT entries.
+                    let nothing = call_sizes(&mut client, scan, &key, &["MATCH", "zzz*", "COUNT", &count_text]);
+                    assert!(nothing.iter().all(|&items| items == 0), "{scan} {size}: MATCH took nothing");
+                    assert!(nothing.len() <= size / count + 1, "{scan} {size} COUNT {count}: {} calls for a scan that samples COUNT entries each", nothing.len());
+                    assert!(nothing.len() >= size / (2 * count), "{scan} {size} COUNT {count}: only {} calls", nothing.len());
+                }
+            }
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// A table that was once large and has been emptied to a few members keeps its
+/// buckets (Whitefoot's hash map does not shrink). A call stops at Redis's
+/// budget of 10*COUNT+1 steps, with fewer than COUNT entries and a nonzero
+/// cursor, so the scan takes at least peak/(10*COUNT+1) calls, the peak being a
+/// number the test itself filled, and still ends with exactly the members left.
+#[test]
+fn a_sparse_table_ends_each_call_at_the_bucket_budget() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        let (peak, kept, count) = (20_000usize, 600usize, 10usize);
+        for (scan, width) in [("SSCAN", 1), ("HSCAN", 2), ("ZSCAN", 2)] {
+            let key = format!("sparse:{scan}");
+            change_many(&mut client, scan, &key, true, "p", 0..peak);
+            change_many(&mut client, scan, &key, false, "p", kept..peak);
+            let mut cursor = "0".to_string();
+            let mut seen = Vec::new();
+            let mut calls = 0usize;
+            loop {
+                let (next, got) = parts(&request(&mut client, &[scan, &key, &cursor, "COUNT", &count.to_string()]));
+                calls += 1;
+                assert!(got.len() / width < count, "{scan}: a call on a sparse table returned {} entries", got.len() / width);
+                for group in got.chunks(width) { seen.push(group[0].clone()); }
+                if next == b"0" { break; }
+                cursor = String::from_utf8(next).unwrap();
+                assert!(calls < 100_000, "{scan}: no end in sight");
+            }
+            assert!(calls >= peak / (10 * count + 1), "{scan}: {calls} calls cover at most {} buckets", calls * (10 * count + 1));
+            seen.sort();
+            seen.dedup();
+            let expected: Vec<Vec<u8>> = { let mut names: Vec<Vec<u8>> = (0..kept).map(|index| format!("p{index:05}").into_bytes()).collect(); names.sort(); names };
+            assert_eq!(seen, expected, "{scan}: the members left, each at least once");
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// Redis keeps a set as an intset while every member is an integer string2ll
+/// reads (an optional minus, no leading zero, within 64 bits) and there are at
+/// most 512; such a set comes back whole with cursor zero. One member that is
+/// not such an integer, or the 513th, puts it in steps.
+#[test]
+fn a_set_of_integers_is_whole_up_to_512_members() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        let integers = ["-1", "0", "9223372036854775807", "-9223372036854775808"];
+        let not_integers = ["+5", "05", "-0", "-05", "5 ", " 5", "0x5", "1.0", "9223372036854775808", "-9223372036854775809", "x", ""];
+        for (name, extra, whole) in integers.iter().map(|text| ("int", *text, true)).chain(not_integers.iter().map(|text| ("not", *text, false))) {
+            let key = format!("ints:{name}:{extra}");
+            let numbers: Vec<String> = (1000..1199).map(|number| number.to_string()).collect();
+            let mut add = vec!["SADD", key.as_str()];
+            add.extend(numbers.iter().map(String::as_str));
+            assert_eq!(request(&mut client, &add), b":199\r\n");
+            assert_eq!(request(&mut client, &["SADD", &key, extra]), b":1\r\n");
+            let (cursor, got) = parts(&request(&mut client, &["SSCAN", &key, "0", "COUNT", "1"]));
+            // 200 integers; the compact test must see every member as one.
+            if whole {
+                assert_eq!(cursor, b"0", "{extra:?} is an integer: the set is whole");
+                assert_eq!(got.len(), 200);
+            } else {
+                assert_ne!(cursor, b"0".to_vec(), "{extra:?} is not an integer: the set is in steps");
+                assert!(got.len() < 200);
+            }
+        }
+        drop(client); assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// A script that writes a large collection and then needs an undeclared key is
+/// run again after a fallback that restores the collection from a logical copy.
+/// A client's scan that spans it still returns every member present throughout.
+#[test]
+fn a_script_fallback_between_scan_calls_loses_no_member() {
+    for protocol in [2, 3] {
+        let (child, mut client) = start(protocol);
+        for (scan, width, write) in [("SSCAN", 1, "SADD"), ("HSCAN", 2, "HSET"), ("ZSCAN", 2, "ZADD")] {
+            let key = format!("fallback:{scan}");
+            change_many(&mut client, scan, &key, true, "m", 0..1000);
+            let args = match write { "SADD" => "'extra'", "HSET" => "'extra','v'", _ => "1,'extra'" };
+            let source = format!("redis.call('{write}',KEYS[1],{args}); return redis.call('GET','undeclared:'..KEYS[1])");
+            let mut cursor = "0".to_string();
+            let mut seen = std::collections::HashSet::new();
+            let mut step = 0;
+            loop {
+                let (next, got) = parts(&request(&mut client, &[scan, &key, &cursor, "COUNT", "10"]));
+                for group in got.chunks(width) { seen.insert(group[0].clone()); }
+                if next == b"0" { break; }
+                cursor = String::from_utf8(next).unwrap();
+                step += 1;
+                if step % 5 == 0 {
+                    let reply = request(&mut client, &["EVAL", &source, "1", &key]);
+                    assert!(reply == b"$-1\r\n" || reply == b"_\r\n", "the script falls back and reads a missing key: {reply:?}");
+                }
+                assert!(step < 100_000, "{scan}: no end in sight");
+            }
+            for index in 0..1000 {
+                let name = format!("m{index:05}");
+                assert!(seen.contains(name.as_bytes()), "{scan}: {name} was present throughout and never returned");
+            }
         }
         drop(client); assert_eq!(finished(child).0, 0);
     }
