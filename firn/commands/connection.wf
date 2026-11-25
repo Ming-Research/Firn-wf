@@ -708,10 +708,8 @@ fn put_clients(table: &ClientTable, hub: &pkg::connection_events::Hub, client: &
   }
   let count = table^.records.inner.len;
   for @records (index in 0_u64..count) {
-    if index < table^.records.inner.len {
-      let record = &table^.records.inner[index];
-      put_client_line(text: text, record: record, hub: hub, client: client, current: current, multi: multi, kind: kind);
-    }
+    let record = &table^.records.inner[index];
+    put_client_line(text: text, record: record, hub: hub, client: client, current: current, multi: multi, kind: kind);
   }
   return unit;
 }
