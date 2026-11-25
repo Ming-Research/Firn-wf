@@ -267,7 +267,8 @@ not, the server's kernel learns of it from its next probe, 18 s after the read
 began, and the case's read gives up after 10 s, which is what both failures
 show. In that state the server's kernel still holds 2.8 MiB of its own to
 send: firn's send cannot continue until the kernel has sent those, whatever
-firn does.
+firn does. (What was then measured on 6.17, below, is a sender that waits for
+its retransmission timer, not for a probe.)
 
 ### Hypothesis: the kernel of the October runners
 
