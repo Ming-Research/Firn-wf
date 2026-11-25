@@ -130,6 +130,43 @@ out=$(cd "$out" && pwd)
 suite=$out/redis-$version
 rm -rf "$suite" "$out/logs" "$out/servers" "$out/hung" "$out/data"
 tar -xzf "$archive" -C "$out"
+# Ports come from below the kernel's range of ephemeral ports: an outgoing
+# connection, the suite's own among them, can hold a port in that range
+# without listening on it, and a listener then cannot bind the port.
+ephemeral_low=32768
+if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
+    read -r ephemeral_low _ < /proc/sys/net/ipv4/ip_local_port_range
+fi
+if [ "$ephemeral_low" -le 11000 ]; then
+    echo "run.sh: the ephemeral ports start at $ephemeral_low, leaving none below them" >&2
+    exit 1
+fi
+
+# A shard takes its ports from its own part of the range below the ephemeral
+# ports, so shards running side by side start their servers on ports of
+# their own. The suite's port search also binds port+10000 for an instant as
+# its cluster-bus probe, which can land in another shard's part; a collision
+# there makes the search skip the port or start_server retry.
+port_low=$((10000 + (shard_index - 1) * (ephemeral_low - 10000) / shard_count))
+port_high=$((10000 + shard_index * (ephemeral_low - 10000) / shard_count))
+if [ $((port_high - port_low)) -lt 3000 ]; then
+    echo "run.sh: shard $shard_index of $shard_count has only ports $port_low to $((port_high - 1))" >&2
+    exit 1
+fi
+
+# Prints a loopback port from this run's range that nothing listens on and
+# that leaves the given number of ports above it in the range.
+free_port() {
+    local candidate
+    for candidate in $(shuf -i "$port_low-$((port_high - 1 - ${1:-0}))" -n 100); do
+        if ! (exec 3<> "/dev/tcp/127.0.0.1/$candidate") 2> /dev/null; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Redis's no-argument unsubscribe helpers read no acknowledgments. Preserve
 # those wire commands, but make their tests wait for all known memberships
 # before another connection publishes or the next test starts. The suite also
@@ -140,7 +177,7 @@ tar -xzf "$archive" -C "$out"
 # patches apply to every target; stale or missing hunks stop the run, and the
 # check also runs two witnesses of the second patch against the pinned
 # redis-server.
-python3 -B "$here/check-pubsub-barriers.py" "$suite" "$here/pubsub-barriers.patch" "$here/connection-reset.patch"
+python3 -B "$here/check-pubsub-barriers.py" --ports "$port_low" "$port_high" "$suite" "$here/pubsub-barriers.patch" "$here/connection-reset.patch"
 patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/pubsub-barriers.patch"
 patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/connection-reset.patch"
 # Tests that run the suite's own client tools look for them in src/, as in a
@@ -200,43 +237,6 @@ flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeou
     echo "started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out/meta.txt"
 printf 'unit\tattempt\truntest_exit\tserver\n' > "$out/attempts.tsv"
-
-# Ports come from below the kernel's range of ephemeral ports: an outgoing
-# connection, the suite's own among them, can hold a port in that range
-# without listening on it, and a listener then cannot bind the port.
-ephemeral_low=32768
-if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
-    read -r ephemeral_low _ < /proc/sys/net/ipv4/ip_local_port_range
-fi
-if [ "$ephemeral_low" -le 11000 ]; then
-    echo "run.sh: the ephemeral ports start at $ephemeral_low, leaving none below them" >&2
-    exit 1
-fi
-
-# A shard takes its ports from its own part of the range below the ephemeral
-# ports, so shards running side by side start their servers on ports of
-# their own. The suite's port search also binds port+10000 for an instant as
-# its cluster-bus probe, which can land in another shard's part; a collision
-# there makes the search skip the port or start_server retry.
-port_low=$((10000 + (shard_index - 1) * (ephemeral_low - 10000) / shard_count))
-port_high=$((10000 + shard_index * (ephemeral_low - 10000) / shard_count))
-if [ $((port_high - port_low)) -lt 3000 ]; then
-    echo "run.sh: shard $shard_index of $shard_count has only ports $port_low to $((port_high - 1))" >&2
-    exit 1
-fi
-
-# Prints a loopback port from this run's range that nothing listens on and
-# that leaves the given number of ports above it in the range.
-free_port() {
-    local candidate
-    for candidate in $(shuf -i "$port_low-$((port_high - 1 - ${1:-0}))" -n 100); do
-        if ! (exec 3<> "/dev/tcp/127.0.0.1/$candidate") 2> /dev/null; then
-            echo "$candidate"
-            return 0
-        fi
-    done
-    return 1
-}
 
 server_pid=
 # Starts the server under test on a free port, setting port and server_pid.

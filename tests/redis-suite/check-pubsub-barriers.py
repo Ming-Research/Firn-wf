@@ -17,6 +17,7 @@ when the pinned suite restores the connection itself.
 import argparse
 import os
 from pathlib import Path
+import random
 import re
 import shutil
 import socket
@@ -126,10 +127,18 @@ WITNESS_SOURCE = b"""start_server {tags {"witness"}} {
 RESULT_LINE = re.compile(r"^\[(ok|err)\s*\]:\s*(witness [^(]*?)\s*(?:\(\d+ ms\)|in .*)?$")
 
 
-def free_port():
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+def free_port(low, high, taken=()):
+    """A loopback port in low..high-1 that nothing listens on, chosen at random."""
+    for candidate in random.sample(range(low, high), 200):
+        if candidate in taken:
+            continue
+        with socket.socket() as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+        return candidate
+    raise ValueError(f"no free port in {low}-{high - 1}")
 
 
 def start_reference_server(directory, port):
@@ -158,11 +167,12 @@ def start_reference_server(directory, port):
     raise ValueError("the witnesses' redis-server did not listen within 20 s")
 
 
-def run_witness_unit(suite_copy, runtest, port):
+def run_witness_unit(suite_copy, runtest, port, base_port):
     (suite_copy / "tests/unit" / f"{Path(WITNESS_UNIT).name}.tcl").write_bytes(WITNESS_SOURCE)
     shutil.copy2(runtest, suite_copy / "runtest")
     result = subprocess.run(
         ["sh", "./runtest", "--host", "127.0.0.1", "--port", str(port), "--single", WITNESS_UNIT,
+         "--baseport", str(base_port), "--portcount", "64",
          "--singledb", "--durable", "--clients", "1", "--timeout", "60"],
         cwd=suite_copy,
         env={**os.environ, "TERM": "dumb"},
@@ -180,7 +190,7 @@ def run_witness_unit(suite_copy, runtest, port):
     return outcomes, output
 
 
-def check_connection_reset(suite, patch_path):
+def check_connection_reset(suite, patch_path, ports):
     source = suite / "tests/support/test.tcl"
     sources = {"tests/support/test.tcl": source.read_bytes()}
     anchor = b"    set test_start_time [clock milliseconds]\n"
@@ -214,12 +224,17 @@ def check_connection_reset(suite, patch_path):
             shutil.copytree(suite / "tests", copy / "tests")
         check_application(patched, patch, "pristine suite copy", must_succeed=True)
 
-        port = free_port()
+        # The suite's test server takes a free port in the 32 below the base
+        # port. Shards run side by side, each with a range of ports of its
+        # own, so the witnesses take their ports from the range run.sh gives.
+        low, high = ports
+        port = free_port(low, high)
+        base_port = free_port(low + 32, high - 64, taken=(port,)) + 32
         server = start_reference_server(root, port)
         try:
             runtest = suite / "runtest"
-            before, before_output = run_witness_unit(unpatched, runtest, port)
-            after, after_output = run_witness_unit(patched, runtest, port)
+            before, before_output = run_witness_unit(unpatched, runtest, port, base_port)
+            after, after_output = run_witness_unit(patched, runtest, port, base_port)
         finally:
             server.terminate()
             server.wait(timeout=20)
@@ -248,6 +263,10 @@ def check_connection_reset(suite, patch_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--ports", nargs=2, type=int, metavar=("LOW", "HIGH"), required=True,
+        help="the loopback ports LOW to HIGH-1 this run may use",
+    )
     parser.add_argument("suite", type=Path, help="pristine extracted Redis 7.2.16 directory")
     parser.add_argument("pubsub_patch", type=Path, help="pubsub-barriers.patch")
     parser.add_argument("reset_patch", type=Path, help="connection-reset.patch")
@@ -255,7 +274,7 @@ def main():
 
     check_version(arguments.suite)
     check_pubsub(arguments.suite, arguments.pubsub_patch)
-    check_connection_reset(arguments.suite, arguments.reset_patch)
+    check_connection_reset(arguments.suite, arguments.reset_patch, arguments.ports)
 
 
 if __name__ == "__main__":
