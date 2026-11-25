@@ -85,6 +85,38 @@ const code_zremrang: u64 = 18396713349594567258_u64;
 
 const code_zlexcount: u64 = 18398699003354369114_u64;
 
+const code_zunionstore: u64 = 18398135005177861466_u64;
+
+const code_zinterstore: u64 = 18398139360459245914_u64;
+
+const code_zdiffstore: u64 = 18398421939007341658_u64;
+
+const code_zunion: u64 = 86102439253338_u64;
+
+const code_zinter: u64 = 90457720637786_u64;
+
+const code_zdiff: u64 = 301826917466_u64;
+
+const code_zintercard: u64 = 18393635760831875418_u64;
+
+const code_zrangestore: u64 = 18398125075296506458_u64;
+
+const code_zrandmember: u64 = 18394193208830677594_u64;
+
+const code_zmpop: u64 = 344928046426_u64;
+
+const word_zunionstore: Array<u8, 11> = "ZUNIONSTORE";
+
+const word_zinterstore: Array<u8, 11> = "ZINTERSTORE";
+
+const word_zdiffstore: Array<u8, 10> = "ZDIFFSTORE";
+
+const word_zintercard: Array<u8, 10> = "ZINTERCARD";
+
+const word_zrangestore: Array<u8, 11> = "ZRANGESTORE";
+
+const word_zrandmember: Array<u8, 11> = "ZRANDMEMBER";
+
 const code_nx: u64 = 22606_u64;
 
 const code_xx: u64 = 22616_u64;
@@ -750,7 +782,7 @@ fn highest(sorted: &Sorted) -> found: Option<Rank> reads(sorted) {
 }
 
 fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(value) {
-  doc "Removes up to number of a live sorted set's lowest members, or of its highest when low is 1, the highest first, writing each member and its score as an array reply, each pair nested under RESP3 when high is 1, and leaving in number how many it removed. Records done, or emptied when the set is left empty; wrong for another kind and expired for an expired entry.";
+  doc "Removes up to number of a live sorted set's lowest members, or of its highest when low is 1, the highest first, writing each member and its score as an array reply, each pair nested under RESP3 when high is 1 and as an array of two under both protocols when high is 2, and leaving in number how many it removed. Records done, or emptied when the set is left empty; wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -761,7 +793,10 @@ fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
       let size = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
       let taken = imin(env^.number, size);
       let nested = env^.high == 1_i64;
-      if nested {
+      let always = env^.high == 2_i64;
+      if always {
+        reply_array(client: env, count: taken);
+      } else if nested {
         reply_pairs(client: env, pairs: taken);
       } else {
         let fields = taken *wrap 2_u64;
@@ -781,7 +816,9 @@ fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
           Some(value: rank) => {
             let removed = ordered_map_remove::<RankOrder, unit, ceiling>(map: &sorted^.order, key: &rank, env: &keys);
             let dropped = hash_map_remove::<KeyHash, f64, ceiling>(map: &sorted^.scores, key: &rank.member, env: &keys);
-            if nested {
+            if always {
+              reply_array(client: env, count: 2_u64);
+            } else if nested {
               reply_pair(client: env);
             }
             reply_text(client: env, text: &rank.member.bytes);
@@ -1685,6 +1722,134 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       }
       return True();
     }
+  }
+  if code == code_zunionstore {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zunionstore[0_u64..11_u64]);
+    if spelled {
+      let fits = arity_holds(arity: arity_zunionstore, count: count);
+      let go = band(fits, open);
+      if bnot(go) {
+        refused(client: client, input: input, name: name, fits: fits);
+      }
+      if go {
+        run_zalg(store: store, input: input, args: args, client: client, env: env, time: time, operation: zop_union, storing: yes, counting: no);
+      }
+      return True();
+    }
+  }
+  if code == code_zinterstore {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zinterstore[0_u64..11_u64]);
+    if spelled {
+      let fits = arity_holds(arity: arity_zinterstore, count: count);
+      let go = band(fits, open);
+      if bnot(go) {
+        refused(client: client, input: input, name: name, fits: fits);
+      }
+      if go {
+        run_zalg(store: store, input: input, args: args, client: client, env: env, time: time, operation: zop_inter, storing: yes, counting: no);
+      }
+      return True();
+    }
+  }
+  if code == code_zdiffstore {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zdiffstore[0_u64..10_u64]);
+    if spelled {
+      let fits = arity_holds(arity: arity_zdiffstore, count: count);
+      let go = band(fits, open);
+      if bnot(go) {
+        refused(client: client, input: input, name: name, fits: fits);
+      }
+      if go {
+        run_zalg(store: store, input: input, args: args, client: client, env: env, time: time, operation: zop_diff, storing: yes, counting: no);
+      }
+      return True();
+    }
+  }
+  if code == code_zunion {
+    let fits = arity_holds(arity: arity_zunion, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_zalg(store: store, input: input, args: args, client: client, env: env, time: time, operation: zop_union, storing: no, counting: no);
+    }
+    return True();
+  }
+  if code == code_zinter {
+    let fits = arity_holds(arity: arity_zinter, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_zalg(store: store, input: input, args: args, client: client, env: env, time: time, operation: zop_inter, storing: no, counting: no);
+    }
+    return True();
+  }
+  if code == code_zdiff {
+    let fits = arity_holds(arity: arity_zdiff, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_zalg(store: store, input: input, args: args, client: client, env: env, time: time, operation: zop_diff, storing: no, counting: no);
+    }
+    return True();
+  }
+  if code == code_zintercard {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zintercard[0_u64..10_u64]);
+    if spelled {
+      let fits = arity_holds(arity: arity_zintercard, count: count);
+      let go = band(fits, open);
+      if bnot(go) {
+        refused(client: client, input: input, name: name, fits: fits);
+      }
+      if go {
+        run_zalg(store: store, input: input, args: args, client: client, env: env, time: time, operation: zop_inter, storing: no, counting: yes);
+      }
+      return True();
+    }
+  }
+  if code == code_zrangestore {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zrangestore[0_u64..11_u64]);
+    if spelled {
+      let fits = arity_holds(arity: arity_zrangestore, count: count);
+      let go = band(fits, open);
+      if bnot(go) {
+        refused(client: client, input: input, name: name, fits: fits);
+      }
+      if go {
+        run_zrangestore(store: store, input: input, args: args, client: client, env: env, time: time);
+      }
+      return True();
+    }
+  }
+  if code == code_zrandmember {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zrandmember[0_u64..11_u64]);
+    if spelled {
+      let fits = arity_holds(arity: arity_zrandmember, count: count);
+      let go = band(fits, open);
+      if bnot(go) {
+        refused(client: client, input: input, name: name, fits: fits);
+      }
+      if go {
+        run_zrandmember(store: store, input: input, args: args, client: client, env: env, time: time);
+      }
+      return True();
+    }
+  }
+  if code == code_zmpop {
+    let fits = arity_holds(arity: arity_zmpop, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_zmpop(store: store, input: input, args: args, client: client, env: env, time: time);
+    }
+    return True();
   }
   return False();
 }

@@ -1,0 +1,998 @@
+alias Key = pkg::bytes::Key;
+alias KeyHash = pkg::bytes::KeyHash;
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias HashMap = std::collections::hash_map::HashMap;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Rank = pkg::store::Rank;
+alias RankOrder = pkg::store::RankOrder;
+alias Sorted = pkg::store::Sorted;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias Value = pkg::store::Value;
+alias arg = pkg::protocol::arg;
+alias ceiling = pkg::store::ceiling;
+alias clear_items = pkg::protocol::clear_items;
+alias copy_key = pkg::bytes::copy_key;
+alias expired = pkg::store::expired;
+alias hash_map_edit = std::collections::hash_map::hash_map_edit;
+alias hash_map_len = std::collections::hash_map::hash_map_len;
+alias hash_map_lookup = std::collections::hash_map::hash_map_lookup;
+alias hash_map_new = std::collections::hash_map::hash_map_new;
+alias hash_map_put = std::collections::hash_map::hash_map_put;
+alias kept_score = pkg::scores::kept_score;
+alias ordered_map_each = std::collections::ordered_map::ordered_map_each;
+alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
+alias ordered_map_new = std::collections::ordered_map::ordered_map_new;
+alias ordered_map_put = std::collections::ordered_map::ordered_map_put;
+alias push_score = pkg::protocol::push_score;
+alias read_integer = pkg::bytes::read_integer;
+alias read_score = pkg::scores::read_score;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_integer = pkg::protocol::reply_integer;
+alias reply_wrong_type = pkg::protocol::reply_wrong_type;
+
+const zkind_none: u64 = 0_u64;
+
+const zkind_lapsed: u64 = 1_u64;
+
+const zkind_zset: u64 = 2_u64;
+
+const zkind_other: u64 = 3_u64;
+
+const zkind_set: u64 = 4_u64;
+
+const zstate_found: u64 = 20_u64;
+
+const zstate_refused: u64 = 21_u64;
+
+const zop_union: u64 = 0_u64;
+
+const zop_inter: u64 = 1_u64;
+
+const zop_diff: u64 = 2_u64;
+
+const zagg_sum: u64 = 0_u64;
+
+const zagg_min: u64 = 1_u64;
+
+const zagg_max: u64 = 2_u64;
+
+const zrefusal_syntax: u64 = 1_u64;
+
+const zrefusal_weight: u64 = 2_u64;
+
+const zrefusal_limit: u64 = 3_u64;
+
+const word_weights: Array<u8, 7> = "WEIGHTS";
+
+const word_aggregate: Array<u8, 9> = "AGGREGATE";
+
+const word_aggregate_sum: Array<u8, 3> = "SUM";
+
+const text_zalg_weight: Array<u8, 31> = "ERR weight value is not a float";
+
+const text_zunionstore_keys: Array<u8, 60> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 117_u8, 110_u8, 105_u8, 111_u8, 110_u8, 115_u8, 116_u8, 111_u8, 114_u8, 101_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
+
+const text_zinterstore_keys: Array<u8, 60> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 105_u8, 110_u8, 116_u8, 101_u8, 114_u8, 115_u8, 116_u8, 111_u8, 114_u8, 101_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
+
+const text_zdiffstore_keys: Array<u8, 59> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 100_u8, 105_u8, 102_u8, 102_u8, 115_u8, 116_u8, 111_u8, 114_u8, 101_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
+
+const text_zunion_keys: Array<u8, 55> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 117_u8, 110_u8, 105_u8, 111_u8, 110_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
+
+const text_zinter_keys: Array<u8, 55> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 105_u8, 110_u8, 116_u8, 101_u8, 114_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
+
+const text_zdiff_keys: Array<u8, 54> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 100_u8, 105_u8, 102_u8, 102_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
+
+const text_zintercard_keys: Array<u8, 59> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 105_u8, 110_u8, 116_u8, 101_u8, 114_u8, 99_u8, 97_u8, 114_u8, 100_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
+
+struct ZPlan {
+  doc "What a ZUNIONSTORE, ZINTERSTORE, ZDIFFSTORE, ZUNION, ZINTER, ZDIFF or ZINTERCARD names: whether numkeys was accepted; the arguments from first up to end, its sets; whether weights were read, one for each set in the client's prepared scores; how scores are aggregated; whether WITHSCORES was given; ZINTERCARD's limit, 0 for none; and the refusal of an option, 0 for none, which Redis reports only after it has looked the sets up.";
+  valid: Bool;
+  first: u64;
+  end: u64;
+  weighted: Bool;
+  aggregate: u64;
+  withscores: Bool;
+  limit: u64;
+  refusal: u64;
+}
+
+struct AggEdit {
+  doc "One member's aggregation into the result: the weighted score offered, how to aggregate it with the one held and whether the member was held.";
+  offered: f64;
+  aggregate: u64;
+  found: Bool;
+}
+
+struct Folded {
+  doc "A member of the first set of an intersection after the other sets: whether every one holds it and its aggregated score.";
+  present: Bool;
+  score: f64;
+}
+
+fn zalg_kind(slot: &Option<Entry>, now: u64) -> kind: u64 reads(slot) {
+  doc "What an entry holds for a sorted-set command naming several keys: zkind_none for no value, zkind_lapsed for one whose expiry has been reached at now, zkind_zset for a live sorted set, zkind_set for a live set and zkind_other for a live value of another kind.";
+  match slot^ {
+    Some(value: held_value) => {
+      let reached = expired(expires: held_value^.expires, now: now);
+      if reached {
+        return zkind_lapsed;
+      }
+      match held_value^.value {
+        Members(members: set_of) => {
+          return zkind_set;
+        }
+        Ranked(ranked: sorted) => {
+          return zkind_zset;
+        }
+        Text(bytes: stored) => {
+          return zkind_other;
+        }
+        Items(items: list) => {
+          return zkind_other;
+        }
+        Fields(fields: hash_of) => {
+          return zkind_other;
+        }
+        Stream(..) => {
+          return zkind_other;
+        }
+      }
+    }
+    None() => {
+      return zkind_none;
+    }
+  }
+}
+
+fn zalg_size(slot: &Option<Entry>) -> size: u64 reads(slot) {
+  doc "How many members the sorted set or set an entry holds has, 0 for an entry holding another kind.";
+  match slot^ {
+    Some(value: held_value) => {
+      match held_value^.value {
+        Ranked(ranked: sorted) => {
+          let count = hash_map_len::<Key, f64, ceiling>(map: &sorted^.scores);
+          return count;
+        }
+        Members(members: set_of) => {
+          let count = hash_map_len::<Key, unit, ceiling>(map: set_of);
+          return count;
+        }
+        Text(bytes: stored) => {
+          return 0_u64;
+        }
+        Items(items: list) => {
+          return 0_u64;
+        }
+        Fields(fields: hash_of) => {
+          return 0_u64;
+        }
+        Stream(..) => {
+          return 0_u64;
+        }
+      }
+    }
+    None() => {
+      return 0_u64;
+    }
+  }
+}
+
+fn zalg_find(slot: &Option<Entry>, member: &Key, keys: &KeyEnv) -> probe: ScoreProbe reads(slot), reads(member), reads(keys) {
+  doc "Whether the sorted set or set an entry holds has the member, and its score, 1 for a set's.";
+  let absent = False();
+  let probe = ScoreProbe(score: 0.0_f64, found: absent);
+  match slot^ {
+    Some(value: held_value) => {
+      match held_value^.value {
+        Ranked(ranked: sorted) => {
+          let seen = hash_map_lookup::<KeyHash, f64, ScoreProbe, u64, fn score_probe, ceiling>(map: &sorted^.scores, key: member, key_env: keys, visit_env: &probe);
+        }
+        Members(members: set_of) => {
+          let held = set_holds(members: set_of, member: member, keys: keys);
+          if held {
+            set probe.score = 1.0_f64;
+            set probe.found = True();
+          }
+        }
+        Text(bytes: stored) => {
+        }
+        Items(items: list) => {
+        }
+        Fields(fields: hash_of) => {
+        }
+        Stream(..) => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return probe;
+}
+
+fn zalg_weighted(weight: f64, raw: f64) -> score: f64 pure {
+  doc "A score times its set's weight, 0 when the product is not a number, as Redis's union and the first set of its intersection take it.";
+  let product = fmul.strict(weight, raw);
+  let number = feq(product, product);
+  if number {
+    return product;
+  }
+  return 0.0_f64;
+}
+
+fn zalg_step(current: f64, offered: f64, aggregate: u64) -> merged: f64 pure {
+  doc "Redis's zunionInterAggregate: the sum, 0 when it is not a number, the lesser or the greater of two scores, the held one when the offered is not a number.";
+  if aggregate == zagg_min {
+    if flt(offered, current) {
+      return offered;
+    }
+    return current;
+  }
+  if aggregate == zagg_max {
+    if fgt(offered, current) {
+      return offered;
+    }
+    return current;
+  }
+  let sum = fadd.strict(current, offered);
+  let number = feq(sum, sum);
+  if number {
+    return sum;
+  }
+  return 0.0_f64;
+}
+
+fn zalg_edit(env: &AggEdit, key: &Key, value: &f64) -> result: u64 writes(env), writes(value) {
+  doc "Aggregates the offered score into the score a member holds in the result.";
+  set env^.found = True();
+  let merged = zalg_step(current: value^, offered: env^.offered, aggregate: env^.aggregate);
+  set value^ = kept_score(score: merged);
+  return 1_u64;
+}
+
+fn zalg_put(acc: &HashMap<Key, f64, ceiling>, member: &Key, score: f64, keys: &KeyEnv) -> result: unit reads(member), reads(keys), writes(acc) {
+  doc "Gives the result a copy of the member at its score, as a sorted set keeps it.";
+  let copied = copy_key(key: member);
+  let kept = kept_score(score: score);
+  let put = hash_map_put::<KeyHash, f64, ceiling>(map: acc, key: move copied, value: kept, env: keys);
+  return unit;
+}
+
+fn zalg_accumulate(acc: &HashMap<Key, f64, ceiling>, member: &Key, score: f64, aggregate: u64, keys: &KeyEnv) -> result: unit reads(member), reads(keys), writes(acc) {
+  doc "Aggregates the score into the member's in the result, or gives the result the member at the score when it has none.";
+  let absent = False();
+  let edit = AggEdit(offered: score, aggregate: aggregate, found: absent);
+  let edited = hash_map_edit::<KeyHash, f64, AggEdit, u64, fn zalg_edit, ceiling>(map: acc, key: member, key_env: keys, edit_env: &edit);
+  if edit.found {
+  } else {
+    zalg_put(acc: acc, member: member, score: score, keys: keys);
+  }
+  return unit;
+}
+
+fn zalg_rank(ranks: &Box<Slots<u64>>, lookups: &Box<Slots<u64>>, argument: u64) -> rank: u64 reads(ranks), reads(lookups) {
+  doc "The held entry the key named by an argument has.";
+  let local = key_position(positions: lookups, index: argument);
+  let rank = key_position(positions: ranks, index: local);
+  return rank;
+}
+
+fn zalg_weight(client: &Client, plan: &ZPlan, index: u64) -> weight: f64 reads(client), reads(plan) {
+  doc "The weight of the set at an index among the sets, 1 when no weights were given.";
+  if plan^.weighted {
+    if index < client^.scores.inner.len {
+      return client^.scores.inner[index];
+    }
+  }
+  return 1.0_f64;
+}
+
+fn zalg_sort(order: &Box<Slots<u64>>) -> result: unit writes(order) {
+  doc "Sorts numbers ascending by insertion, stable for equal numbers, which keeps the sets in argument order among equal sizes as Redis's sort by cardinality does.";
+  let length = order^.inner.len;
+  for @insert (at in 1_u64..length) {
+    if at < order^.inner.len {
+      let held_value = order^.inner[at];
+      let cursor = at;
+      loop @shift {
+        if cursor == 0_u64 {
+          break @shift;
+        }
+        let before = cursor -wrap 1_u64;
+        if before >= order^.inner.len {
+          break @shift;
+        }
+        let previous = order^.inner[before];
+        if previous <= held_value {
+          break @shift;
+        }
+        if cursor < order^.inner.len {
+          set order^.inner[cursor] = previous;
+        }
+        set cursor = before;
+      }
+      if cursor < order^.inner.len {
+        set order^.inner[cursor] = held_value;
+      }
+    }
+  }
+  return unit;
+}
+
+fn zalg_fold(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, order: &Box<Slots<u64>>, member: &Key, raw: f64, rank0: u64, weight0: f64) -> folded: Folded reads(slots), reads(ranks), reads(client), reads(plan), reads(order), reads(member) {
+  doc "Folds the other sets of an intersection into a member of the first: its score times the first set's weight, then for each other set in order its score there times that set's weight aggregated into it; the first set again, when named again, contributes the member's own score. A set that does not hold the member ends it.";
+  let score = zalg_weighted(weight: weight0, raw: raw);
+  let keys = client^.keys;
+  let present = True();
+  for @others (step in 1_u64..order^.inner.len) {
+    if step < order^.inner.len {
+      let packed = order^.inner[step];
+      let index = iand(packed, 4294967295_u64);
+      let argument = plan^.first +wrap index;
+      let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+      let weight = zalg_weight(client: client, plan: plan, index: index);
+      if rank == rank0 {
+        let value = fmul.strict(raw, weight);
+        set score = zalg_step(current: score, offered: value, aggregate: plan^.aggregate);
+      } else if rank < slots^.len {
+        let probe = zalg_find(slot: &slots^[rank], member: member, keys: &keys);
+        if probe.found {
+          let value = fmul.strict(probe.score, weight);
+          set score = zalg_step(current: score, offered: value, aggregate: plan^.aggregate);
+        } else {
+          set present = False();
+          break @others;
+        }
+      } else {
+        set present = False();
+        break @others;
+      }
+    }
+  }
+  return Folded(present: present, score: score);
+}
+
+fn zalg_elsewhere(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, order: &Box<Slots<u64>>, member: &Key) -> found: Bool reads(slots), reads(ranks), reads(client), reads(plan), reads(order), reads(member) {
+  doc "Whether any set of a difference but the first holds the member.";
+  let keys = client^.keys;
+  for @others (step in 1_u64..order^.inner.len) {
+    if step < order^.inner.len {
+      let packed = order^.inner[step];
+      let index = iand(packed, 4294967295_u64);
+      let argument = plan^.first +wrap index;
+      let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+      if rank < slots^.len {
+        let probe = zalg_find(slot: &slots^[rank], member: member, keys: &keys);
+        if probe.found {
+          return True();
+        }
+      }
+    }
+  }
+  return False();
+}
+
+fn zalg_member(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, order: &Box<Slots<u64>>, member: &Key, raw: f64, rank0: u64, weight0: f64, mode: u64, counting: Bool, acc: &HashMap<Key, f64, ceiling>) -> taken: Bool reads(slots), reads(ranks), reads(client), reads(plan), reads(order), reads(member), writes(acc) {
+  doc "Takes one member of the set being visited into the result as its operation says: a union aggregates its weighted score into the member's, an intersection takes it when every other set holds it, at its folded score, and a difference when no other set does, at its own. Returns whether the member joined the result, or for a count only whether every set held it.";
+  let keys = client^.keys;
+  if mode == zop_union {
+    let score = zalg_weighted(weight: weight0, raw: raw);
+    zalg_accumulate(acc: acc, member: member, score: score, aggregate: plan^.aggregate, keys: &keys);
+    return True();
+  }
+  if mode == zop_inter {
+    let folded = zalg_fold(slots: slots, ranks: ranks, client: client, plan: plan, order: order, member: member, raw: raw, rank0: rank0, weight0: weight0);
+    if folded.present {
+      if bnot(counting) {
+        zalg_put(acc: acc, member: member, score: folded.score, keys: &keys);
+      }
+      return True();
+    }
+    return False();
+  }
+  let elsewhere = zalg_elsewhere(slots: slots, ranks: ranks, client: client, plan: plan, order: order, member: member);
+  if elsewhere {
+    return False();
+  }
+  zalg_put(acc: acc, member: member, score: raw, keys: &keys);
+  return True();
+}
+
+fn zalg_scan(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, order: &Box<Slots<u64>>, slot: &Option<Entry>, rank0: u64, weight0: f64, mode: u64, counting: Bool, limit: u64, acc: &HashMap<Key, f64, ceiling>) -> count: u64 reads(slots), reads(ranks), reads(client), reads(plan), reads(order), reads(slot), writes(acc) {
+  doc "Visits each member of the sorted set or set an entry holds, a set's at score 1, and takes it by zalg_member, returning how many it took, stopping at limit when it is not 0.";
+  let count = 0_u64;
+  match slot^ {
+    Some(value: held_value) => {
+      match held_value^.value {
+        Ranked(ranked: sorted) => {
+          let buckets = sorted^.scores.cells.inner.len;
+          for @cells (index in 0_u64..buckets) {
+            let cell = &sorted^.scores.cells.inner[index];
+            match cell^ {
+              HashMapFilled(key: member, value: held) => {
+                let taken = zalg_member(slots: slots, ranks: ranks, client: client, plan: plan, order: order, member: member, raw: held^, rank0: rank0, weight0: weight0, mode: mode, counting: counting, acc: acc);
+                if taken {
+                  set count = count +wrap 1_u64;
+                  if limit != 0_u64 {
+                    if count >= limit {
+                      return count;
+                    }
+                  }
+                }
+              }
+              HashMapVacant() => {
+              }
+              HashMapDeleted() => {
+              }
+            }
+          }
+        }
+        Members(members: set_of) => {
+          let buckets = set_of^.cells.inner.len;
+          for @cells (index in 0_u64..buckets) {
+            let cell = &set_of^.cells.inner[index];
+            match cell^ {
+              HashMapFilled(key: member, value: nothing) => {
+                let taken = zalg_member(slots: slots, ranks: ranks, client: client, plan: plan, order: order, member: member, raw: 1.0_f64, rank0: rank0, weight0: weight0, mode: mode, counting: counting, acc: acc);
+                if taken {
+                  set count = count +wrap 1_u64;
+                  if limit != 0_u64 {
+                    if count >= limit {
+                      return count;
+                    }
+                  }
+                }
+              }
+              HashMapVacant() => {
+              }
+              HashMapDeleted() => {
+              }
+            }
+          }
+        }
+        Text(bytes: stored) => {
+        }
+        Items(items: list) => {
+        }
+        Fields(fields: hash_of) => {
+        }
+        Stream(..) => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return count;
+}
+
+fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, operation: u64, counting: Bool, result: &Sorted) -> size: u64 reads(slots), reads(ranks), reads(client), reads(plan), writes(result) {
+  doc "Computes the operation over the sets, which are all live or absent: the sets are put in order of size, the smallest first, ties in argument order, unless the operation is a difference; a union visits every set in that order aggregating into the result, an intersection the smallest only, and a difference the first, which a later set named by the same key empties. The result's scores are filled in, its order is not. Returns the size of the result, or for a count the members every set holds, up to the limit.";
+  let numkeys = plan^.end -wrap plan^.first;
+  let order = box_slots_new::<u64>(capacity: numkeys);
+  for @sizes (index in 0_u64..numkeys) {
+    let argument = plan^.first +wrap index;
+    let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+    let cardinality = 0_u64;
+    if rank < slots^.len {
+      set cardinality = zalg_size(slot: &slots^[rank]);
+    }
+    let shifted = ishl.wrap(cardinality, 32_u32);
+    let packed = ior(shifted, index);
+    if order.inner.len < order.inner.cap {
+      place_back(window: &order.inner, value: packed);
+    }
+  }
+  if operation != zop_diff {
+    zalg_sort(order: &order);
+  }
+  if operation == zop_union {
+    for @sources (step in 0_u64..order.inner.len) {
+      if step < order.inner.len {
+        let packed = order.inner[step];
+        let index = iand(packed, 4294967295_u64);
+        let argument = plan^.first +wrap index;
+        let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+        let weight = zalg_weight(client: client, plan: plan, index: index);
+        if rank < slots^.len {
+          let visited = zalg_scan(slots: slots, ranks: ranks, client: client, plan: plan, order: &order, slot: &slots^[rank], rank0: rank, weight0: weight, mode: zop_union, counting: counting, limit: 0_u64, acc: &result^.scores);
+        }
+      }
+    }
+    let total = hash_map_len::<Key, f64, ceiling>(map: &result^.scores);
+    return total;
+  }
+  if order.inner.len == 0_u64 {
+    return 0_u64;
+  }
+  let packed = order.inner[0_u64];
+  let index = iand(packed, 4294967295_u64);
+  let argument = plan^.first +wrap index;
+  let rank0 = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+  if rank0 >= slots^.len {
+    return 0_u64;
+  }
+  let size0 = zalg_size(slot: &slots^[rank0]);
+  if size0 == 0_u64 {
+    return 0_u64;
+  }
+  if operation == zop_diff {
+    for @named (step in 1_u64..order.inner.len) {
+      if step < order.inner.len {
+        let later = order.inner[step];
+        let later_index = iand(later, 4294967295_u64);
+        let later_argument = plan^.first +wrap later_index;
+        let later_rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: later_argument);
+        if later_rank == rank0 {
+          return 0_u64;
+        }
+      }
+    }
+  }
+  let weight0 = zalg_weight(client: client, plan: plan, index: index);
+  let taken = zalg_scan(slots: slots, ranks: ranks, client: client, plan: plan, order: &order, slot: &slots^[rank0], rank0: rank0, weight0: weight0, mode: operation, counting: counting, limit: plan^.limit, acc: &result^.scores);
+  if counting {
+    return taken;
+  }
+  let total = hash_map_len::<Key, f64, ceiling>(map: &result^.scores);
+  return total;
+}
+
+fn zalg_order(result: &Sorted, keys: &KeyEnv) -> size: u64 reads(keys), writes(result) {
+  doc "Gives the result's order a rank for each member of its scores and returns the size.";
+  let buckets = result^.scores.cells.inner.len;
+  for @cells (index in 0_u64..buckets) {
+    let cell = &result^.scores.cells.inner[index];
+    match cell^ {
+      HashMapFilled(key: member, value: held) => {
+        let copied = copy_key(key: member);
+        let rank = Rank(score: held^, member: move copied);
+        let placed = ordered_map_put::<RankOrder, unit, ceiling>(map: &result^.order, key: move rank, value: unit, env: keys);
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
+      }
+    }
+  }
+  let size = ordered_map_len::<Rank, unit, ceiling>(map: &result^.order);
+  return size;
+}
+
+fn zalg_result() -> made: Sorted pure {
+  doc "A sorted set without a member, which a sorted-set operation fills in.";
+  let order = ordered_map_new::<Rank, unit, ceiling>();
+  let scores = hash_map_new::<Key, f64, ceiling>(capacity: 0_u64);
+  return Sorted(order: move order, scores: move scores);
+}
+
+fn zalg_store(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Option<Entry>, result: &Sorted) -> done: unit reads(client), writes(sequence), writes(slot), writes(result) {
+  doc "Gives the entry the sorted set the result holds, without an expiry, whatever it held, exchanging it with the result, which is left holding the new entry's emptiness.";
+  let empty = zalg_result();
+  let made = Value::Ranked(ranked: move empty);
+  let stamp = replacement_access(slot: slot, client: client);
+  let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
+  let replacement = Some<Entry>(value: move fresh);
+  pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
+  pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+  match slot^ {
+    Some(value: held_value) => {
+      match held_value^.value {
+        Ranked(ranked: sorted) => {
+          swap(first: sorted, second: result);
+        }
+        Members(members: set_of) => {
+        }
+        Text(bytes: stored) => {
+        }
+        Items(items: list) => {
+        }
+        Fields(fields: hash_of) => {
+        }
+        Stream(..) => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn zalg_settle(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, access_keys: &KeySet, client: &Client, target: u64, size: u64, result: &Sorted, work: &SetCombineWork) -> done: unit reads(access_keys), writes(sequence), writes(journal), writes(slots), writes(client), writes(result), writes(work) contract {
+  requires slots^.len == access_keys^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "Settles the destination of a store command as Redis's setKey and dbDelete do: a result with members replaces what the destination held, with no expiry, an expired destination removed first and its removal noted at argument 1; an empty result removes a destination that holds a value, expired or not, without an expiry lookup. Notes in the work whether the destination changed.";
+  if target < slots^.len {
+    let changed = False();
+    if size > 0_u64 {
+      refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: target, client: client);
+      let target_kind = zalg_kind(slot: &slots^[target], now: client^.now);
+      if target_kind == zkind_lapsed {
+        pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+        note_position(positions: &work^.removed, position: 1_u64);
+      }
+      zalg_store(sequence: sequence, client: client, slot: &slots^[target], result: result);
+      pkg::store::sequence_capture_at(sequence: sequence, keys: access_keys, index: target, slot: &slots^[target]);
+      set changed = True();
+    } else {
+      let present = entry_present(slot: &slots^[target]);
+      if present {
+        set changed = True();
+        pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+      }
+    }
+    set work^.changed = changed;
+  }
+  return unit;
+}
+
+fn zalg_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, operation: u64, storing: Bool, counting: Bool) -> plan: ZPlan reads(input), reads(args), writes(client) {
+  doc "Reads the command's numkeys and options as Redis's zunionInterDiffGenericCommand does. numkeys that is no integer, is below 1 or leaves fewer arguments than sets is refused here, before any set is looked up, and every option after the sets is read here too, but the refusal of one is only noted, for Redis looks the sets up first: WEIGHTS takes one weight for each set when that many arguments remain, and AGGREGATE a method, SUM, MIN or MAX, neither for a difference or a count; WITHSCORES neither for a store command nor for a count; LIMIT, for a count only, takes an integer that is not negative; anything else after the sets is a syntax error. Options are read up to a zero byte and in either case; the first refusal ends the reading.";
+  let no = False();
+  let plan = ZPlan(valid: no, first: 0_u64, end: 0_u64, weighted: no, aggregate: zagg_sum, withscores: no, limit: 0_u64, refusal: 0_u64);
+  let count = args^.inner.len;
+  let numkeys_index = 1_u64;
+  if storing {
+    set numkeys_index = 2_u64;
+  }
+  let first = numkeys_index +wrap 1_u64;
+  let numbered = arg(args: args, index: numkeys_index);
+  let numkeys = read_integer(input: input, start: numbered.start, length: numbered.length);
+  if numkeys.state != 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return plan;
+  }
+  if numkeys.value < 1_i64 {
+    zalg_keys_error(client: client, operation: operation, storing: storing, counting: counting);
+    return plan;
+  }
+  let named = cvt.wrap::<i64, u64>(numkeys.value);
+  let available = count -sat first;
+  if named > available {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return plan;
+  }
+  let end = first +wrap named;
+  let diff = operation == zop_diff;
+  let narrowed = bor(diff, counting);
+  let weights_allowed = bnot(narrowed);
+  let unstored = bnot(storing);
+  let uncounted = bnot(counting);
+  let scores_allowed = band(unstored, uncounted);
+  let weighted = False();
+  let aggregate = zagg_sum;
+  let withscores = False();
+  let limit = 0_u64;
+  let refusal = 0_u64;
+  let index = end;
+  loop @options {
+    if index >= count {
+      break @options;
+    }
+    let remaining = count -sat index;
+    let value_index = index +wrap 1_u64;
+    let option = arg(args: args, index: index);
+    let is_weights = word_at(input: input, span: option, word: &word_weights[0_u64..7_u64]);
+    let is_aggregate = word_at(input: input, span: option, word: &word_aggregate[0_u64..9_u64]);
+    let is_withscores = word_at(input: input, span: option, word: &word_withscores[0_u64..10_u64]);
+    let is_limit = word_at(input: input, span: option, word: &word_limit[0_u64..5_u64]);
+    let needed = named +wrap 1_u64;
+    let enough = remaining >= needed;
+    let pair = remaining >= 2_u64;
+    let weights_room = band(weights_allowed, enough);
+    let take_weights = band(weights_room, is_weights);
+    let aggregate_room = band(weights_allowed, pair);
+    let take_aggregate = band(aggregate_room, is_aggregate);
+    let take_scores = band(scores_allowed, is_withscores);
+    let limit_room = band(counting, pair);
+    let take_limit = band(limit_room, is_limit);
+    if take_weights {
+      clear_items(client: client);
+      for @weights (step in 0_u64..named) {
+        let weight_index = value_index +wrap step;
+        let written = arg(args: args, index: weight_index);
+        let weight = read_score(input: input, start: written.start, length: written.length);
+        if weight.valid {
+          push_score(client: client, score: weight.value);
+        } else {
+          set refusal = zrefusal_weight;
+          break @weights;
+        }
+      }
+      if refusal != 0_u64 {
+        break @options;
+      }
+      set weighted = True();
+      set index = value_index +wrap named;
+    } else if take_aggregate {
+      let method = arg(args: args, index: value_index);
+      let is_sum = word_at(input: input, span: method, word: &word_aggregate_sum[0_u64..3_u64]);
+      let is_min = word_at(input: input, span: method, word: &word_zmpop_min[0_u64..3_u64]);
+      let is_max = word_at(input: input, span: method, word: &word_zmpop_max[0_u64..3_u64]);
+      if is_sum {
+        set aggregate = zagg_sum;
+      } else if is_min {
+        set aggregate = zagg_min;
+      } else if is_max {
+        set aggregate = zagg_max;
+      } else {
+        set refusal = zrefusal_syntax;
+        break @options;
+      }
+      set index = index +wrap 2_u64;
+    } else if take_scores {
+      set withscores = True();
+      set index = value_index;
+    } else if take_limit {
+      let amount = arg(args: args, index: value_index);
+      let number = read_integer(input: input, start: amount.start, length: amount.length);
+      let bad = number.state != 1_u64;
+      let negative = number.value < 0_i64;
+      let rejected = bor(bad, negative);
+      if rejected {
+        set refusal = zrefusal_limit;
+        break @options;
+      }
+      set limit = cvt.wrap::<i64, u64>(number.value);
+      set index = index +wrap 2_u64;
+    } else {
+      set refusal = zrefusal_syntax;
+      break @options;
+    }
+  }
+  set plan.valid = True();
+  set plan.first = first;
+  set plan.end = end;
+  set plan.weighted = weighted;
+  set plan.aggregate = aggregate;
+  set plan.withscores = withscores;
+  set plan.limit = limit;
+  set plan.refusal = refusal;
+  set client^.high = 0_i64;
+  if withscores {
+    set client^.high = 2_i64;
+  }
+  return plan;
+}
+
+fn zalg_keys_error(client: &Client, operation: u64, storing: Bool, counting: Bool) -> result: unit writes(client) {
+  doc "Writes Redis's refusal of numkeys below 1, which names the command.";
+  if counting {
+    reply_error(client: client, word: &text_zintercard_keys[0_u64..59_u64]);
+    return unit;
+  }
+  if operation == zop_union {
+    if storing {
+      reply_error(client: client, word: &text_zunionstore_keys[0_u64..60_u64]);
+    } else {
+      reply_error(client: client, word: &text_zunion_keys[0_u64..55_u64]);
+    }
+    return unit;
+  }
+  if operation == zop_inter {
+    if storing {
+      reply_error(client: client, word: &text_zinterstore_keys[0_u64..60_u64]);
+    } else {
+      reply_error(client: client, word: &text_zinter_keys[0_u64..55_u64]);
+    }
+    return unit;
+  }
+  if storing {
+    reply_error(client: client, word: &text_zdiffstore_keys[0_u64..59_u64]);
+  } else {
+    reply_error(client: client, word: &text_zdiff_keys[0_u64..54_u64]);
+  }
+  return unit;
+}
+
+fn zalg_keys(input: &[u8], args: &Box<Slots<Span>>, client: &Client, plan: &ZPlan, storing: Bool, now: u64) -> keys: KeySet reads(input), reads(args), reads(plan), writes(client) {
+  doc "Prepares the key set of the sets the command names, with the destination of a store command among them, and the client's initial state after the options are read.";
+  key_positions(positions: &client^.key_metadata, count: args^.inner.len);
+  let keys = operand_keys(input: input, args: args, first: plan^.first, end: plan^.end, storing: storing, positions: &client^.key_metadata, lookups: &client^.key_lookups);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  return move keys;
+}
+
+fn zalg_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, operation: u64, storing: Bool, counting: Bool, result: &Sorted) -> work: SetCombineWork reads(keys), reads(access_keys), reads(ranks), reads(plan), writes(sequence), writes(journal), writes(slots), writes(client), writes(result) contract {
+  requires slots^.len == access_keys^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "ZUNIONSTORE, ZINTERSTORE, ZDIFFSTORE, ZUNION, ZINTER, ZDIFF and ZINTERCARD over the named entries: the sets are looked up in argument order as Redis's lookupKeyRead does, each expired one removed and its removal noted, stopping at the first live value that is neither a sorted set nor a set with a wrong-type refusal; then a refusal of an option the arguments held is made; then the result is computed, in the client's number, its members in the result's scores and order, and a store command settles its destination.";
+  let no = False();
+  let removed = box_slots_new::<u64>(capacity: 0_u64);
+  let work = SetCombineWork(changed: no, removed: move removed);
+  for @survey (
+    position in plan^.first..plan^.end,
+    invariant aligned: slots^.len == access_keys^.len
+  ) {
+    if client^.state == state_absent {
+      if position < client^.key_lookups.inner.len {
+        let local = client^.key_lookups.inner[position];
+        let rank = key_position(positions: ranks, index: local);
+        if rank < slots^.len {
+          refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: rank, client: client);
+          let kind = zalg_kind(slot: &slots^[rank], now: client^.now);
+          if kind == zkind_other {
+            set client^.state = state_wrong;
+          } else if kind == zkind_lapsed {
+            pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[rank], keys: access_keys, index: rank);
+            note_position(positions: &work.removed, position: position);
+          }
+        }
+      }
+    }
+  }
+  if client^.state == state_wrong {
+    return move work;
+  }
+  if plan^.refusal != 0_u64 {
+    set client^.state = zstate_refused;
+    return move work;
+  }
+  set client^.state = state_done;
+  let size = zalg_compute(slots: slots, ranks: ranks, client: client, plan: plan, operation: operation, counting: counting, result: result);
+  set client^.number = size;
+  if counting {
+    return move work;
+  }
+  let env = client^.keys;
+  let ordered = zalg_order(result: result, keys: &env);
+  if storing {
+    let destination = keys^.len;
+    for @metadata (at in 0_u64..keys^.len) {
+      let payload = key_position(positions: &client^.key_metadata, index: at);
+      let marked = iand(payload, operand_store);
+      if marked != 0_u64 {
+        set destination = at;
+      }
+    }
+    let target = key_position(positions: ranks, index: destination);
+    zalg_settle(sequence: sequence, journal: journal, slots: slots, access_keys: access_keys, client: client, target: target, size: size, result: result, work: &work);
+  }
+  return move work;
+}
+
+fn zalg_finish(client: &Client, plan: &ZPlan, result: &Sorted, storing: Bool, counting: Bool) -> done: unit reads(plan), reads(result), writes(client) {
+  doc "Completes the reply of a command of the family: the wrong-type refusal, the refusal of an option, the number of members a store command left or a count counted, or the members of the result in order, each with its score when asked, as pairs under RESP3 only.";
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if client^.state == zstate_refused {
+    if plan^.refusal == zrefusal_weight {
+      reply_error(client: client, word: &text_zalg_weight[0_u64..31_u64]);
+    } else if plan^.refusal == zrefusal_limit {
+      reply_error(client: client, word: &text_sintercard_limit[0_u64..27_u64]);
+    } else {
+      reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    }
+    return unit;
+  }
+  let numeric = bor(storing, counting);
+  if numeric {
+    let answer = cvt.wrap::<u64, i64>(client^.number);
+    reply_integer(client: client, value: answer);
+    return unit;
+  }
+  let size = ordered_map_len::<Rank, unit, ceiling>(map: &result^.order);
+  scored_header(env: client, count: size);
+  ordered_map_each::<Rank, unit, Client, fn rank_emit, ceiling>(map: &result^.order, env: client);
+  return unit;
+}
+
+fn run_zalg(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool, counting: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZUNIONSTORE, ZINTERSTORE and ZDIFFSTORE destination numkeys key [key ...] [WEIGHTS weight [weight ...]] [AGGREGATE SUM|MIN|MAX], ZUNION and ZINTER numkeys key [key ...] [WEIGHTS ...] [AGGREGATE ...] [WITHSCORES], ZDIFF numkeys key [key ...] [WITHSCORES] and ZINTERCARD numkeys key [key ...] [LIMIT limit], operation naming the union, the intersection or the difference, whose weights and aggregation a difference does not take. The sets, sorted or plain, a plain set's members at score 1, are held in one statement through a key set, the destination of a store command among them; an absent key is an empty set. A store command stores the result at the destination, without an expiry, whatever it held, removing it for an empty result, and answers the result's size; ZINTERCARD answers the size of the intersection, counted up to the limit; the others answer the members in order of score. A plain command appends nothing to the file, a store command is appended as sent when its destination changed, after the removals of the expired sets it found.";
+  let journal = None<pkg::store::AccessJournal>();
+  let plan = zalg_parse(input: input, args: args, client: client, operation: operation, storing: storing, counting: counting);
+  if bnot(plan.valid) {
+    return unit;
+  }
+  let keys = zalg_keys(input: input, args: args, client: client, plan: &plan, storing: storing, now: time^.check);
+  let ranks = script_key_ranks(keys: &keys, declared: &keys);
+  let result = zalg_result();
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let sequence = if store^.logging {
+      if storing {
+        if aof_refuse(meta: m, client: client) {
+          return unit;
+        }
+      }
+      let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let work = zalg_body(sequence: &sequence, journal: &journal, slots: slots, keys: &keys, access_keys: &keys, ranks: &ranks, client: client, plan: &plan, operation: operation, storing: storing, counting: counting, result: &result);
+    if store^.logging {
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  zalg_finish(client: client, plan: &plan, result: &result, storing: storing, counting: counting);
+  return unit;
+}
+
+fn zalg_footprint(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> keys: KeySet reads(input), reads(args) {
+  doc "The keys a command of kinds 107 through 116 names, in first occurrence order: the destination and the sets of the store commands, the sets of the others, whose numkeys must be an integer from 1 to the arguments that follow it, else the footprint is empty and the command's parser refuses it before any entry is touched; ZRANGESTORE's destination and source; the key of ZRANDMEMBER.";
+  let count = args^.inner.len;
+  let keys = key_set_new(capacity: count);
+  let storing_low = kind >= 107_u64;
+  let storing_high = kind <= 109_u64;
+  let storing = band(storing_low, storing_high);
+  if kind == 115_u64 {
+    let place = key_bounds(input: input, args: args, index: 1_u64);
+    let key = &input^[place.start..place.end];
+    key_set_insert(keys: &keys, key: key);
+    return move keys;
+  }
+  if kind == 114_u64 {
+    let first_place = key_bounds(input: input, args: args, index: 1_u64);
+    let first_key = &input^[first_place.start..first_place.end];
+    key_set_insert(keys: &keys, key: first_key);
+    let second_place = key_bounds(input: input, args: args, index: 2_u64);
+    let second_key = &input^[second_place.start..second_place.end];
+    key_set_insert(keys: &keys, key: second_key);
+    return move keys;
+  }
+  let numkeys_index = 1_u64;
+  if storing {
+    set numkeys_index = 2_u64;
+  }
+  let first = numkeys_index +wrap 1_u64;
+  let numbered = arg(args: args, index: numkeys_index);
+  let number = read_integer(input: input, start: numbered.start, length: numbered.length);
+  let numeric = number.state == 1_u64;
+  let positive = number.value > 0_i64;
+  let usable = band(numeric, positive);
+  if usable {
+    let amount = cvt.wrap::<i64, u64>(number.value);
+    let available = count -sat first;
+    if amount <= available {
+      if storing {
+        let place = key_bounds(input: input, args: args, index: 1_u64);
+        let key = &input^[place.start..place.end];
+        key_set_insert(keys: &keys, key: key);
+      }
+      let end = first +wrap amount;
+      for @named (index in first..end) {
+        let place = key_bounds(input: input, args: args, index: index);
+        let key = &input^[place.start..place.end];
+        key_set_insert(keys: &keys, key: key);
+      }
+    }
+  }
+  return move keys;
+}
+
+fn script_zalg(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, operation: u64, storing: Bool, counting: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} {
+  doc "The sorted-set operations of run_zalg under a held statement, through the network parts, removing and recording each expired set once.";
+  let unlimited_log_budget = pkg::store::log_budget_new();
+  let plan = zalg_parse(input: input, args: args, client: client, operation: operation, storing: storing, counting: counting);
+  if bnot(plan.valid) {
+    return 0_u64;
+  }
+  let ks = zalg_keys(input: input, args: args, client: client, plan: &plan, storing: storing, now: time^.check);
+  let footprint_ready = script_entries_ready(kind: operation_kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+  if bnot(footprint_ready) {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let ranks = script_key_ranks(keys: &ks, declared: declared);
+  let result = zalg_result();
+  let work = zalg_body(sequence: sequence, journal: journal, slots: keys, keys: &ks, access_keys: declared, ranks: &ranks, client: client, plan: &plan, operation: operation, storing: storing, counting: counting, result: &result);
+  let appended = set_operands_meta(log: effects, logged: logged, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &unlimited_log_budget);
+  zalg_finish(client: client, plan: &plan, result: &result, storing: storing, counting: counting);
+  return appended;
+}

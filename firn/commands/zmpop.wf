@@ -1,0 +1,275 @@
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias arg = pkg::protocol::arg;
+alias log_count = pkg::store::log_count;
+alias log_decimal = pkg::store::log_decimal;
+alias log_input = pkg::store::log_input;
+alias log_word = pkg::store::log_word;
+alias read_integer = pkg::bytes::read_integer;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_nil_array = pkg::protocol::reply_nil_array;
+alias reply_wrong_type = pkg::protocol::reply_wrong_type;
+
+const word_zmpop_min: Array<u8, 3> = "MIN";
+
+const word_zmpop_max: Array<u8, 3> = "MAX";
+
+const word_zpopmin_record: Array<u8, 7> = "ZPOPMIN";
+
+const word_zpopmax_record: Array<u8, 7> = "ZPOPMAX";
+
+const text_zmpop_count: Array<u8, 34> = "ERR count should be greater than 0";
+
+struct ZmpopPlan {
+  valid: Bool;
+  end: u64;
+  from_top: Bool;
+  count: u64;
+}
+
+struct ZmpopWork {
+  removed: Box<Slots<u64>>;
+  popped: u64;
+  at: u64;
+  from_top: Bool;
+}
+
+fn zmpop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> plan: ZmpopPlan reads(input), reads(args), writes(client) {
+  doc "Reads ZMPOP's numkeys, MIN or MAX and COUNT as Redis's zmpopGenericCommand does and writes their refusals once, before any lookup: numkeys that is no integer or is below 1 is refused with the count message, one that leaves no room for MIN or MAX after the keys is a syntax error, MIN and MAX are read in either case up to a zero byte, COUNT is taken once and anything else after it is a syntax error, and a count that is no integer or is below 1 is refused.";
+  let no = False();
+  let plan = ZmpopPlan(valid: no, end: 0_u64, from_top: no, count: 1_u64);
+  let count = args^.inner.len;
+  let numbered = arg(args: args, index: 1_u64);
+  let numkeys = read_integer(input: input, start: numbered.start, length: numbered.length);
+  let invalid = numkeys.state != 1_u64;
+  let small = numkeys.value < 1_i64;
+  let refused = bor(invalid, small);
+  if refused {
+    reply_error(client: client, word: &text_sintercard_numkeys[0_u64..36_u64]);
+    return plan;
+  }
+  let named = cvt.wrap::<i64, u64>(numkeys.value);
+  let available = count -sat 3_u64;
+  if named > available {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return plan;
+  }
+  let end = named +wrap 2_u64;
+  let direction = arg(args: args, index: end);
+  let is_min = word_at(input: input, span: direction, word: &word_zmpop_min[0_u64..3_u64]);
+  let is_max = word_at(input: input, span: direction, word: &word_zmpop_max[0_u64..3_u64]);
+  let known = bor(is_min, is_max);
+  if bnot(known) {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return plan;
+  }
+  let wanted = 1_u64;
+  let seen = False();
+  let index = end +wrap 1_u64;
+  loop @options {
+    if index >= count {
+      break @options;
+    }
+    let option = arg(args: args, index: index);
+    let value_index = index +wrap 1_u64;
+    let more = value_index < count;
+    let counting = word_at(input: input, span: option, word: &word_count[0_u64..5_u64]);
+    let first = bnot(seen);
+    let usable = band(counting, more);
+    let accepted = band(usable, first);
+    if accepted {
+      let value = arg(args: args, index: value_index);
+      let number = read_integer(input: input, start: value.start, length: value.length);
+      let bad = number.state != 1_u64;
+      let low = number.value < 1_i64;
+      let rejected = bor(bad, low);
+      if rejected {
+        reply_error(client: client, word: &text_zmpop_count[0_u64..34_u64]);
+        return plan;
+      }
+      set wanted = cvt.wrap::<i64, u64>(number.value);
+      set seen = True();
+    } else {
+      reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+      return plan;
+    }
+    set index = index +wrap 2_u64;
+  }
+  set plan.valid = True();
+  set plan.end = end;
+  set plan.from_top = is_max;
+  set plan.count = wanted;
+  return plan;
+}
+
+fn zmpop_keys(input: &[u8], args: &Box<Slots<Span>>, client: &Client, end: u64, from_top: Bool, wanted: u64, now: u64) -> keys: KeySet reads(input), reads(args), writes(client) {
+  doc "Prepares ZMPOP's key set, one entry for each key named once, and the client's initial state after the arguments are accepted: number is how many members to pop, low is 1 for the highest, and high is 2, which has pop_ranked write every pair as an array of two under both protocols.";
+  let not_storing = False();
+  key_positions(positions: &client^.key_metadata, count: args^.inner.len);
+  let keys = operand_keys(input: input, args: args, first: 2_u64, end: end, storing: not_storing, positions: &client^.key_metadata, lookups: &client^.key_lookups);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = wanted;
+  set client^.low = 0_i64;
+  if from_top {
+    set client^.low = 1_i64;
+  }
+  set client^.high = 2_i64;
+  return move keys;
+}
+
+fn zmpop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, access_keys: &KeySet, ranks: &Box<Slots<u64>>, client: &Client, input: &[u8], args: &Box<Slots<Span>>, from_top: Bool) -> work: ZmpopWork reads(access_keys), reads(ranks), reads(input), reads(args), writes(sequence), writes(journal), writes(slots), writes(client) contract {
+  requires slots^.len == access_keys^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "ZMPOP over its keys' entries, as Redis's genericZpopCommand does: each key is looked up in argument order, an expired one removed and its argument noted, until the first live one, a sorted set, from which up to the requested number of members are removed and written after the key's name as an array of pairs; a live key of another kind stops the lookups with a wrong-type refusal. A set holds no scores and is another kind here. The work holds the arguments of the removed keys, how many members were popped, the argument naming their key and the direction.";
+  let removed = box_slots_new::<u64>(capacity: 0_u64);
+  let work = ZmpopWork(removed: move removed, popped: 0_u64, at: 0_u64, from_top: from_top);
+  let target = slots^.len;
+  for @lookups (
+    position in 2_u64..client^.key_lookups.inner.len,
+    invariant aligned: slots^.len == access_keys^.len
+  ) {
+    if client^.state == state_absent {
+      if position < client^.key_lookups.inner.len {
+        let local = client^.key_lookups.inner[position];
+        let rank = key_position(positions: ranks, index: local);
+        if rank < slots^.len {
+          refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: rank, client: client);
+          let kind = zalg_kind(slot: &slots^[rank], now: client^.now);
+          if kind == zkind_lapsed {
+            pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[rank], keys: access_keys, index: rank);
+            note_position(positions: &work.removed, position: position);
+          } else if kind == zkind_zset {
+            set client^.state = zstate_found;
+            set target = rank;
+            set work.at = position;
+          } else if kind != zkind_none {
+            set client^.state = state_wrong;
+          }
+        }
+      }
+    }
+  }
+  if target < slots^.len {
+    let place = key_bounds(input: input, args: args, index: work.at);
+    let length = place.end -wrap place.start;
+    reply_array(client: client, count: 2_u64);
+    reply_bulk_input(client: client, input: input, start: place.start, length: length);
+    let slot = &slots^[target];
+    match slot^ {
+      Some(value: held_value) => {
+        let edited = pop_ranked(env: client, value: held_value);
+      }
+      None() => {
+      }
+    }
+    set work.popped = client^.number;
+    if client^.state == state_emptied {
+      pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+    } else if work.popped > 0_u64 {
+      pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+    }
+  }
+  return move work;
+}
+
+fn zmpop_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ZmpopWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
+  doc "Records the expired keys' removals in lookup order, then, as Redis rewrites the command it propagates, ZPOPMIN or ZPOPMAX with the key and the number of members actually popped, returning the number of records.";
+  let unchanged = False();
+  let appended = set_operands_meta(log: log, logged: logged, removed: &work^.removed, changed: unchanged, input: input, args: args, budget: budget);
+  if work^.popped > 0_u64 {
+    if logged {
+      let key_span = arg(args: args, index: work^.at);
+      log_count(log: log, count: 3_u64, room: key_span.length, budget: budget);
+      if work^.from_top {
+        log_word(log: log, word: &word_zpopmax_record[0_u64..7_u64], budget: budget);
+      } else {
+        log_word(log: log, word: &word_zpopmin_record[0_u64..7_u64], budget: budget);
+      }
+      log_input(log: log, input: input, span: key_span, budget: budget);
+      log_decimal(log: log, value: work^.popped, budget: budget);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn zmpop_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZMPOP's reply: the pairs were written while visiting the entry; a wrong-type refusal and, when no key held a sorted set, the null array remain.";
+  let done = client^.state == state_done;
+  let emptied = client^.state == state_emptied;
+  let answered = bor(done, emptied);
+  if answered {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  reply_nil_array(client: client);
+  return unit;
+}
+
+fn run_zmpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]: pops up to count members, one when it is not given, from the first of the keys that holds a sorted set and answers the key's name and the members popped with their scores, each as an array of two, or the null array when none of the keys holds one, in one statement holding every key through a key set. As in Redis, the arguments are read before any key is looked up, the keys in argument order, each expired one removed and its removal recorded, stopping at the first live key, whose kind alone is checked. A pop is appended to the file as ZPOPMIN or ZPOPMAX with the key and the number of members it popped.";
+  let journal = None<pkg::store::AccessJournal>();
+  let plan = zmpop_parse(input: input, args: args, client: client);
+  if bnot(plan.valid) {
+    return unit;
+  }
+  let keys = zmpop_keys(input: input, args: args, client: client, end: plan.end, from_top: plan.from_top, wanted: plan.count, now: time^.check);
+  let ranks = script_key_ranks(keys: &keys, declared: &keys);
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let sequence = if store^.logging {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let work = zmpop_body(sequence: &sequence, journal: &journal, slots: slots, access_keys: &keys, ranks: &ranks, client: client, input: input, args: args, from_top: plan.from_top);
+    if store^.logging {
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      let appended = zmpop_meta(log: &m^.log, logged: store^.logging, work: &work, input: input, args: args, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  zmpop_finish(client: client);
+  return unit;
+}
+
+fn script_zmpop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} {
+  doc "ZMPOP under a held statement, through the network parts, removing and recording each expired key it passes.";
+  let unlimited_log_budget = pkg::store::log_budget_new();
+  let plan = zmpop_parse(input: input, args: args, client: client);
+  if bnot(plan.valid) {
+    return 0_u64;
+  }
+  let ks = zmpop_keys(input: input, args: args, client: client, end: plan.end, from_top: plan.from_top, wanted: plan.count, now: time^.check);
+  let footprint_ready = script_entries_ready(kind: operation_kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+  if bnot(footprint_ready) {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let ranks = script_key_ranks(keys: &ks, declared: declared);
+  let work = zmpop_body(sequence: sequence, journal: journal, slots: keys, access_keys: declared, ranks: &ranks, client: client, input: input, args: args, from_top: plan.from_top);
+  let appended = zmpop_meta(log: effects, logged: logged, work: &work, input: input, args: args, budget: &unlimited_log_budget);
+  zmpop_finish(client: client);
+  return appended;
+}
