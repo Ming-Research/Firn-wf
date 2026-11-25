@@ -12,9 +12,14 @@ A command is its parsing, a body over its key's entry or its key set's entries, 
 - rejected: an agent proposed a reply of its own for a command firn identifies but does not run from scripts; the owner rejected it, because the extended unknown-command text keeps the boundary firn already had and the words Redis's own tests match.
 
 ### decision command-identity-and-flags-shared
-`command_kind` identifies every command firn knows, and admission, MULTI and scripts read Redis's DENYOOM and WRITE flags from one table keyed by that identity.
+`command_kind` identifies every command firn knows, and admission, MULTI and scripts read Redis's DENYOOM and WRITE flags from one byte map per flag, indexed by that identity.
 - replaced: naming commands only in the dispatcher's rows, so that nothing told an unknown name from a command without parts, was on main; the owner changed it, because memory admission must tell unknown names apart before it evicts.
 - rejected: an agent proposed separate identity or flag tables for each execution path; the owner rejected it, because memory admission must tell unknown names apart before eviction, and a script's write acceptance follows the WRITE flag, not what a command changed.
+- replaced: scanning a list of kinds for each flag was on main; the owner changed it, because a command on neither list scanned both to the end, about 30 ns and 11% of a GET's server CPU, and the cost moved with the code around the scans (data: `research/investigations/firn/pubsub-command-cost.md`).
+
+### decision pubsub-names-compared-last
+`command_kind` and `execute` compare a name with the nine publish/subscribe names last, and `admission_arity` tests the publish/subscribe kinds after the kinds that have held parts.
+- replaced: comparing the publish/subscribe names first was on main; the owner changed it, because every other command then paid for them: 7% of a GET's server CPU before the flag maps and 0.9% with them (data: `research/investigations/firn/pubsub-command-cost.md`).
 
 ### decision script-command-operand-planning
 A script's command is planned as keyless, as finite ordered operands mapped onto the script's declared keys, or as a whole-map command, and keeps the shared parsing, bodies and replies.
