@@ -347,10 +347,14 @@ creates, opens and removes, and the logo Redis prints instead of `Running mode=.
 terminal. The lines above are not all that firn writes: it also logs `Reading
 config from stdin`, `Unable to obtain the current NOFILE limit`, `Fatal error,
 can't open config file` and `Fatal error loading the DB`. A write that fails
-drops the line, as Redis ignores a failed log write. A failure to accept a
-connection still writes `Accepting client connection: reason` to stderr, as
-the connections section says; an excess client gets its error reply and
-nothing is logged.
+drops the line, as Redis ignores a failed log write. firn queues finished
+lines in memory and writes them from one context of its own, so a sink that
+does not drain, such as a pipe nobody reads, does not slow the server where it
+would block Redis's own write; the queue grows with the lines logged, and
+firn's exit waits until the sink has taken every queued line. A failure to
+accept a connection still writes `Accepting client connection: reason` to
+stderr, as the connections section says; an excess client gets its error reply
+and nothing is logged.
 
 ## Migrate from Redis
 
