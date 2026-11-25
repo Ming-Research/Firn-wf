@@ -866,4 +866,80 @@ part of it that was traced is the check after every command in `serve` (about
 follows the layout of the hot functions (deduced, not tested; the layout moved
 the same cells by a percent when the main line was merged). What is left for
 the owner is whether to accept 1% to 1.6% on these four cells or to ask for
-further work, as the card says.
+further work.
+
+The branch has since merged the main line at `f4e3d6c`, which moved the
+compiler pin, so G and G2 no longer measure the program that merges; H and H2
+below do.
+
+### Run H: the formal comparison after the compiler move
+
+Written before H runs. Since `05f7e89` (the main line of G and G2) the main
+line has moved the compiler pin from `wf-af7665be672d` to `wf-63b7cbb03820`
+(Firn-wf#138, [whitefoot-v0165-pin.md](whitefoot-v0165-pin.md)) and changed how
+connections are accepted (Firn-wf#104, Firn-wf#140); the merge changed none of
+this change's code. The question is G's, on the program that merges: is any
+cell of the 19 default tests at depths 16 and 1 wholly on the slower side of
+`before`?
+
+- **Images.** `before` (`00e2bd1fa230`), `main` (`f4e3d6c90ab3`), `head` (a
+  branch head whose `firn/`, `deps/`, `whitefoot.pin` and `whitefoot-kit` are
+  those of the head that merges) and `head-twin` (`head` again). The workflow
+  builds each image with its own revision's pin: `before` with
+  `wf-af7665be672d`, the other three with `wf-63b7cbb03820`. So `head`/`before`
+  and `main`/`before` hold the compiler move and `head`/`main` does not. The
+  move alone, measured on the program before this change, made `hset` 16 3.1%
+  and `lpush` 16 2.4% slower and `set` 16, `lpop` 16, `get` 1 and `lrange_600`
+  1 faster (the pin record's verdict); Firn-wf#145 looks for the cause of the
+  two that are slower.
+- **Settings.** As G: the 14900K, servers on CPUs 2 and 4, clients on CPUs
+  16-31, 2 server CPUs, the 19 tests at depths 16 and 1, 8 interleaved passes
+  of 5 s, no profile, no `reference` line. G's measuring step took 106 minutes.
+- **The host.** The 14900K carries several runner instances of this
+  repository (`14900k-4`, `14900k-6` and `14900k-8` ran jobs on 2026-11-25),
+  and the `fast.yml` jobs of other works run on them beside a measurement. In
+  run 45607701747 (another item's, the same compare mode) the `base` image's
+  `hset` 16 rate fell from about 3.8 million requests a second in pass 5 to 2.2
+  and 1.1 million in passes 6 and 7, from 12:05 UTC; a `fast.yml` job started
+  on `14900k-4` at 12:07:52, and the run ended at 12:07:58 with exit code 143.
+  A run of H or H2 counts only if no other job of this repository ran on a
+  `14900k` runner during its measuring step, as the jobs' start and end times
+  read after the run show; jobs of other repositories on the machine are not
+  visible to this check. A run that does not count is not read, and is
+  dispatched again.
+- **Measure.** As G: `summary.py ratios` on the rate and with `--metric cpu`,
+  for `head`/`before`, `head`/`main`, `main`/`before` and `head-twin`/`head`.
+  A cell whose clients average over 90% busy (`client_busy_mean`, median over
+  the passes, in any image) is client-limited: reported and not judged.
+- **Reading.** A judged cell counts only if `head-twin`/`head` holds 1. A
+  judged cell whose `head`/`before` interval is wholly on the slower side, or
+  whose twin does not hold 1, is measured again in H2.
+
+### Run H2: the flagged cells again, with publish/subscribe taken out
+
+Written before H runs, so that its reading does not follow H's numbers.
+
+- **Images.** The four of H and `head-nops`: `head` without the hand-over to
+  the subscriber loop in `serve` (S3, as `e811c01`), without the event hub's
+  two tasks (S4, as `c7a9c8d`) and with the four subscription fields after the
+  rest of `Client` (S5, as `fa0dcb4`), on an experiment branch that no pull
+  request merges. It serves no publish/subscribe, and the run sends none. In
+  `head` an ordinary command no longer runs S1 or S2, but for the two
+  comparisons of `pubsub_command` at the head of `held_arity`, so
+  `head`/`head-nops` is what publish/subscribe still costs an ordinary command
+  on this program, less those two comparisons.
+- **Settings.** The tests of the cells H flagged, at both depths (the depth is
+  a setting of the whole run), 16 interleaved passes of 5 s, the placement of
+  H. With k tests the measuring step is about k x 2 x 5 x 16 x 5 s, and G2 took
+  75 minutes for 7 tests and 4 images.
+- **Reading.** The same rule applies to every cell of the run: a cell stands
+  if `head`/`before` is wholly on the slower side and `head-twin`/`head` holds
+  1; a cell whose twin does not hold 1 is unresolved. For a cell that stands,
+  `head`/`head-nops` wholly on the slower side is a cost of publish/subscribe
+  of that size on this program. `head`/`head-nops` holding 1 with
+  `head-nops`/`before` wholly on the slower side puts the loss in the main
+  line's other changes since `before`, of which the compiler move is the one
+  measured. The two together are reported as they come.
+- **What decides.** The criterion of the item is met if no judged cell stands.
+  A cell that stands goes to the owner with its size and the reading of
+  `head-nops`, for the owner to accept or to ask for more work.
