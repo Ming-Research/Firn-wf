@@ -320,8 +320,8 @@ fsync the AOF file: reason`), the stop signal, `User requested shutdown...`,
 `Calling fsync() on the AOF file.` and `firn is now ready to exit, bye bye...`.
 These differences from Redis's log remain: the product name is `firn`, there
 is no version line, the rewrite line has no `by pid` because firn rewrites in
-a thread, `pidfile` and `syslog-enabled` are refused, `CONFIG SET loglevel` is
-refused, and messages Redis writes for features firn does not have do not
+a thread, `pidfile` and `syslog-enabled` are refused, `CONFIG SET dir` is
+refused where Redis changes the directory, and messages Redis writes for features firn does not have do not
 appear. A write that fails drops the line, as Redis ignores a failed log write.
 Accepting an excess client or failing to accept still writes to stderr as the
 connections section says.

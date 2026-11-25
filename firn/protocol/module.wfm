@@ -28,12 +28,11 @@ public struct RequestStream {
 }
 
 public struct Settings {
-  doc "The server's configuration that does not change while it runs, as a connection reports it: the port it listens on, the address it listens on, the append-only file's name as given, the absolute working directory the configuration last named (empty while no absolute one was named), the log level as a number from 0 for debug to 3 for warning, and the log file as given, empty for standard output. What CONFIG SET changes is in the server's state beside the keyspace.";
+  doc "The server's configuration that does not change while it runs, as a connection reports it: the port it listens on, the address it listens on, the append-only file's name as given, the absolute working directory the configuration last named (empty while no absolute one was named), and the log file as given, empty for standard output. What CONFIG SET changes is in the server's state beside the keyspace.";
   public port: u64;
   public bind: Bytes;
   public appendfilename: Bytes;
   public dir: Bytes;
-  public loglevel: u64;
   public logfile: Bytes;
 }
 

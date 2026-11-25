@@ -367,15 +367,15 @@ fn reply_parameter_word(client: &Client, which: u64) -> result: unit writes(clie
 }
 
 fn lookup_parameter(input: &[u8], span: Span) -> which: u64 reads(input) {
-  doc "The parameter an argument names, its whole length in either case, or 34 when it names none of them.";
-  for @parameters (which in 0_u64..34_u64) {
+  doc "The parameter an argument names, its whole length in either case, or 37 when it names none of them.";
+  for @parameters (which in 0_u64..37_u64) {
     let unglobbed = False();
     let named = parameter_matches(input: input, start: span.start, length: span.length, globbing: unglobbed, which: which);
     if named {
       return which;
     }
   }
-  return 34_u64;
+  return 37_u64;
 }
 
 struct ConfigSnapshot {
@@ -394,6 +394,8 @@ fn config_copy(store: &Keyspace) -> made: ConfigSnapshot reads(store) waits {
     return ConfigSnapshot(server: move server, rewrite_percentage: m^.aof_rewrite_percentage, rewrite_min_size: m^.aof_rewrite_min_size, key_delay: m^.aof_rewrite_key_delay);
   }
 }
+
+const text_loglevel_enum: Array<u8, 82> = "argument(s) must be one of the following: debug, verbose, notice, warning, nothing";
 
 const loglevel_debug: Array<u8, 5> = "debug";
 
@@ -421,7 +423,7 @@ fn reply_loglevel(client: &Client, level: u64) -> result: unit writes(client) {
   return unit;
 }
 
-fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, snapshot: &ConfigSnapshot) -> result: unit reads(store), reads(snapshot), writes(client) {
+fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, snapshot: &ConfigSnapshot) -> result: unit reads(store), reads(snapshot), writes(client) waits {
   doc "Writes the value of parameter which as Redis formats it, from the connection's fixed settings or the CONFIG snapshot. Encoding aliases share their parameter's value; both automatic rewrite thresholds are decimal, min-size in bytes, and so is rdb-key-save-delay, signed.";
   let server = &snapshot^.server;
   if which == 0_u64 {
@@ -472,7 +474,8 @@ fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, snapshot
     let directory = bytes_copy(bytes: &client^.settings.dir);
     reply_text(client: client, text: &directory);
   } else if which == 35_u64 {
-    reply_loglevel(client: client, level: client^.settings.loglevel);
+    let level = pkg::serverlog::serverlog_level(log: &store^.log);
+    reply_loglevel(client: client, level: level);
   } else if which == 36_u64 {
     let file = bytes_copy(bytes: &client^.settings.logfile);
     reply_text(client: client, text: &file);
@@ -946,7 +949,7 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
     return unit;
   }
-  let seen = array_filled::<u64, 34>(value: 0_u64);
+  let seen = array_filled::<u64, 37>(value: 0_u64);
   let index = 2_u64;
   loop @names {
     if index >= count {
@@ -954,7 +957,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     }
     let name = arg(args: args, index: index);
     let which = lookup_parameter(input: input, span: name);
-    if which >= 34_u64 {
+    let unnamed = which >= 37_u64;
+    let directory = which == 34_u64;
+    if bor(unnamed, directory) {
       reply_word(client: client, word: &text_config_set[0_u64..61_u64]);
       let echoed = reply_echoed(client: client, input: input, span: name, limit: name.length);
       reply_word(client: client, word: &text_quote_end[0_u64..3_u64]);
@@ -962,7 +967,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     }
     let filename = which == 0_u64;
     let databases = which == 3_u64;
-    let immutable = bor(filename, databases);
+    let logfile = which == 36_u64;
+    let fixed = bor(filename, databases);
+    let immutable = bor(fixed, logfile);
     if immutable {
       reply_set_refused(client: client, input: input, name: name, reason: &text_immutable[0_u64..26_u64]);
       return unit;
@@ -988,7 +995,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let rewrite_values = array_filled::<u64, 2>(value: 0_u64);
   let delay_given = False();
   let new_delay = 0_i64;
-  let refused = 34_u64;
+  let refused = 37_u64;
+  let loglevel_given = False();
+  let new_loglevel = 2_u64;
   set index = 2_u64;
   loop @values {
     if index >= count {
@@ -998,7 +1007,7 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     let which = lookup_parameter(input: input, span: name);
     let value_at = index +wrap 1_u64;
     let value = arg(args: args, index: value_at);
-    let unrefused = refused == 34_u64;
+    let unrefused = refused == 37_u64;
     let memory_low = which >= 24_u64;
     let memory_high = which <= 29_u64;
     let memory_parameter = band(memory_low, memory_high);
@@ -1120,6 +1129,26 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       }
       set maxclients_given = True();
       set new_maxclients = parsed.value;
+    } else if which == 35_u64 {
+      let spelled_length = before_zero(input: input, span: value);
+      let chosen = 99_u64;
+      if same_name(input: input, start: value.start, length: spelled_length, name: &loglevel_debug[0_u64..5_u64]) {
+        set chosen = 0_u64;
+      } else if same_name(input: input, start: value.start, length: spelled_length, name: &loglevel_verbose[0_u64..7_u64]) {
+        set chosen = 1_u64;
+      } else if same_name(input: input, start: value.start, length: spelled_length, name: &loglevel_notice[0_u64..6_u64]) {
+        set chosen = 2_u64;
+      } else if same_name(input: input, start: value.start, length: spelled_length, name: &loglevel_warning[0_u64..7_u64]) {
+        set chosen = 3_u64;
+      } else if same_name(input: input, start: value.start, length: spelled_length, name: &loglevel_nothing[0_u64..7_u64]) {
+        set chosen = 4_u64;
+      }
+      if chosen == 99_u64 {
+        reply_set_failed(client: client, which: which, reason: &text_loglevel_enum[0_u64..82_u64]);
+        return unit;
+      }
+      set loglevel_given = True();
+      set new_loglevel = chosen;
     } else if memory_parameter {
       invariant memory_selector_lower: which >= 24_u64;
       invariant memory_selector_upper: which <= 29_u64;
@@ -1166,7 +1195,7 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     }
     set index = index +wrap 2_u64;
   }
-  if refused < 34_u64 {
+  if refused < 37_u64 {
     if refused == 13_u64 {
       reply_set_failed(client: client, which: refused, reason: &text_no_snapshot[0_u64..22_u64]);
     } else {
@@ -1180,6 +1209,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       reply_maxclients_unsupported(client: client, granted: granted);
       return unit;
     }
+  }
+  if loglevel_given {
+    pkg::serverlog::serverlog_set_level(log: &store^.log, level: new_loglevel);
   }
   let password_span = Span(start: 0_u64, length: 0_u64);
   if password_given {

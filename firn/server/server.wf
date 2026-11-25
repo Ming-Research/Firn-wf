@@ -1113,7 +1113,7 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
   let logfile_length = options.logfile.inner.len;
   let dir_text = bytes_new(input: &options.dir.inner[0_u64..dir_length], start: 0_u64, length: dir_length);
   let logfile_text = bytes_new(input: &options.logfile.inner[0_u64..logfile_length], start: 0_u64, length: logfile_length);
-  let settings = Settings(port: options.port, bind: move bind_text, appendfilename: move file_text, dir: move dir_text, loglevel: options.loglevel, logfile: move logfile_text);
+  let settings = Settings(port: options.port, bind: move bind_text, appendfilename: move file_text, dir: move dir_text, logfile: move logfile_text);
   let origin = std::time::now(clock: &clock);
   let calendar = unix_nanoseconds(clock: &wall_clock);
   let seed = cvt.wrap::<i64, u64>(calendar);

@@ -17,17 +17,17 @@ public const level_warning: u64 = 3_u64;
 public const message_limit: u64 = 1023_u64;
 
 public struct LogQueue {
-  doc "Complete log lines in the order contexts handed them over, and whether the sink is to stop once it has written them.";
+  doc "Complete log lines in the order contexts handed them over, whether the sink is to stop once it has written them, and the lowest level that is written, which CONFIG SET loglevel changes.";
   public lines: Box<Ring<Box<Slots<u8>>>>;
   public closed: Bool;
+  public level: u64;
 }
 
 public struct ServerLog {
-  doc "A handle on the server log: the shared queue of finished lines, the calendar clock that stamps them, the process id they carry and the lowest level that is written. Every context holds a handle of its own, made with serverlog_share.";
+  doc "A handle on the server log: the shared queue of finished lines and level, the calendar clock that stamps them and the process id they carry. Every context holds a handle of its own, made with serverlog_share.";
   public queue: Shared<LogQueue>;
   public clock: WallClock;
   public pid: u64;
-  public level: u64;
 }
 
 public struct LogFile {
@@ -43,6 +43,10 @@ public enum LogSink {
 }
 
 public fn serverlog_new(clock: WallClock, pid: u64, level: u64) -> made: ServerLog pure doc "Creates an empty log whose lines carry pid and whose lowest written level is level, one of level_debug to level_warning, as Redis's loglevel orders them.";
+
+public fn serverlog_level(log: &ServerLog) -> level: u64 reads(log) waits doc "Returns the lowest level that is written now.";
+
+public fn serverlog_set_level(log: &ServerLog, level: u64) -> result: unit reads(log) waits doc "Sets the lowest level that is written, for every handle on the queue.";
 
 public fn serverlog_share(log: &ServerLog) -> made: ServerLog reads(log) doc "Returns a handle on the same queue, clock reading, process id and level.";
 

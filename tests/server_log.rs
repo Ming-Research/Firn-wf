@@ -182,3 +182,32 @@ fn an_unopenable_logfile_stops_startup_with_the_title_frame_alone() {
             "{label}: {output:?}");
     }
 }
+
+#[test]
+fn config_set_loglevel_changes_the_level_while_running_and_logfile_is_immutable() {
+    let fixture = fixture_directory();
+    for (label, binary) in servers() {
+        let lease = support::lease_port();
+        let port = lease.port().to_string();
+        let child = start(&binary, fixture.path(), &["--bind", "127.0.0.1", "--port", &port]).with_port(&lease);
+        let mut client = connect_when_ready(lease.port(), &child);
+        client.write_all(&resp(&["CONFIG", "SET", "loglevel", "loud"])).expect("set a bad level");
+        expect_replies(&mut client,
+            b"-ERR CONFIG SET failed (possibly related to argument 'loglevel') - argument(s) must be one of the following: debug, verbose, notice, warning, nothing\r\n",
+            &format!("{label}: bad level"));
+        client.write_all(&resp(&["CONFIG", "SET", "logfile", "x.log"])).expect("set logfile");
+        expect_replies(&mut client,
+            b"-ERR CONFIG SET failed (possibly related to argument 'logfile') - can't set immutable config\r\n",
+            &format!("{label}: logfile"));
+        client.write_all(&resp(&["CONFIG", "SET", "loglevel", "WARNING"])).expect("set the level");
+        expect_replies(&mut client, b"+OK\r\n", &format!("{label}: set"));
+        client.write_all(&resp(&["CONFIG", "GET", "loglevel"])).expect("read the level");
+        expect_replies(&mut client, b"*2\r\n$8\r\nloglevel\r\n$7\r\nwarning\r\n", &format!("{label}: read back"));
+        drop(client);
+        let output = stop(lease.port(), child);
+        let events = messages(&String::from_utf8_lossy(&output.stdout));
+        assert!(events.iter().any(|(_, body)| body.contains("bye bye...")), "{label}: {output:?}");
+        assert!(!events.iter().any(|(_, body)| body.starts_with("User requested shutdown")),
+            "{label}: notice lines stop once the level is raised: {output:?}");
+    }
+}

@@ -733,7 +733,7 @@ fn settings_empty() -> made: Settings pure {
   let appendfilename = empty_text();
   let dir = empty_text();
   let logfile = empty_text();
-  return Settings(port: 0_u64, bind: move bind, appendfilename: move appendfilename, dir: move dir, loglevel: 2_u64, logfile: move logfile);
+  return Settings(port: 0_u64, bind: move bind, appendfilename: move appendfilename, dir: move dir, logfile: move logfile);
 }
 
 fn settings_copy(settings: &Settings) -> made: Settings reads(settings) {
@@ -742,7 +742,7 @@ fn settings_copy(settings: &Settings) -> made: Settings reads(settings) {
   let appendfilename = bytes_copy(bytes: &settings^.appendfilename);
   let dir = bytes_copy(bytes: &settings^.dir);
   let logfile = bytes_copy(bytes: &settings^.logfile);
-  return Settings(port: settings^.port, bind: move bind, appendfilename: move appendfilename, dir: move dir, loglevel: settings^.loglevel, logfile: move logfile);
+  return Settings(port: settings^.port, bind: move bind, appendfilename: move appendfilename, dir: move dir, logfile: move logfile);
 }
 
 fn clear_items(client: &Client) -> result: unit writes(client) {

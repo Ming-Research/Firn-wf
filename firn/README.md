@@ -542,8 +542,9 @@ Supported directives, in files or after `--`, are:
   `include` path with `*`, `?` or `[` is refused;
 - `loglevel`, `debug`, `verbose`, `notice` (the default), `warning` or
   `nothing`, and `logfile`, the file the log lines are appended to, empty by
-  default for standard output; `CONFIG GET` reports both and `dir`, and
-  `CONFIG SET` of them is refused;
+  default for standard output; `CONFIG GET` reports both and `dir`, `CONFIG SET
+  loglevel` changes the level while firn runs, `CONFIG SET logfile` answers
+  Redis's immutable-config error and `CONFIG SET dir` is refused;
 - `firn-clients`, a **firn-only test directive**: how many connections to
   admit over the server's lifetime before stopping, 0 by default for no
   limit. Connections refused by `maxclients` do not count. This shutdown

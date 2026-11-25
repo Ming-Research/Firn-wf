@@ -24,15 +24,30 @@ struct Civil {
 fn serverlog_new(clock: WallClock, pid: u64, level: u64) -> made: ServerLog pure {
   let lines = box_ring_new::<Box<Slots<u8>>>(capacity: 8_u64);
   let open_queue = False();
-  let state = LogQueue(lines: move lines, closed: open_queue);
+  let state = LogQueue(lines: move lines, closed: open_queue, level: level);
   let queue = shared_new::<LogQueue>(value: move state);
-  return ServerLog(queue: move queue, clock: move clock, pid: pid, level: level);
+  return ServerLog(queue: move queue, clock: move clock, pid: pid);
 }
 
 fn serverlog_share(log: &ServerLog) -> made: ServerLog reads(log) {
   let queue = shared_share::<LogQueue>(shared: &log^.queue);
   let clock = std::time::wall_clock_share(clock: &log^.clock);
-  return ServerLog(queue: move queue, clock: move clock, pid: log^.pid, level: log^.level);
+  return ServerLog(queue: move queue, clock: move clock, pid: log^.pid);
+}
+
+fn serverlog_level(log: &ServerLog) -> level: u64 reads(log) waits {
+  let level = 0_u64;
+  atomic state = &log^.queue {
+    set level = state^.level;
+  }
+  return level;
+}
+
+fn serverlog_set_level(log: &ServerLog, level: u64) -> result: unit reads(log) waits {
+  atomic state = &log^.queue {
+    set state^.level = level;
+  }
+  return unit;
 }
 
 fn log_message_new() -> made: Box<Slots<u8>> pure {
@@ -248,7 +263,8 @@ fn serverlog_stamped(clock: &WallClock, pid: u64, role: u8, level: u64, message:
 }
 
 fn serverlog_write(log: &ServerLog, role: u8, level: u64, message: &Box<Slots<u8>>) -> result: unit reads(log), reads(message) waits {
-  if level < log^.level {
+  let lowest = serverlog_level(log: log);
+  if level < lowest {
     return unit;
   }
   let line = serverlog_stamped(clock: &log^.clock, pid: log^.pid, role: role, level: level, message: message);
