@@ -272,19 +272,25 @@ fn serverlog_write(log: &ServerLog, role: u8, level: u64, message: &Box<Slots<u8
   return unit;
 }
 
+fn log_queue_push<T: drop>(queue: &Box<Ring<T>>, value: T) -> result: unit writes(queue) {
+  doc "Appends to the line queue, doubling its capacity when full.";
+  if queue^.inner.len >= queue^.inner.cap {
+    let current = queue^.inner.cap;
+    let doubled = current +sat current;
+    let capacity = imax(doubled, 8_u64);
+    set queue^ = std::collections::deque::deque_rebase::<T, log_extent>(values: move queue^, capacity: capacity);
+  }
+  if queue^.inner.len < queue^.inner.cap {
+    place_back(window: &queue^.inner, value: move value);
+  } else {
+    let dropped = move value;
+  }
+  return unit;
+}
+
 fn serverlog_enqueue(log: &ServerLog, line: Box<Slots<u8>>) -> result: unit reads(log) waits {
   atomic state = &log^.queue {
-    if state^.lines.inner.len >= state^.lines.inner.cap {
-      let current = state^.lines.inner.cap;
-      let doubled = current +sat current;
-      let capacity = imax(doubled, 8_u64);
-      set state^.lines = std::collections::deque::deque_rebase::<Box<Slots<u8>>, log_extent>(values: move state^.lines, capacity: capacity);
-    }
-    if state^.lines.inner.len < state^.lines.inner.cap {
-      place_back(window: &state^.lines.inner, value: move line);
-    } else {
-      let dropped = move line;
-    }
+    log_queue_push::<Box<Slots<u8>>>(queue: &state^.lines, value: move line);
   }
   return unit;
 }
