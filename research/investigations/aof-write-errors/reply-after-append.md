@@ -1095,6 +1095,13 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   holds; replies wait for that turn, including the switch's exceptional
   reread, which the post-cut backlog case uses to check that GET, SETNX and
   STRLEN replies wait for another connection's record.
+- **Frame checks.** A subscriber's frame can be shown to wait only while
+  something holds the file: a publisher that pipelines its SET before its
+  PUBLISH appends the SET in its own send microseconds later, sooner than the
+  message reaches the test, so a missing frame wait would rarely show there.
+  The post-cut backlog case therefore also publishes after A's unread SET, to
+  a connection that subscribed before the cut, and requires both the PUBLISH
+  reply and the message to find A's record in the file.
 
 ### Whitefoot gap: a sync apart from the append handle
 
