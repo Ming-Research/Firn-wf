@@ -8,10 +8,16 @@ per request ([confirmation run](whitefoot-v0165-pin.md#confirmation-run)).
 This record finds which of the compiler with its standard library, the Halo
 sources or firn's own source edits causes each, and holds the evidence.
 
-The old source does not build with the new compiler, nor the new source with
-the old one, so the two builds cannot be varied one part at a time; the cause
-is attributed from what each build's source says and from profiles of the two
-builds.
+The old source does not build with the new compiler, but the new source
+builds with the old one once the two `Inputs` fields the old release lacks are
+left out of `main`'s destructuring: revision `1dddd17` (firn and Halo as on
+this branch, pin `wf-af7665be672d`) built with `whitefootc wf-af7665be672d`
+on the 14900K on 2026-11-25 (fast workflow run
+[45610502247](https://github.com/Ming-Research/Firn-wf/actions/runs/45610502247),
+the `firn` target). Its image, the **cross** image below, differs from the
+head image only by the compiler with its standard library and runtime, and
+from the base image only by the source edits of #138 (firn's and Halo's), so
+measuring it beside both splits the regression between the two.
 
 ## What the sources of the two builds say
 
@@ -101,6 +107,33 @@ def mean_probes(home_of):
     return sum((where[i] - homes[i]) % B + 1 for i in range(len(hashes))) / len(hashes)
 ```
 
+**The map's change alone made no operation slower in Whitefoot's own
+measurement.** Whitefoot#487's performance acceptance compared the map before
+and after it under one compiler, the candidate's, on the 14900K
+(`hash-map-bench.yml`, run 39716174131, recorded in Whitefoot's
+`research/investigations/hash-scan/DESIGN.md`, "Third comparison"): of the 21
+time cells 19 faster, one unchanged, one unresolved and none slower, lookup of
+a present key at 1,000,000 pairs 0.994 [0.983, 0.9995]. Its keys and values are `u64` and it has no cell
+that replaces a present key's value, which is what nearly every `HSET` here
+does, so it does not cover firn's `HashMap<Key, Bytes>` with byte keys; it
+does say that the library's new probe code, run by one compiler, is not
+slower than the old.
+
+**What else the compiler and runtime changed between the two releases** (80
+merges on Whitefoot's `main`, `git log --first-parent af7665be672d..63b7cbb03820`),
+read for what can reach these two paths, none of it measured apart:
+
+- every generated function carries `uwtable` (Whitefoot#461), so the base image
+  has no unwind tables and a DWARF-caller profile of it does not walk through
+  Whitefoot frames; callers can be compared only between the cross and head
+  images;
+- enum variant payloads are read and written through body place suffixes
+  (Whitefoot#467), which reaches `HashMapSlot`, `Bytes` and `Key`;
+- a statement holding map entries that misses a shared object queues a FIFO
+  claim (Whitefoot#388, `2c92dc5fa`), a change to the runtime's contended take;
+- heap blocks are taken at a recorded 16-byte alignment (Whitefoot#471);
+- a `set` evaluates its right-hand side before its target (Whitefoot#515).
+
 ## What the earlier runs already show
 
 Server CPU per request in the first run (run
@@ -151,8 +184,18 @@ for that symbol, which can be set beside the other image's.
 - Waiting to acquire grows whenever the statement grows, since the other
   driver waits longer. That growth follows whichever of H1 and H2 holds, and
   names no cause of its own.
+- **H4, where the code lies.** The head runs the same instructions per
+  request in the functions whose cycles grew, at fewer instructions per
+  cycle, as Whitefoot's item on code placement records of Halo on the 14900K
+  (two byte-identical hot functions at different page offsets, one workload
+  4.6% slower at the same instruction count). A flat profile of cycles alone
+  cannot tell this from H1 or H2.
 
-## Profile of the two builds, stated before measuring
+H1 to H4 all lie in the compiler with its library and runtime, or in firn's
+and Halo's source edits through what the compiler makes of them; the cross
+image decides between these two before any profile is read.
+
+## First profile run, stated before measuring
 
 **Question.** In which functions does the head spend the extra server cycles
 per `HSET` and per `LPUSH` request?
@@ -190,9 +233,91 @@ The passes give another 8 passes of throughput and CPU per request for the
 six cells, judged with the twin as in the
 [pin record](whitefoot-v0165-pin.md#performance-comparison-stated-before-measuring).
 
-## Results
+### Results: disturbed and stopped, no profile
 
 Dispatched on 2026-11-25 as run
 [45607701747](https://github.com/Ming-Research/Firn-wf/actions/runs/45607701747)
 (from `main`, with the inputs above and `revisions` naming `7cf12df` and
-`b08522a` in full); not yet read.
+`b08522a` in full). It measured from 11:51:42 to 12:07:58 UTC and failed in
+pass 7: the measurement's session received TERM (exit 143), whose sender the
+log does not name, before its profiles, which follow the eight passes; the
+rows below are read from the job's log.
+
+Since 2026-11-24 every agent's tests run on the same machine (`fast.yml` and
+the fast workflows of the other projects on the `14900k` runners), and three
+Firn fast jobs ran there during the measurement (11:53:29-11:55:34,
+12:05:16-12:08:35 and 12:07:52-12:10:35; runs 45608586520, 45610400266 and
+45610502247). The twin shows it: `base-twin` over `base` in `hset` rate is
+0.540, 3.598, 3.820, 0.977, 0.973 and 1.740 in passes 1 to 6, and pass 6 of
+`base`, from 12:05:26, ran at 11% (`sadd`) to 68% (`rpush`) of its pass-5
+rate. Passes 4 and 5 are the
+only ones whose twin ratios lie within 3% of 1 in all six tests; two passes
+judge nothing, and they are shown only as a lead:
+
+| test | head/base rate, passes 4 and 5 | twin/base rate | head/base CPU per request | twin/base CPU per request |
+| --- | --- | --- | --- | --- |
+| hset | 0.952, 0.934 | 0.977, 0.973 | 1.053, 1.072 | 1.024, 1.027 |
+| hget | 0.949, 0.944 | 0.983, 0.991 | 1.052, 1.064 | 1.019, 1.012 |
+| lpush | 0.984, 0.987 | 1.004, 1.016 | 1.017, 1.013 | 0.998, 0.983 |
+| rpush | 1.007, 1.014 | 0.986, 1.004 | 1.004, 0.990 | 1.030, 1.000 |
+| sismember | 0.979, 1.012 | 0.986, 1.019 | 1.022, 0.988 | 1.016, 0.982 |
+| sadd | 0.991, 1.018 | 0.988, 1.016 | 1.006, 0.981 | 1.009, 0.983 |
+
+`hget` leans as `hset` does, as in the first run of the pin comparison
+(0.9711, 0.9456-1.0055, 8 passes), while `sismember`, a lookup in the same
+library map with `unit` values, does not; the next run measures `hget` as a
+cell of its own.
+
+## Four-image run, stated before measuring
+
+**Question.** Is each of `hset`, `lpush` and `hget` at depth 16 slower
+because of the compiler with its library and runtime, or because of the
+source edits of #138, and in which functions does the slower side spend its
+extra cycles and instructions per request?
+
+**Images.** `base` and `base-twin`, `7cf12df` (old source, old compiler);
+`cross`, `1dddd17` (new source, old compiler); `head`, `b08522a` (new
+source, new compiler). `cross` and `head` have the same firn and Halo
+sources, so their symbols correspond as far as the two compilers inline
+alike, and `cross` and `base` have the same compiler.
+
+**Run.** `redis-bench.yml`, mode `compare`, on the 14900K with the placement
+of the pin comparison (2 server CPUs on P-cores 2 and 4, clients on CPUs
+16-31); tests `hset lpush rpush hget sismember` at depth 16, 16 interleaved
+passes of 5 seconds; then one profiled run of `hset`, `lpush` and `hget` for
+each image, recording cycles and retired instructions. How passes run beside
+other jobs on the machine is settled before dispatch and added here.
+
+**Split rule, for each of `hset`, `lpush` and `hget`.** The intervals are
+those of the pin comparison (median of the per-pass ratios, distribution-free
+95% interval), and a cell counts only if its `base-twin`/`base` interval holds
+1. With `head`/`base` wholly below 1, the compiler's share is `head`/`cross`
+and the source edits' share is `cross`/`base`:
+
+- **the compiler** if `head`/`cross` is wholly below 1 and `cross`/`base` is
+  not;
+- **the source edits** if `cross`/`base` is wholly below 1 and `head`/`cross`
+  is not;
+- **both** if both are wholly below 1;
+- **unresolved** if neither is, and then 16 more passes of the same images
+  are pooled with these once; still neither, and the record says so with both
+  intervals.
+
+If `head`/`base` is not wholly below 1 for a cell, the regression did not
+repeat in this run, and that cell is reported, not split. `rpush` and
+`sismember` are the controls of `lpush` and `hget`: the same command code and
+the same library map, which the pin comparison did not find slower.
+
+**Profile rule.** For each image and test, cycles and instructions per
+request of each symbol and of the groups of the first profile run. A group
+accounts for the compiler's share if its `head`-minus-`cross` cycles per
+request exceed twice its `base-twin`-minus-`base` in absolute value and are at
+least half of the whole profile's `head`-minus-`cross`; for the source edits'
+share the same with `cross`-minus-`base`. In a group that accounts for a
+share, more instructions per request in the same proportion as the cycles is
+H1 or H2 (more work); the same instructions at more cycles is H3's waiting or
+H4. If no group accounts for it, the next step is the annotated instructions
+of the symbols that moved most, in a second profiled run of `cross` and
+`head` (`annotate`; DWARF callers only between those two, since `base` has no
+unwind tables). The profile attributes and picks the next step; it accepts or
+rejects nothing.
