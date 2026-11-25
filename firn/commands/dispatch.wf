@@ -1294,7 +1294,15 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_client {
     let fits = count >= 2_u64;
     if fits {
-      run_client(input: input, args: args, client: client);
+      let sub = arg(args: args, index: 1_u64);
+      let listing = name_is(input: input, start: sub.start, length: sub.length, word: &word_list[0_u64..4_u64]);
+      if listing {
+        atomic table = &store^.clients, hub = &store^.pubsub {
+          run_client(table: table, hub: hub, input: input, args: args, client: client, multi: -1_i64);
+        }
+      } else {
+        run_client_other(input: input, args: args, client: client, multi: -1_i64);
+      }
     } else {
       reply_arity(client: client, input: input, name: name);
     }
@@ -1360,7 +1368,7 @@ fn promoted_local_control(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> r
 }
 
 fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
-  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects are appended as run_exec appends a transaction's, wrapped in MULTI and EXEC when they are more than one record, including a command's lazy-expiry DELs, as Redis 7.2.16 propagates the complete execution unit of an ordinary command. Scripts, EVAL_RO and EVALSHA_RO included, begin with their existing whole-map/hub attempt. INFO snapshots its shared counters, formats and commits its complete reply under one keyspace/metadata/hub/script-registry/server-state hold. Other names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution.";
+  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects are appended as run_exec appends a transaction's, wrapped in MULTI and EXEC when they are more than one record, including a command's lazy-expiry DELs, as Redis 7.2.16 propagates the complete execution unit of an ordinary command. Scripts, EVAL_RO and EVALSHA_RO included, begin with their existing whole-map/hub attempt. INFO snapshots its shared counters, formats and commits its complete reply under one keyspace/metadata/hub/script-registry/server-state hold. Other names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution. As in EXEC, TOUCH clears the connection's NO-TOUCH mode only around its body and restores the mode afterward, because Redis 7.2.16 db.c lookupKey exempts the connection's own TOUCH.";
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
   let eval_ro = name_is(input: input, start: name.start, length: name.length, word: &word_eval_ro[0_u64..7_u64]);
@@ -1424,7 +1432,12 @@ fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
     }
     let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
     let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
+    let held_no_touch = client^.no_touch;
+    if kind == 160_u64 {
+      set client^.no_touch = False();
+    }
     let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    set client^.no_touch = held_no_touch;
     if appended > 1_u64 {
       pkg::store::log_count(log: &meta^.log, count: 1_u64, room: 16_u64, budget: &budget);
       pkg::store::log_word(log: &meta^.log, word: &word_multi_log[0_u64..5_u64], budget: &budget);

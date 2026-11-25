@@ -88,7 +88,10 @@ fn access_increment(counter: u32, client: &Client) -> increased: u32 writes(clie
 }
 
 fn update_access(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(slot.Some.value.access), writes(client) {
-  doc "Redis 7.0.15 db.c lookupKey and updateLFU: refresh each live lookup, before type checks, under every policy; NOTOUCH callers omit this call. Firn has no fork child suppressing updates.";
+  doc "Redis 7.0.15 db.c lookupKey and updateLFU: refresh each live lookup, before type checks, under every policy; NOTOUCH callers omit this call, and so does a connection in CLIENT NO-TOUCH mode (db.c lookupKey: current_client->flags & CLIENT_NO_TOUCH, unless the running command is TOUCH, which run_exists arranges). Firn has no fork child suppressing updates.";
+  if client^.no_touch {
+    return unit;
+  }
   match slot^ {
     Some(value: accessed) => {
       let lapsed = expired(expires: accessed^.expires, now: client^.now);

@@ -270,12 +270,30 @@ public struct ServerState {
   public memory: MemoryConfig;
 }
 
+public struct ClientRecord {
+  doc "What the table of clients keeps of one live connection for CLIENT LIST to show to the other connections: its number, the calendar microsecond the server began serving it, the version of the protocol its replies use, and its peer's address, its own address, its name, its library name and its library version, each as the bytes CLIENT LIST prints, the addresses empty where the host refused to report one.";
+  public id: u64;
+  public since_us: u64;
+  public resp: u64;
+  public addr: Box<Slots<u8>>;
+  public laddr: Box<Slots<u8>>;
+  public name: Box<Slots<u8>>;
+  public lib_name: Box<Slots<u8>>;
+  public lib_ver: Box<Slots<u8>>;
+}
+
+public struct ClientTable {
+  doc "The live connections' records in the order of their numbers, which is the order Redis lists clients in: a connection adds its record when the server begins serving it, replaces it when a fact it shows changes, and removes it when the connection ends. A command that changes none of these facts publishes no new record.";
+  public records: Box<Slots<ClientRecord>>;
+}
+
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool and the pub/sub event hub, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, to the table of live clients and to the pub/sub event hub, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
+  public clients: Shared<ClientTable>;
   public pubsub: Shared<pkg::connection_events::Hub>;
   public logging: Bool;
 }
@@ -392,6 +410,14 @@ public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>
   ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } doc "Appends a command as the client sent it, every argument a RESP bulk string.";
+
+public fn client_table_position(table: &ClientTable, id: u64) -> position: u64 reads(table) doc "The lower bound of id in the client table, whose records stay in client-number order: the index of its first record numbered id or more, or the table's length when there is none, found by binary search.";
+
+public fn client_sync(store: &Keyspace, client: &pkg::protocol::Client) -> result: unit reads(store), reads(client) waits doc "Publishes the facts of a connection that CLIENT LIST shows to the other connections, its number, start time, protocol, addresses, name and library name and version, into the table of clients, replacing the record the connection published before.";
+
+public fn client_sync_held(table: &ClientTable, client: &pkg::protocol::Client) -> result: unit reads(client), writes(table) doc "Publishes the connection's current facts into the caller-held table without waiting, replacing its earlier record and preserving client-number order, so EXEC can publish metadata changes atomically with its key changes.";
+
+public fn client_forget(store: &Keyspace, id: u64) -> result: unit reads(store) waits doc "Removes a connection's record from the table of clients when the connection ends; a number with no record changes nothing.";
 
 public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Copies memory settings and the stream node limits once per connection read, beside its clock snapshot and before any command holds keys. Every command of that read, including queued commands run by EXEC and script calls across attempts, uses this snapshot; this connection refreshes it after executing CONFIG SET. A racing CONFIG SET may cause an old-policy stamp; this is accepted because Redis itself leaves stale stamps after policy switches. CONFIG and INFO still access ServerState directly.";
 
