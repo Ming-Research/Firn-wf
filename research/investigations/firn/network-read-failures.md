@@ -397,6 +397,7 @@ window (4) is pending.
 | --- | --- | --- |
 | firn as the sender, kernel 6.17.0-1022-azure in the machine | some second frames wait a second or more, with the retransmission timer pending on firn's socket; how many is not predicted (CI's history says one in a hundred, the plain sockets nearly all) | no read waits a second in 1000 pairs or more: then today's firn does not meet the kernel's fault, and it does not explain October's stalls |
 | firn as the sender, the runner's kernel 7.0 in the machine | no read waits a second | reads wait: then firn or the machine has a part in it |
+| plain sockets again on 6.17.0-1022-azure, with the run's summary kept | most second frames wait and no first frame; the kernel counts segments refused for lack of buffer (`TCPRcvQDrop` above zero), which it did not on 7.0 (+0 in runs 45642367552 and 45642366860) | `TCPRcvQDrop` stays zero: then the refusal the source shows is not where the wait starts |
 
 ## The gate's failure rate
 
