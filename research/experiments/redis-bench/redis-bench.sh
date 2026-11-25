@@ -1838,11 +1838,13 @@ profile_image() {
 # the run; every sample is kept as compare.csv's line,pass,cpus,test,depth,
 # requests,rps,server_cpu_us_per_request,p50_ms,p99_ms, and each test's
 # request count is sized from the
-# fastest image's pilot so that every image runs the same count. Where
-# /proc/stat exists, each measured sample also gives compare-cpu.csv one
-# line,pass,cpus,test,depth,cpu,role,busy,user,system row per server and
-# client CPU: the fraction of that CPU's time not idle over the client's run,
-# and its user and kernel shares. compare-limited.csv has one
+# fastest image's pilot so that every image runs the same count. The run needs
+# /proc/stat, which the void rule reads, and each measured sample also gives
+# compare-cpu.csv one line,pass,cpus,test,depth,cpu,role,busy,user,system row per
+# server, client and other CPU: the fraction of that CPU's time not idle over the
+# client's run, and its user and kernel shares. The files of the void rule
+# (compare-runs.csv, compare-control.csv, compare-void.csv, profile-void.csv)
+# are described in the header's void rule. compare-limited.csv has one
 # line,pass,cpus,test,depth,client_busy_mean,client_limited row per sample: the
 # mean busy fraction over the client CPUs, and 1 when it is above 0.90, which
 # marks the cell client-limited. Each image's server log, which holds the
