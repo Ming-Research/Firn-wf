@@ -120,13 +120,13 @@ fn fixture_keys(program: &CompiledProgram, count: usize) {
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
 }
 
-fn long_increment_history(program: &CompiledProgram) -> std::path::PathBuf {
+fn long_increment_history(program: &CompiledProgram, records: usize) -> std::path::PathBuf {
     fixture(program);
     let increment = program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof");
     let mut history = std::fs::OpenOptions::new().append(true).open(&increment).unwrap();
     let obsolete = vec![b'o'; 32 * 1024];
     let record = wire(&[b"SET", b"hot", &obsolete]);
-    for _ in 0..4096 { history.write_all(&record).unwrap(); }
+    for _ in 0..records { history.write_all(&record).unwrap(); }
     history.write_all(&wire(&[b"SET", b"hot", b"seed"])).unwrap();
     // Fixture history is already durable before the server starts, so its
     // first switch sync measures ongoing appends rather than dirty setup.
@@ -987,7 +987,7 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
     // the disk's speed. The reread it guards against still fails it in memory
     // (test-stability.md in research/investigations/aof-rewrite).
     let program = CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm"));
-    long_increment_history(&program);
+    long_increment_history(&program, 4096);
     // Keep the 128-MiB history from triggering an automatic rewrite. Default
     // unlimited maxmemory retains R = 16 MiB, allowing ordinary switch I/O
     // while the old history reread still produces enough backlog to exceed R.
@@ -1064,8 +1064,10 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
 #[test]
 fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     let program = CompiledProgram::from_environment();
-    let increment = long_increment_history(&program);
-    // The 128 MiB history exceeds the default minimum, and Redis starts an
+    // 256 MiB of history makes the switch's reread outlast the held-slot
+    // check's pauses below, so the writers still meet it.
+    let increment = long_increment_history(&program, 8192);
+    // The 256 MiB history exceeds the default minimum, and Redis starts an
     // automatic rewrite from it as from any grown AOF; raise the minimum so
     // this case's BGREWRITEAOF is the only rewrite.
     let lease = support::lease_port();
@@ -1120,7 +1122,10 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     // B4 publishes after A's SET, and the message to the connection that
     // subscribed before the cut reads the commit sequence before it is sent.
     // Each reader takes the old increment's length the moment its reply or
-    // message arrives, and A's record must lie inside that length.
+    // message arrives, and A's record must lie inside that length. The
+    // writers below end the hold within milliseconds of being sent, so they
+    // wait 30 ms first: a reply sent before A's record is in the file then
+    // arrives, and is measured, while the file still lacks it.
     let marker = wire(&[b"SET", b"held:marker", b"v"]);
     let before_marker = std::fs::metadata(&increment).unwrap().len();
     let mut holder = connect_when_ready(port, &child);
@@ -1150,6 +1155,7 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
             (name, expected, reply, length)
         })
     }).collect();
+    std::thread::sleep(Duration::from_millis(30));
     // A client that waits for each reply adds one record to the backlog per
     // hold. Sixteen 256 KiB writes from connections of their own outgrow the
     // 3.2 MiB reserve (maxmemory/20), each growth of the collecting buffer
@@ -1190,11 +1196,11 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     let offset = tail.windows(marker.len()).position(|window| window == marker.as_slice())
         .expect("A's SET must reach the old increment once the attempt ends");
     let marker_end = before_marker + (offset + marker.len()) as u64;
+    let mut early = Vec::new();
     for observer in observers {
         let (name, expected, reply, length) = observer.join().unwrap();
         assert_eq!(reply, expected, "{name} while the switch held the file");
-        assert!(length >= marker_end,
-            "{name}'s reply arrived while the old increment held {length} bytes, before A's record ended at {marker_end}");
+        if length < marker_end { early.push(format!("{name}'s reply at {length} bytes")); }
     }
     let (message, length) = delivered.join().unwrap();
     assert_eq!(message, Reply::Array(vec![
@@ -1202,8 +1208,9 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         Reply::Bulk(Some(b"held:channel".to_vec())),
         Reply::Bulk(Some(b"m".to_vec())),
     ]), "the message published while the switch held the file");
-    assert!(length >= marker_end,
-        "the subscriber's message arrived while the old increment held {length} bytes, before A's record ended at {marker_end}");
+    if length < marker_end { early.push(format!("the subscriber's message at {length} bytes")); }
+    assert!(early.is_empty(),
+        "arrived while the old increment lacked A's record, which ended at {marker_end}: {}", early.join("; "));
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);
     let (child, mut restored, _) = start(&program);

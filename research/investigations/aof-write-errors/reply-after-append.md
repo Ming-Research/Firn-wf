@@ -1107,6 +1107,31 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   a connection that subscribed before the cut, and requires both the PUBLISH
   reply and the message to find A's record in the file.
 
+### Red runs
+
+On 2026-11-25, fast.yml ran `test` on three commits, each the branch at
+509c477 with one change:
+
+- (i) a8d7dea notes a dependency only for a statement that took a sequence.
+  Run 45694953610 failed the post-cut case at STRLEN, whose reply arrived
+  while the old increment held 134,707,422 bytes, before A's record ended at
+  134,707,460. GET and SETNX, checked before it, passed.
+- (ii) 90b395d sends unnoted replies without reading the commit sequence.
+  Run 45694953677 did not compile: without the read, `aof_reply_wait` only
+  reads `client.aof_dependency`, and EFF-2 requires the row to say so.
+- (iii) beb3923 sends subscriber frames without the frame wait. Run
+  45694953578 passed the post-cut case.
+
+On (i), SETNX took no sequence, so its reply went out at once, as STRLEN's
+did; on (iii) the message went out as PUBLISH committed. Both passed
+nonetheless. Inferred, not measured: the sixteen writers, sent right after
+the observers, end the hold within milliseconds, and a reader woken later
+than that measures the file after A's record is in it. The check can pass a
+reply sent too early, never fail one sent in time. The case therefore waits
+30 ms between the observers and the writers, starts from 256 MiB of history
+instead of 128 MiB so that the reread outlasts both pauses, and reports every
+early arrival in one failure.
+
 ### Void runs
 
 Two runs of `test` on the witness commit 82de0eb (main's server with the new
