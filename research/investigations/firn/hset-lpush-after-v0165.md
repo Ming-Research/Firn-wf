@@ -499,3 +499,183 @@ of the symbols that moved most, in a second profiled run of `cross` and
 `head` (`annotate`; DWARF callers only between those two, since `base` has no
 unwind tables). The profile attributes and picks the next step; it accepts or
 rejects nothing.
+
+### Four-image run, results
+
+Run [45631892786](https://github.com/Ming-Research/Firn-wf/actions/runs/45631892786)
+succeeded: the job ran 14:15:05 to 15:05:51 UTC (50 min 46 s, below its 180),
+the steps before the build 24 s, the three builds 4 min 39 s, and the Measure
+step 14:20:08 to 15:05:46 (45 min 38 s, below its 150). `revisions.csv` has
+`base` `7cf12df` and `cross` `1dddd17` with `release = wf-af7665be672d`, and
+`head` `b08522a` with `release = wf-63b7cbb03820`.
+
+**Passes.** 18 attempts, 16 clean. The control waited the whole 604 s for the
+other CPUs to fall to T, which they did not (another job's; 0.12 at the end),
+so it ran beside that job: idle 0.1157, loaded 0.2686, a rise of 0.153 against
+the 2/13 = 0.154 two loops make, which satisfies its rule (`compare-control.csv`);
+this run's control therefore does not give the idle level, which T takes from the
+sample run. Attempt 1 began after that wait gave up and 19 of its 20 runs read
+above T (highest 0.9837): void. After a further 266 s of waiting, attempt 2 had
+one run at 0.0570 (`head`, `rpush`) and 19 at or below T: void. Attempts 3 to
+18 are the 16 clean passes: no run read above 0.0161, and 15 of the 16 attempts
+read at most 0.0014. The 12 profiled runs read at most 0.0008 and none is in
+`profile-void.csv`. The waits came to about 870 s of the 2700 s budget. The
+profiler ran on CPU 0 (`perf pid ... current affinity list: 0` for each of the
+12 recorders), the control's loops on CPUs 1 and 3, and no cell is client-limited
+(client CPUs 0.13 to 0.15 busy on average).
+
+**Throughput.** Intervals of the mean log ratio of the per-pass rates over the
+16 clean passes (Student's t), each from one `summary.py ratios` call without
+`--twin` (`compare.csv` with `compare-void.csv` beside it, which the tool
+reports as 2 void attempts left out):
+
+| test | head/base | cross/base | head/cross | base-twin/base |
+| --- | --- | --- | --- | --- |
+| hset | 0.9545 [0.9464, 0.9771] | 1.0100 [0.9983, 1.0382] | 0.9478 [0.9363, 0.9529] | 1.0018 [0.9916, 1.0314] |
+| hget | 0.9439 [0.9339, 0.9617] | 0.9983 [0.9922, 1.0071] | 0.9435 [0.9340, 0.9624] | 0.9984 [0.9923, 1.0073] |
+| lpush | 0.9747 [0.9687, 0.9946] | 0.9793 [0.9730, 0.9997] | 0.9972 [0.9901, 1.0004] | 0.9989 [0.9903, 1.0177] |
+| rpush | 1.0015 [0.9967, 1.0118] | 0.9943 [0.9842, 1.0032] | 1.0088 [1.0056, 1.0156] | 0.9977 [0.9934, 1.0106] |
+| sismember | 0.9683 [0.9588, 0.9848] | 0.9719 [0.9606, 0.9811] | 0.9942 [0.9862, 1.0158] | 0.9946 [0.9848, 1.0024] |
+
+The value before each interval is the median of the per-pass ratios. Server CPU
+per request agrees (median of the per-pass ratios, and in how many of the 16
+passes the numerator is above): `hset` head/cross 1.0558 (16), head/base 1.0414
+(15), cross/base 0.9914 (3); `hget` head/cross 1.0618 (15), head/base 1.0580
+(15), cross/base 1.0000 (7); `lpush` cross/base 1.0192 (14), head/cross 1.0042
+(11), head/base 1.0247 (15); `sismember` cross/base 1.0275 (14), head/cross
+1.0108 (11); `rpush` head/base 0.9990 (5).
+
+**Verdicts under the split rule** (every `base-twin`/`base` interval holds 1):
+
+- **`hset`: the compiler**, with its library and runtime. `head`/`base` and
+  `head`/`cross` are wholly below 1, `cross`/`base` is not.
+- **`hget`: the compiler**, the same way.
+- **`lpush`: the source edits.** `head`/`base` and `cross`/`base` are wholly
+  below 1 and `head`/`cross` is not; the upper end of `cross`/`base` is 0.9997.
+  Whether Halo's or firn's edits is not yet decided.
+- Controls: `rpush` shows no change against `base`. **`sismember`, which the pin
+  comparison did not find slower, is 3.2% slower here, from the source edits**
+  (`cross`/`base` wholly below 1, `head`/`cross` not).
+
+So the old compiler with the new source is as fast as the old source for `hset`
+and `hget`, and slower by about 2% for `lpush` and 3% for `sismember`; the new
+compiler then costs `hset` and `hget` about 5% and `lpush` and `sismember`
+nothing more.
+
+**Profiles** (one profiled run of each test and image, `cpu_core/cycles/` and
+`cpu_core/instructions/` per request, symbol names matched with their `$instance$`
+suffix removed, group names as in the first profile run). Whole profile, per
+request:
+
+| test | | base | base-twin | cross | head |
+| --- | --- | ---: | ---: | ---: | ---: |
+| hset | cycles | 2645 | 2629 | 2581 | 2688 |
+| hset | instructions | 4950 | 4950 | 4948 | 4951 |
+| lpush | cycles | 2401 | 2377 | 2419 | 2434 |
+| lpush | instructions | 4784 | 4782 | 4782 | 4806 |
+| hget | cycles | 2710 | 2636 | 2698 | 2790 |
+| hget | instructions | 5182 | 5168 | 5174 | 5174 |
+
+In every profile the four images retire the same number of instructions per
+request (to 0.5%), so the compiler does not make any image do more work in
+total; `head` runs the same instructions at more cycles for `hset` (IPC 1.842
+against `cross`'s 1.917) and `hget`. One profiled run is noisy: the twin's
+whole-profile cycles differ from `base`'s by 16, 24 and 74 per request (0.6%,
+1.0%, 2.7%). Groups, cycles per request, `head` minus `cross` / `cross` minus
+`base` / `base-twin` minus `base`, and the same for instructions:
+
+| test | group | cycles | instructions |
+| --- | --- | --- | --- |
+| hset | keyspace lock | +84 / -47 / -17 | +30 / -6 / -5 |
+| hset | hash map | +21 / -4 / -6 | +14 / -4 / -7 |
+| hset | firn and runtime, other | +7 / -18 / 0 | -52 / +2 / +6 |
+| hset | kernel | -7 / +3 / +3 | +12 / +8 / +9 |
+| hset | whole | +107 / -64 / -16 | +3 / -2 / -1 |
+| hget | keyspace lock | +77 / +13 / -38 | +10 / -11 / -19 |
+| hget | hash map | +31 / 0 / -9 | +38 / -3 / -5 |
+| hget | firn and runtime, other | -18 / -23 / -20 | -22 / -1 / +27 |
+| hget | kernel | +5 / -3 / -10 | -14 / +7 / -9 |
+| hget | whole | +92 / -12 / -74 | +1 / -9 / -15 |
+| lpush | keyspace lock | +11 / -17 / -18 | +29 / -8 / -2 |
+| lpush | list push | 0 / +8 / +3 | -6 / -8 / -13 |
+| lpush | firn and runtime, other | -4 / +19 / -4 | +11 / -1 / -5 |
+| lpush | kernel | +7 / +2 / -8 | -21 / +23 / +9 |
+| lpush | whole | +14 / +19 / -24 | +24 / -2 / -1 |
+
+By the profile rule: for `hset` and `hget` the keyspace lock group accounts for
+the compiler's share (84 against twice 17 and half of 107; 77 against twice 38
+and half of 92), and the hash-map group does not by itself (21 and 31 are below
+half of the whole). `try_entry`, the runtime's take of a key's lock, is 17% to
+23% of every test's cycles and holds most of the lock group: both drivers write
+or read the one key, so a longer statement shows as more waiting there. The
+library map's functions are the largest firn-side change in `hget`:
+`hash_map_lookup` costs 188 instructions and 159 cycles per request in `head`
+against 150 and 127 in `cross` (+25% in both), and `hash_map_try_put` in `hset`
+340 instructions and 233 cycles against 326 and 212 (+4% and +10%); the other
+functions' instructions fall by about as much, so the total is unchanged. For
+`lpush` `head` and `cross` differ by 14 cycles in 2434; no group accounts for
+the compiler's share. For the source edits' share the mechanical rule names
+firn's other code (+19 against twice 4, and half of 19), spread over many
+symbols (`record_memory_peak` +10, `push_item` +9, `subscriber_refused` +6
+cycles) at -1 instructions, but the whole profile's
+`cross` minus `base` (+19) lies within the twin's (-24), so one profile does
+not resolve the 2%. The profiles say where, not why: they cannot tell the
+library map's extra instructions from the same instructions at more cycles, nor
+the lock's waiting from its work; the second profile run annotates the
+instructions.
+
+**The oracle against GitHub's records.** The scratch script of the sample run
+(124 calls) read the 14900K jobs of the five repositories around the session.
+Of the 372 client runs, 352 overlap no step of another job, 19 overlap a heavy
+step (all in attempt 1, readings 0.0391 to 0.9837, the `Test` and result steps of
+two Firn-wf fast jobs) and 1 overlaps only light steps (attempt 1, 0.7885, the
+`Complete job` and result steps of those jobs, seconds after their `Test` step).
+The runs above T that overlap no heavy step are that one, in void attempt 1, and
+`head` `rpush` of attempt 2 (0.0570), which overlaps no step of any of the five
+repositories' 14900K jobs: its load is not from them and its source is not
+named. T′ is the highest reading among the runs of clean attempts and profiles,
+which overlap no heavy step (332 runs): 0.0161, so T′ = 0.0361. One run that
+overlaps a heavy step reads in (T′, T]: `base` of attempt 1 (0.0391), so the
+rule applies and the threshold for this run's decision is T′ = 0.0361. Deciding
+again from the recorded readings alone: attempts 1 and 2 stay void (attempt 2's
+run at 0.0570 is above T′ too), attempts 3 to 18 (highest 0.0161) and the 12
+profiled runs (highest 0.0008) stay clean, so the 16 passes and every interval
+above are unchanged. Every run that overlaps a heavy step and reads above T′ is
+in a void attempt. The script's default T stays 0.05.
+
+## Second profile run, stated before measuring
+
+**Question.** (a) In `hash_map_lookup` and `hash_map_try_put`, which
+instructions does `head` have that `cross` does not, and where do the extra
+cycles sit? (b) For `lpush` and `sismember`, whose `cross`/`base` is below 1:
+are the hot functions of their path the same instructions in `base` and in
+`cross`, differing only in where they lie, or does an edit change one?
+
+**Run.** `redis-bench.yml`, mode `compare`, the placement and void rules above,
+from the engine's ref `wf-try/work-145-26e0fade/call/37` (`51c7be4`, whose
+script differs from the four-image run's `bc0c257` only by log lines and a
+header comment); the images `base`, `base-twin`, `cross` and `head` as before;
+tests `hset lpush hget sismember`, depth 16, 2 passes of 5 seconds (they size
+the profiled runs and decide nothing); `profile_test`
+`hset 16;lpush 16;hget 16;sismember 16`; `annotate`
+`try_entry acquire_entry wf_bytes.make_key
+wf_std.collections.hash_map.hash_map_try_put$instance$3d97ccfd215c1dd8
+wf_std.collections.hash_map.hash_map_lookup$instance$5397e3116a8cc2ab
+wf_commands.execute_client$instance$6afd30fe3ce447e9.resume
+wf_commands.push_body wf_commands.hset_body wf_commands.run_hget.resume
+wf_commands.record_memory_peak.resume wf_protocol.push_item`, the hottest
+symbols of the four profiles above, whose names (instance hashes included) are
+the same in all four images; no callers.
+
+**Read.** Each `annotate-*.txt` lists a symbol's instructions with the share of
+the symbol's samples at each, with its address. For (a), the `cross` and `head`
+listings of each of the two library functions, aligned instruction by
+instruction after the addresses and call targets are removed: the added and
+removed instructions, and the instructions that carry the cycles in each. For
+(b), the `base` and `cross` listings of each symbol of the `lpush` path:
+identical when the instruction sequences are equal after the same removal, and
+then with each image's start address modulo 64 and 4096 recorded; a symbol that
+differs is shown with its difference. A path whose symbols are all identical,
+with `cross`/`base` below 1, says the source edits changed no code of the path
+and the effect lies in where it sits (H4); a symbol that differs names the edit.
+The run attributes; it accepts or rejects nothing.
