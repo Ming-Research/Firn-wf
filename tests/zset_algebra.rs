@@ -690,12 +690,16 @@ fn zset_commands_follow_redis_flags_under_a_memory_limit_and_read_only_scripts()
         "return redis.pcall('ZINTER', 2, KEYS[2], KEYS[3])",
         "return redis.pcall('ZDIFF', 2, KEYS[2], KEYS[3])",
         "return redis.pcall('ZINTERCARD', 2, KEYS[2], KEYS[3])",
-        "return redis.pcall('ZRANDMEMBER', KEYS[2])",
         "return redis.pcall('ZRANDMEMBER', 'one')",
     ] {
         for command in ["EVAL_RO", "EVAL"] {
             commands.push(vec![command.into(), script.into(), "3".into(), "out".into(), "a".into(), "b".into()]);
         }
+    }
+    // A draw from a key the script declares; `one` has a single member, so the
+    // answer is the same on both servers.
+    for command in ["EVAL_RO", "EVAL"] {
+        commands.push(vec![command.into(), "return redis.pcall('ZRANDMEMBER', KEYS[1], 3, 'WITHSCORES')".into(), "1".into(), "one".into()]);
     }
     commands.extend(dump());
     check(&mut server, &mut oracle, "flags", &commands);
