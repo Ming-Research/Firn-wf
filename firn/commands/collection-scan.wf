@@ -278,7 +278,7 @@ fn collection_scan_limit(count: u64, sampled: u64, requested: u64, budget: u64) 
       let wide = imin(wanted, 4294967295_u64);
       let spent = imin(requested, 4294967295_u64);
       let product = wide *wrap spent;
-      let rounded = product +wrap sampled;
+      let rounded = product +sat sampled;
       let stepped = rounded -wrap 1_u64;
       set estimate = stepped / sampled;
       let doubled = requested +sat requested;
