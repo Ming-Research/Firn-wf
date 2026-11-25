@@ -88,7 +88,7 @@ const text_zdiff_keys: Array<u8, 54> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8
 const text_zintercard_keys: Array<u8, 59> =[69_u8, 82_u8, 82_u8, 32_u8, 97_u8, 116_u8, 32_u8, 108_u8, 101_u8, 97_u8, 115_u8, 116_u8, 32_u8, 49_u8, 32_u8, 105_u8, 110_u8, 112_u8, 117_u8, 116_u8, 32_u8, 107_u8, 101_u8, 121_u8, 32_u8, 105_u8, 115_u8, 32_u8, 110_u8, 101_u8, 101_u8, 100_u8, 101_u8, 100_u8, 32_u8, 102_u8, 111_u8, 114_u8, 32_u8, 39_u8, 122_u8, 105_u8, 110_u8, 116_u8, 101_u8, 114_u8, 99_u8, 97_u8, 114_u8, 100_u8, 39_u8, 32_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8];
 
 struct ZPlan {
-  doc "What a ZUNIONSTORE, ZINTERSTORE, ZDIFFSTORE, ZUNION, ZINTER, ZDIFF or ZINTERCARD names: whether numkeys was accepted; the arguments from first up to end, its sets; whether weights were read, one for each set in the client's prepared scores; how scores are aggregated; whether WITHSCORES was given; ZINTERCARD's limit, 0 for none; and the refusal of an option, 0 for none, which Redis reports only after it has looked the sets up.";
+  doc "What a ZUNIONSTORE, ZINTERSTORE, ZDIFFSTORE, ZUNION, ZINTER, ZDIFF or ZINTERCARD names: whether numkeys was accepted; the arguments from first up to end, its sets; whether weights were read, one for each set in the client's prepared scores; how scores are aggregated; whether WITHSCORES was given; ZINTERCARD's limit, 0 for none; the refusal of an option, 0 for none, which Redis reports only after it has looked the sets up; and whether the result is stored, which is when its scores are kept as a sorted set keeps them, a negative zero as a zero, where a result that is only answered keeps them as computed, as Redis answers from the skiplist it computes in.";
   valid: Bool;
   first: u64;
   end: u64;
@@ -97,12 +97,14 @@ struct ZPlan {
   withscores: Bool;
   limit: u64;
   refusal: u64;
+  stored: Bool;
 }
 
 struct AggEdit {
-  doc "One member's aggregation into the result: the weighted score offered, how to aggregate it with the one held and whether the member was held.";
+  doc "One member's aggregation into the result: the weighted score offered, how to aggregate it with the one held, whether the result keeps scores as a stored sorted set does and whether the member was held.";
   offered: f64;
   aggregate: u64;
+  stored: Bool;
   found: Bool;
 }
 
@@ -249,25 +251,31 @@ fn zalg_edit(env: &AggEdit, key: &Key, value: &f64) -> result: u64 writes(env), 
   doc "Aggregates the offered score into the score a member holds in the result.";
   set env^.found = True();
   let merged = zalg_step(current: value^, offered: env^.offered, aggregate: env^.aggregate);
-  set value^ = kept_score(score: merged);
+  set value^ = merged;
+  if env^.stored {
+    set value^ = kept_score(score: merged);
+  }
   return 1_u64;
 }
 
-fn zalg_put(acc: &HashMap<Key, f64, ceiling>, member: &Key, score: f64, keys: &KeyEnv) -> result: unit reads(member), reads(keys), writes(acc) {
-  doc "Gives the result a copy of the member at its score, as a sorted set keeps it.";
+fn zalg_put(acc: &HashMap<Key, f64, ceiling>, member: &Key, score: f64, stored: Bool, keys: &KeyEnv) -> result: unit reads(member), reads(keys), writes(acc) {
+  doc "Gives the result a copy of the member at its score, kept as a sorted set keeps it when the result is stored.";
   let copied = copy_key(key: member);
-  let kept = kept_score(score: score);
+  let kept = score;
+  if stored {
+    set kept = kept_score(score: score);
+  }
   let put = hash_map_put::<KeyHash, f64, ceiling>(map: acc, key: move copied, value: kept, env: keys);
   return unit;
 }
 
-fn zalg_accumulate(acc: &HashMap<Key, f64, ceiling>, member: &Key, score: f64, aggregate: u64, keys: &KeyEnv) -> result: unit reads(member), reads(keys), writes(acc) {
+fn zalg_accumulate(acc: &HashMap<Key, f64, ceiling>, member: &Key, score: f64, aggregate: u64, stored: Bool, keys: &KeyEnv) -> result: unit reads(member), reads(keys), writes(acc) {
   doc "Aggregates the score into the member's in the result, or gives the result the member at the score when it has none.";
   let absent = False();
-  let edit = AggEdit(offered: score, aggregate: aggregate, found: absent);
+  let edit = AggEdit(offered: score, aggregate: aggregate, stored: stored, found: absent);
   let edited = hash_map_edit::<KeyHash, f64, AggEdit, u64, fn zalg_edit, ceiling>(map: acc, key: member, key_env: keys, edit_env: &edit);
   if bnot(edit.found) {
-    zalg_put(acc: acc, member: member, score: score, keys: keys);
+    zalg_put(acc: acc, member: member, score: score, stored: stored, keys: keys);
   }
   return unit;
 }
@@ -379,14 +387,14 @@ fn zalg_member(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client,
   let keys = client^.keys;
   if mode == zop_union {
     let score = zalg_weighted(weight: weight0, raw: raw);
-    zalg_accumulate(acc: acc, member: member, score: score, aggregate: plan^.aggregate, keys: &keys);
+    zalg_accumulate(acc: acc, member: member, score: score, aggregate: plan^.aggregate, stored: plan^.stored, keys: &keys);
     return True();
   }
   if mode == zop_inter {
     let folded = zalg_fold(slots: slots, ranks: ranks, client: client, plan: plan, order: order, member: member, raw: raw, rank0: rank0, weight0: weight0);
     if folded.present {
       if bnot(counting) {
-        zalg_put(acc: acc, member: member, score: folded.score, keys: &keys);
+        zalg_put(acc: acc, member: member, score: folded.score, stored: plan^.stored, keys: &keys);
       }
       return True();
     }
@@ -396,7 +404,7 @@ fn zalg_member(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client,
   if elsewhere {
     return False();
   }
-  zalg_put(acc: acc, member: member, score: raw, keys: &keys);
+  zalg_put(acc: acc, member: member, score: raw, stored: plan^.stored, keys: &keys);
   return True();
 }
 
@@ -660,7 +668,7 @@ fn zalg_settle(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
 fn zalg_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, operation: u64, storing: Bool, counting: Bool) -> plan: ZPlan reads(input), reads(args), writes(client) {
   doc "Reads the command's numkeys and options as Redis's zunionInterDiffGenericCommand does. numkeys that is no integer, is below 1 or leaves fewer arguments than sets is refused here, before any set is looked up, and every option after the sets is read here too, but the refusal of one is only noted, for Redis looks the sets up first: WEIGHTS takes one weight for each set when that many arguments remain, and AGGREGATE a method, SUM, MIN or MAX, neither for a difference or a count; WITHSCORES neither for a store command nor for a count; LIMIT, for a count only, takes an integer that is not negative; anything else after the sets is a syntax error. Options are read up to a zero byte and in either case; the first refusal ends the reading.";
   let no = False();
-  let plan = ZPlan(valid: no, first: 0_u64, end: 0_u64, weighted: no, aggregate: zagg_sum, withscores: no, limit: 0_u64, refusal: 0_u64);
+  let plan = ZPlan(valid: no, first: 0_u64, end: 0_u64, weighted: no, aggregate: zagg_sum, withscores: no, limit: 0_u64, refusal: 0_u64, stored: storing);
   let count = args^.inner.len;
   let numkeys_index = 1_u64;
   if storing {
