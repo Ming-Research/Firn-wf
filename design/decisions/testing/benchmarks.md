@@ -59,3 +59,7 @@ Compare rows from several client processes label their quantiles as upper bounds
 ### decision benchmark-exact-p99-comes-from-one-threaded-pass
 A competitor comparison runs one more single-process threaded pass for every line, and only its exact merged p99 decides the latency verdict.
 - rejected: an agent proposed judging p99 from the multi-process upper bounds; the owner rejected it, because a bound cannot decide whether firn's p99 is above a competitor's (data: `research/investigations/perf-baseline/README.md`).
+
+### decision benchmark-unsupported-tests-run-in-a-separate-dispatch
+A test that a competitor line cannot run is measured in a separate dispatch that does not select the line, and a formal run does not skip it automatically.
+- rejected: an agent proposed probing each line with the test's command and skipping the line with a recorded skip row; the owner rejected it, because it needs new code and self-checks, and a failing run keeps a competitor from disappearing silently.

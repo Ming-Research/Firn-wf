@@ -80,7 +80,10 @@ ping_inline, ping_mbulk, set, get, incr, lpush, rpush, lpop, rpop, sadd,
 hset, spop, zadd, zpopmin, lrange_100, lrange_300, lrange_500, lrange_600,
 mset, xadd) at pipeline depths 1 and 16, 50 connections, 100,000 random
 keys, 3-byte values, the redis-benchmark that `tests/redis-suite/reference.sh`
-builds from Redis 7.2.16. The lrange tests read the first 100, 300, 450 and
+builds from Redis 7.2.16. Garnet 2.2.1 has no streams
+([API compatibility](https://github.com/microsoft/garnet/blob/v2.2.1/website/docs/commands/api-compatibility.md)),
+so `xadd` is not measured on it: it runs in a dispatch that does not select
+Garnet, and a run that selects Garnet for it fails. The lrange tests read the first 100, 300, 450 and
 600 elements, as redis-benchmark's own tests do; a measurement of lrange_500
 that read 500 elements is not comparable with one that reads 450. No
 persistence on any line: Redis and Valkey `--save "" --appendonly no`,
@@ -215,11 +218,13 @@ and 16, 2 passes of 5 seconds, every installed line and the twin. From it:
 - Above that: no full run; the noise is investigated first (load on the
   host, frequency, placement), and this rule is revisited with what it
   found.
-- The full run is dispatched one server-CPU count at a time, so that each
-  dispatch holds the machine for a bounded slot (at 3 passes of 5 seconds,
-  20 tests × 2 depths × 8 lines × 15 s ≈ 80 minutes before overhead), and
-  the probe's own duration is used to check that estimate before the first
-  dispatch.
+- The full run is dispatched one server-CPU count at a time, and each
+  count in two dispatches, so that each holds the machine for a bounded
+  slot: all eight lines with the 19 tests Garnet can run (at 3 passes of 5
+  seconds, 19 tests × 2 depths × 8 lines × 15 s ≈ 76 minutes before
+  overhead), and the seven lines without Garnet with `xadd` (1 test × 2
+  depths × 7 lines × 15 s ≈ 3.5 minutes). The probe's own duration is used
+  to check these estimates before the first dispatch.
 
 ### Rule 6: verdicts and what rejects "firn leads"
 
@@ -231,6 +236,9 @@ spread:
   every pass; **leads widely** when, in addition, r ≥ 1.7;
 - **level** when 1 − s ≤ r ≤ 1 + s, or the passes disagree;
 - **behind** when r < 1 − s.
+- **The fastest competitor of an `xadd` cell** is chosen among the lines
+  without Garnet, which cannot run the test; every other cell chooses among
+  all competitor lines.
 - **p99:** firn's median p99 above the same competitor's by more than the
   p99 twin spread (the same definition on p99) is a p99 loss, reported
   whatever the throughput verdict. Only exact merged p99s decide it (see
