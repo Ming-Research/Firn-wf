@@ -180,8 +180,9 @@ for 33 s behind a full socket, on a runner where every other case had already
 ended. Each case failed 81.0 s and 81.1 s after it started: its read of the
 second frame begins 70 s after the first publication, so the 10 s without a
 byte began as soon as the client had read what its own socket held. Both ran
-on GitHub's Azure machines with the runner image 20261012.334.1; the image's
-kernel is not in the logs. firn's output owner sends through `std::net::send_once`
+on GitHub's Azure machines with the runner image 20261012.334.1, whose kernel
+is 6.17.0-1022-azure (the image's release notes in actions/runner-images).
+firn's output owner sends through `std::net::send_once`
 (`firn/server/promoted.wf`), which on this route is an `IORING_OP_SEND` on
 Whitefoot's ring with one driver thread. The candidates:
 
@@ -208,6 +209,76 @@ the stall comes from how the runtime resumes a waiting send, the loop shows
 it within thousands of rounds, and shows whether the question before the read
 matters. If the loop never waits long and only the case with its 33 s wait
 does, the length of the wait is part of the cause.
+
+### Results on today's runners
+
+Measured on 2026-11-25 on GitHub's ubuntu-24.04 runners, which since the image
+of 2026-10-26 have kernel 7.0 (7.0.0-1017-azure, and 7.0.0-1014-aws and
+-1018-aws on the machines GitHub runs at AWS):
+
+| Experiment | Run | Kernel | Runs or rounds | A second or more without a byte | Longest wait for a byte |
+| --- | --- | --- | --- | --- | --- |
+| the case, a new run every 3 s | 45631080163 | 7.0.0-1018-aws | 361 | 0 | 1 ms |
+| the case, a new run every 3 s | 45631079889 | 7.0.0-1017-azure | 364 | 0 | 2 ms |
+| the case, a new run every 2 s | 45631079320 | 7.0.0-1014-aws | 540 | 0 | 3 ms |
+| the fast loop, waits of 50 ms to 3 s | 45631078564 | 7.0.0-1014-aws | 2716 | 0 | 4 ms |
+
+No run failed. In the gate's history the case ran about 205 times up to
+2026-10-25, on kernel 6.17, and stalled twice; it has run about 25 times
+since, on kernel 7.0, with no stall. At two stalls in 205 runs, 1265 runs
+without one have a probability below one in 100000: what stalled the case on
+the runners of October does not happen on today's.
+
+The first run's sample, 5 s after the second publication, shows what every
+run of the case does to the connection (`ss -tinm`, run 45631080163):
+
+- the subscriber's socket holds 2077104 unread bytes in a receive buffer of
+  2096118, and has dropped 13 packets (`d13`): the server sent more than the
+  buffer could take;
+- the server's socket holds 2768665 bytes it has not sent (`notsent`), its
+  peer's window is closed, and it has probed that window four times, each
+  wait twice the last (`backoff:4`, the last answer 1.6 s before);
+- the rest of the frame, 9.8 MiB, is in firn, whose send is in the ring
+  waiting for the socket to take more (`PollList: op=26`).
+
+The kernel probes a closed window 0.2 s after it closes and then after 0.4,
+0.8, 1.6 s and so on, so the probes fall 0.2, 0.6, 1.4, 3.0, 6.2, 12.6, 25.4
+and 51.0 s after the window closed. The case starts to read 33 s after its
+second publication. If the reader's kernel then tells the server's that the
+window is open, the frame flows at once, as in every run above. If it does
+not, the server's kernel learns of it from its next probe, 18 s after the read
+began, and the case's read gives up after 10 s, which is what both failures
+show. In that state the server's kernel still holds 2.8 MiB of its own to
+send: firn's send cannot continue until the kernel has sent those, whatever
+firn does.
+
+### Hypothesis: the kernel of the October runners
+
+The stall is in TCP between the two sockets on kernel 6.17: after the
+receiver dropped packets for lack of buffer and closed its window, reading
+the buffer empty did not make it announce the open window, and the sender
+waited for its next probe. firn and Whitefoot's runtime have no part in it.
+Linux has had this fault before: commit 8c670bdfa58e, "tcp: correct handling
+of extreme memory squeeze" (January 2025), repaired a receiver that
+advertised a closed window under memory squeeze without recording it, so that
+reading its buffer empty sent no update and the connection waited for the
+sender's probe.
+
+`tcp_window_reopen.rs` repeats the case's two frames on pairs of loopback
+sockets with no server of ours: a thread writes 14 MiB with a blocking write,
+and the reader waits 35 s, reads, and after the second frame has waited 33 s
+reads again, each with one-second bounds. `run.sh tcp-reopen-vm` runs it as
+the only program of a QEMU machine that boots a given Ubuntu kernel.
+
+| Comparison | Prediction | Rejects the hypothesis if |
+| --- | --- | --- |
+| kernel 6.17.0-1022-azure in the machine | some reads wait seconds for a byte, about one frame in a hundred, each until the sender's next probe (16 s for the first frame, 18 s for the second), with unsent bytes in the writer's socket | no read waits a second in 500 pairs or more |
+| the runner's own kernel 7.0 in the same machine | no read waits a second | reads wait as on 6.17: then the machine, not the kernel, makes them wait |
+| the runner's own kernel 7.0, no machine | no read waits a second | reads wait |
+
+If 6.17 shows no wait with plain sockets, the stall needs firn's way of
+sending (a send in the ring, re-armed by the kernel's poll), and the next
+comparison is the case itself in the machine under 6.17.
 
 ## The gate's failure rate
 

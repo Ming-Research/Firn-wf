@@ -12,6 +12,7 @@
 #   run.sh soft-limit MINUTES INTERVAL [RECEIVE_MAX]
 #   run.sh stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX]
 #   run.sh tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX]
+#   run.sh tcp-reopen-vm MINUTES KERNEL INTERVAL_MS WAITS [RECEIVE_MAX]
 #
 # MINUTES bounds a mode from its start, builds included: no pass or run
 # starts that would end after it. INTERVAL is the seconds between two starts
@@ -22,7 +23,11 @@
 # where given, is the most bytes the kernel may grow a TCP socket's receive
 # buffer to (the third number of net.ipv4.tcp_rmem) for the mode: 6291456 is
 # Linux's older default, with which a 14 MiB frame does not fit a reader's
-# buffer, and 33554432 the newer one, with which it does.
+# buffer, and 33554432 the newer one, with which it does. KERNEL is `host`,
+# for the runner's own kernel, or the name of an Ubuntu kernel image package,
+# such as linux-image-6.17.0-1022-azure, the kernel of the runners on which
+# the soft-limit case stalled: tcp-reopen-vm runs tcp_window_reopen.rs as the
+# only program of a virtual machine that boots that kernel.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -230,6 +235,71 @@ tcp_reopen() {
   echo "tcp-reopen: the program exited with $status; FRAME lines: $(grep -a -c '^FRAME' "$out/tcp-reopen.log")"
 }
 
+# Runs tcp_window_reopen.rs under another kernel: as the init of a QEMU
+# machine whose whole file system is an initramfs that holds the program,
+# built for musl so that it needs no library, and a static busybox to mount
+# /proc and bring the loopback interface up. The machine has 4 processors, as
+# the runner has, and its console is the mode's output.
+tcp_reopen_vm() {
+  budget=$(( $1 * 60 ))
+  kernel=$2
+  interval=$3
+  waits=$4
+  receive=${5:-}
+  begun=$(date +%s)
+  vm=$out/vm
+  sudo rm -rf "$vm"
+  mkdir -p "$vm/root/bin" "$vm/root/proc" "$vm/root/sys" "$vm/root/dev" "$vm/package"
+  { sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 busybox-static cpio; } \
+    > "$out/vm-apt.log" 2>&1 || { tail -n 30 "$out/vm-apt.log"; exit 1; }
+  rustup target add x86_64-unknown-linux-musl > "$out/vm-rustup.log" 2>&1 || { tail -n 30 "$out/vm-rustup.log"; exit 1; }
+  rustc --edition 2024 -O --target x86_64-unknown-linux-musl -o "$vm/root/tcp_window_reopen" "$here/tcp_window_reopen.rs" || exit 1
+  file "$vm/root/tcp_window_reopen"
+  if [ "$kernel" = host ]; then
+    sudo cat "/boot/vmlinuz-$(uname -r)" > "$vm/vmlinuz" || exit 1
+  else
+    # apt checks the package against the archive's signed index.
+    ( cd "$vm/package" && apt-get download "$kernel" > "$out/vm-kernel.log" 2>&1 ) || { tail -n 30 "$out/vm-kernel.log"; exit 1; }
+    dpkg-deb -x "$vm"/package/*.deb "$vm/package/files" || exit 1
+    cp "$vm"/package/files/boot/vmlinuz-* "$vm/vmlinuz" || exit 1
+    sha256sum "$vm"/package/*.deb
+  fi
+  cp "$(command -v busybox)" "$vm/root/bin/busybox" || exit 1
+  file "$vm/root/bin/busybox"
+  seconds=$(( budget - ($(date +%s) - begun) - 120 ))
+  cat > "$vm/root/init" << INIT
+#!/bin/busybox sh
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sys /sys
+/bin/busybox ip link set lo up || /bin/busybox ifconfig lo 127.0.0.1 up
+[ -z "$receive" ] || echo "4096 131072 $receive" > /proc/sys/net/ipv4/tcp_rmem
+echo "vm: kernel \$(/bin/busybox uname -r), processors \$(/bin/busybox grep -c ^processor /proc/cpuinfo), \$(/bin/busybox grep MemTotal /proc/meminfo)"
+echo "vm: tcp_rmem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_rmem) tcp_wmem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_wmem) tcp_mem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_mem)"
+/tcp_window_reopen $seconds $interval $waits
+echo "vm: the program exited with \$?"
+/bin/busybox poweroff -f
+INIT
+  chmod +x "$vm/root/init"
+  sudo mknod "$vm/root/dev/console" c 5 1 || exit 1
+  ( cd "$vm/root" && sudo find . | sudo cpio -o -H newc 2> /dev/null | gzip > "$vm/initramfs.gz" ) || exit 1
+  ls -l "$vm/vmlinuz" "$vm/initramfs.gz"
+  if [ -e /dev/kvm ]; then accelerator="-accel kvm -accel tcg"; else accelerator="-accel tcg"; fi
+  echo "tcp-reopen-vm: starting the machine with $accelerator for $seconds s of pairs, $(( $(date +%s) - begun )) s after the mode began"
+  sudo timeout $(( seconds + 100 )) qemu-system-x86_64 $accelerator -cpu max -smp 4 -m 10240 -display none -no-reboot \
+    -kernel "$vm/vmlinuz" -initrd "$vm/initramfs.gz" -append "console=ttyS0 panic=-1 loglevel=4" \
+    -serial stdio < /dev/null > "$out/vm.log" 2>&1
+  echo "tcp-reopen-vm: qemu exited with $? after $(( $(date +%s) - begun )) s; the console has $(wc -l < "$out/vm.log") lines"
+  tr -d '\r' < "$out/vm.log" > "$out/vm.txt"
+  # Every pair's lines stay in the console's file; what is said is the
+  # machine's own lines, the stalls, the first pair's sample and the summary.
+  grep -a -E '^(vm:|STALL|DUMP|SAMPLE|tcp-window-reopen|thread )|panicked|Kernel panic|Linux version' "$out/vm.txt" | cut -c 1-1500 | head -n 400
+  echo "tcp-reopen-vm: FRAME lines: $(grep -a -c '^FRAME' "$out/vm.txt")"
+  if ! grep -a -q '^tcp-window-reopen: pairs' "$out/vm.txt"; then
+    echo "tcp-reopen-vm: the program did not reach its summary; the console's last lines:"
+    tail -n 40 "$out/vm.txt" | cut -c 1-300
+  fi
+}
+
 # In a job of GitHub Actions, repeats what a mode printed as notices of the
 # job, which GitHub's GraphQL interface gives when the job's log cannot be
 # read. A step keeps ten notices: the environment takes one and another mode
@@ -261,9 +331,9 @@ PYTHON
 
 mode=${1:-}
 case "$mode" in
-  environment | mechanism | suite | soft-limit | stall-loop | tcp-reopen) ;;
+  environment | mechanism | suite | soft-limit | stall-loop | tcp-reopen | tcp-reopen-vm) ;;
   *)
-    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL [RECEIVE_MAX] | stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX] | tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX]" >&2
+    echo "usage: run.sh environment | mechanism | suite MINUTES | soft-limit MINUTES INTERVAL [RECEIVE_MAX] | stall-loop MINUTES PROCESSES WAITS [RECEIVE_MAX] | tcp-reopen MINUTES INTERVAL_MS WAITS [RECEIVE_MAX] | tcp-reopen-vm MINUTES KERNEL INTERVAL_MS WAITS [RECEIVE_MAX]" >&2
     exit 2
     ;;
 esac
@@ -278,6 +348,7 @@ rm -f "$out/$mode.status"
     soft-limit) soft_limit "$2" "$3" "${4:-}" ;;
     stall-loop) stall_loop "$2" "$3" "$4" "${5:-}" ;;
     tcp-reopen) tcp_reopen "$2" "$3" "$4" "${5:-}" ;;
+    tcp-reopen-vm) tcp_reopen_vm "$2" "$3" "$4" "$5" "${6:-}" ;;
   esac
   echo $? > "$out/$mode.status"
 ) 2>&1 | tee "$out/$mode.out"

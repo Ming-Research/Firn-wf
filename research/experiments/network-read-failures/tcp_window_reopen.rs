@@ -6,8 +6,10 @@
 //! as a server's send does, and the reader waits without reading, then reads
 //! the frame as the case does (its first 40 bytes one at a time, the rest into
 //! one buffer) with one-second bounds; then a second frame the same way. For
-//! a second without a byte it prints what the kernel says of both sockets
-//! (`ss -tinm`). README.md beside this file gives the question and the runs.
+//! a second without a byte it prints what the kernel says of both sockets:
+//! fields of their `struct tcp_info` and their memory counters, read with
+//! getsockopt, so that it needs no other program and can be a machine's only
+//! one. README.md beside this file gives the question and the runs.
 //!
 //!     tcp_window_reopen SECONDS INTERVAL_MS WAITS
 //!
@@ -56,18 +58,84 @@ fn counters() -> BTreeMap<String, u64> {
     found
 }
 
-fn sockets(pair: usize, port: u16) {
+unsafe extern "C" {
+    fn getsockopt(socket: i32, level: i32, name: i32, value: *mut u8, length: *mut u32) -> i32;
+}
+
+/// What the kernel says of one socket. The offsets are those of Linux's
+/// `struct tcp_info` (include/uapi/linux/tcp.h) and of SO_MEMINFO's array.
+fn kernel_state(socket: &TcpStream) -> String {
+    use std::os::fd::AsRawFd;
+    const IPPROTO_TCP: i32 = 6;
+    const TCP_INFO: i32 = 11;
+    const SOL_SOCKET: i32 = 1;
+    const SO_MEMINFO: i32 = 55;
+    let descriptor = socket.as_raw_fd();
+    let mut info = [0_u8; 256];
+    let mut length = info.len() as u32;
+    // SAFETY: the buffer and its length outlive the call.
+    let read = unsafe { getsockopt(descriptor, IPPROTO_TCP, TCP_INFO, info.as_mut_ptr(), &mut length) };
+    if read != 0 {
+        return format!("tcp_info unreadable: {}", std::io::Error::last_os_error());
+    }
+    let word = |at: usize| u32::from_ne_bytes([info[at], info[at + 1], info[at + 2], info[at + 3]]);
+    let long = |at: usize| u64::from(word(at)) | (u64::from(word(at + 4)) << 32);
+    let mut memory = [0_u8; 36];
+    let mut memory_length = memory.len() as u32;
+    // SAFETY: as above.
+    let counted = unsafe { getsockopt(descriptor, SOL_SOCKET, SO_MEMINFO, memory.as_mut_ptr(), &mut memory_length) };
+    let counter = |index: usize| {
+        let at = 4 * index;
+        u32::from_ne_bytes([memory[at], memory[at + 1], memory[at + 2], memory[at + 3]])
+    };
+    format!(
+        "backoff={} probes={} retransmits={} rto_us={} unacked={} lost={} last_data_sent_ms={} last_data_recv_ms={} \
+         last_ack_recv_ms={} rcv_ssthresh={} snd_cwnd={} rcv_space={} total_retrans={} bytes_acked={} \
+         bytes_received={} notsent={} snd_wnd={} rcv_wnd={} meminfo={} rmem_alloc={} rcvbuf={} sndbuf={} \
+         wmem_queued={} drops={}",
+        info[4],
+        info[3],
+        info[2],
+        word(8),
+        word(24),
+        word(32),
+        word(44),
+        word(52),
+        word(56),
+        word(64),
+        word(80),
+        word(96),
+        word(100),
+        long(120),
+        long(128),
+        word(144),
+        word(228),
+        word(232),
+        if counted == 0 { "read" } else { "unreadable" },
+        counter(0),
+        counter(1),
+        counter(3),
+        counter(5),
+        counter(8),
+    )
+}
+
+fn sockets(pair: usize, reader: &TcpStream, writer: &TcpStream) {
+    println!("DUMP pair={pair} reader: {}", kernel_state(reader));
+    println!("DUMP pair={pair} writer: {}", kernel_state(writer));
+}
+
+/// `ss`'s account of both sockets, where the machine has it, beside which
+/// the fields above can be checked.
+fn sockets_by_ss(pair: usize, port: u16) {
     let port_text = format!(":{port}");
-    match std::process::Command::new("ss")
+    if let Ok(output) = std::process::Command::new("ss")
         .args(["-tinm", "sport", "=", &port_text, "or", "dport", "=", &port_text])
         .output()
     {
-        Ok(output) => {
-            for line in String::from_utf8_lossy(&output.stdout).lines().take(12) {
-                println!("DUMP pair={pair} {line}");
-            }
+        for line in String::from_utf8_lossy(&output.stdout).lines().take(8) {
+            println!("DUMP pair={pair} ss: {}", line.trim_end());
         }
-        Err(error) => println!("DUMP pair={pair} ss failed: {error}"),
     }
 }
 
@@ -77,7 +145,7 @@ struct FrameRead {
     seconds_without_a_byte: u32,
 }
 
-fn read_frame(reader: &mut TcpStream, body: &mut [u8], pair: usize, frame: usize, port: u16) -> FrameRead {
+fn read_frame(reader: &mut TcpStream, writer: &TcpStream, body: &mut [u8], pair: usize, frame: usize) -> FrameRead {
     let start = Instant::now();
     let mut read = 0;
     let mut longest = Duration::ZERO;
@@ -105,7 +173,7 @@ fn read_frame(reader: &mut TcpStream, body: &mut [u8], pair: usize, frame: usize
                     start.elapsed().as_millis()
                 );
                 if matches!(waited, 1 | 5 | 12) {
-                    sockets(pair, port);
+                    sockets(pair, reader, writer);
                 }
                 assert!(waited < 90, "pair {pair}: no byte for 90 s after {read} bytes");
             }
@@ -127,6 +195,7 @@ fn pair(number: usize, payload: Arc<Vec<u8>>, waits: Vec<u64>, sample: bool) -> 
     drop(listener);
     writer.set_nodelay(true).expect("no delay");
     reader.set_read_timeout(Some(Duration::from_secs(1))).expect("bound the reads");
+    let writer_view = writer.try_clone().expect("a second handle of the writer's socket");
     let (go, gone) = mpsc::channel::<()>();
     let writing = std::thread::spawn(move || {
         while gone.recv().is_ok() {
@@ -140,9 +209,10 @@ fn pair(number: usize, payload: Arc<Vec<u8>>, waits: Vec<u64>, sample: bool) -> 
         std::thread::sleep(Duration::from_secs(*wait));
         if sample && index + 1 == waits.len() {
             println!("SAMPLE pair={number}: a frame that has waited {wait} s, before its read");
-            sockets(number, port);
+            sockets(number, &reader, &writer_view);
+            sockets_by_ss(number, port);
         }
-        let read = read_frame(&mut reader, &mut body, number, index + 1, port);
+        let read = read_frame(&mut reader, &writer_view, &mut body, number, index + 1);
         println!(
             "FRAME pair={number} frame={} waited_s={wait} ms={} longest_wait_ms={} seconds_without_a_byte={}",
             index + 1,
