@@ -825,6 +825,7 @@ fn config_dir_walk(out: &Text, source: &[u8]) -> result: unit reads(source), wri
     if to == length {
       break @components;
     }
+    invariant continues: to < length;
     set from = to + 1_u64;
   }
   return unit;
