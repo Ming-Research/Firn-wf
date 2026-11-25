@@ -11,7 +11,8 @@
 //! src/aof.c:1591-1626 cuts an incomplete final record with aof-load-truncated
 //! yes. These cases concern SIGKILL, which preserves the kernel page cache,
 //! rather than power loss. Firn currently has only the everysec sync policy
-//! (design/firn/append-only-file.md); there is no always variant to invoke.
+//! (design/decisions/persistence/append-only-file.md); there is no always
+//! variant to invoke.
 //! The no-lost-ack assertion holds because firn, like Redis, sends a write's
 //! reply only after its record and every earlier one are in the file. Even
 //! Redis everysec can postpone an append during a background fsync
@@ -479,4 +480,125 @@ fn sigkill_restarts_preserve_every_acknowledged_write_and_repair_a_truncated_tai
     assert_eq!(failures.observations, 0,
         "acknowledged writes missing or changed after restart (including repeated observations): {}",
         failures.examples.join("\n"));
+}
+
+const VISIBILITY_ROUNDS: usize = 10;
+
+fn increment_bytes(program: &CompiledProgram) -> Vec<u8> {
+    std::fs::read(aof_incremental_path(program.working_directory(), AOF_NAME))
+        .expect("read the active incremental file")
+}
+
+fn occurrences(file: &[u8], record: &[u8]) -> usize {
+    file.windows(record.len()).filter(|window| *window == record).count()
+}
+
+/// Redis 7.2.16 writes the AOF buffer in beforeSleep, before it sends any
+/// pending reply (src/server.c:1719-1739), so a client that receives a reply
+/// finds in the file every record the reply may show: its own write, another
+/// client's write that a read reveals, and a write made before a message it
+/// is delivered. The file is read the moment each reply arrives; with ten
+/// rounds of each, a writer that appends on a timer cannot win them all.
+#[test]
+fn every_reply_finds_the_records_it_shows_in_the_file() {
+    let program = CompiledProgram::from_environment();
+    let lease = support::lease_port();
+    let (child, mut control) = start(&program, &lease, true);
+    let mut writer = peer(lease.port(), &child);
+    let mut reader = peer(lease.port(), &child);
+    let mut publisher = peer(lease.port(), &child);
+    let mut subscriber = peer(lease.port(), &child);
+    subscriber.write_all(&resp(&["SUBSCRIBE", "durability:visible"])).unwrap();
+    expect_replies(&mut subscriber, b"*3\r\n$9\r\nsubscribe\r\n$18\r\ndurability:visible\r\n:1\r\n",
+        "subscription");
+    let mut missing = Vec::new();
+    for round in 0..VISIBILITY_ROUNDS {
+        let own = resp(&["SET", &format!("visible:own:{round}"), "acknowledged"]);
+        writer.write_all(&own).unwrap();
+        expect_replies(&mut writer, b"+OK\r\n", "acknowledged SET");
+        if occurrences(&increment_bytes(&program), &own) != 1 {
+            missing.push(format!("round {round}: the acknowledged SET"));
+        }
+
+        let key = format!("visible:read:{round}");
+        let revealed = resp(&["SET", &key, "revealed"]);
+        writer.write_all(&revealed).unwrap();
+        let deadline = Instant::now() + IO_LIMIT;
+        loop {
+            reader.write_all(&resp(&["GET", &key])).unwrap();
+            let reply = read_crash_reply(&mut reader).expect("GET reply");
+            if reply == "$8\r\nrevealed\r\n" {
+                break;
+            }
+            assert_eq!(reply, "$-1\r\n", "GET before the SET it waits for");
+            assert!(Instant::now() < deadline, "round {round}: the unread SET never became visible");
+        }
+        if occurrences(&increment_bytes(&program), &revealed) != 1 {
+            missing.push(format!("round {round}: the SET another connection's GET revealed"));
+        }
+        expect_replies(&mut writer, b"+OK\r\n", "revealed SET");
+
+        let published = resp(&["SET", &format!("visible:publish:{round}"), "published"]);
+        writer.write_all(&published).unwrap();
+        expect_replies(&mut writer, b"+OK\r\n", "SET before PUBLISH");
+        let payload = round.to_string();
+        publisher.write_all(&resp(&["PUBLISH", "durability:visible", &payload])).unwrap();
+        let message = format!("*3\r\n$7\r\nmessage\r\n$18\r\ndurability:visible\r\n${}\r\n{payload}\r\n",
+            payload.len());
+        expect_replies(&mut subscriber, message.as_bytes(), "delivered message");
+        if occurrences(&increment_bytes(&program), &published) != 1 {
+            missing.push(format!("round {round}: the SET made before a delivered message"));
+        }
+        expect_replies(&mut publisher, b":1\r\n", "PUBLISH");
+    }
+    drop((writer, reader, publisher, subscriber));
+    stop(child, &mut control);
+    assert!(missing.is_empty(), "replies arrived before the records they show were in the file:\n{}",
+        missing.join("\n"));
+}
+
+/// One pipeline of writes, reads, commands that change nothing, a
+/// transaction and scripts, whose replies are Redis 7.2.16's for these
+/// commands (t_string.c, db.c, multi.c, eval.c), written out here rather
+/// than taken from firn. Waiting for the file must leave the stream exactly
+/// as it is without an append-only file, and when the last reply arrives
+/// the file holds the pipeline's last write, so every earlier one too.
+#[test]
+fn a_mixed_pipeline_answers_alike_with_and_without_an_append_only_file() {
+    let requests: &[&[&str]] = &[
+        &["SET", "pipe:a", "1"],
+        &["GET", "pipe:a"],
+        &["INCR", "pipe:a"],
+        &["GET", "pipe:missing"],
+        &["DEL", "pipe:missing"],
+        &["SETNX", "pipe:a", "x"],
+        &["STRLEN", "pipe:a"],
+        &["MULTI"],
+        &["SET", "pipe:b", "2"],
+        &["GET", "pipe:b"],
+        &["EXEC"],
+        &["EVAL", "return redis.call('INCR', KEYS[1])", "1", "pipe:a"],
+        &["EVAL", "return redis.call('GET', KEYS[1])", "1", "pipe:b"],
+        &["PING"],
+        &["ECHO", "hi"],
+        &["MGET", "pipe:a", "pipe:b", "pipe:missing"],
+    ];
+    let expected: &[u8] = b"+OK\r\n$1\r\n1\r\n:2\r\n$-1\r\n:0\r\n:0\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n\
+*2\r\n+OK\r\n$1\r\n2\r\n:3\r\n$1\r\n2\r\n+PONG\r\n$2\r\nhi\r\n*3\r\n$1\r\n3\r\n$1\r\n2\r\n$-1\r\n";
+    let batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
+    let last_write = resp(&["INCR", "pipe:a"]);
+    for aof in [true, false] {
+        let program = CompiledProgram::from_environment();
+        let lease = support::lease_port();
+        let (child, mut control) = start(&program, &lease, aof);
+        let mut client = peer(lease.port(), &child);
+        client.write_all(&batch).unwrap();
+        expect_replies(&mut client, expected, &format!("mixed pipeline, appendonly {aof}"));
+        if aof {
+            assert_eq!(occurrences(&increment_bytes(&program), &last_write), 2,
+                "both INCR records must be in the file when the pipeline's replies arrive");
+        }
+        drop(client);
+        stop(child, &mut control);
+    }
 }
