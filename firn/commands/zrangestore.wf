@@ -65,7 +65,8 @@ fn zrangestore_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
     let have_member = client^.items.inner.len > 0_u64;
     let have_score = client^.scores.inner.len > 0_u64;
     let both = band(have_member, have_score);
-    if bnot(both) {
+    if both {
+    } else {
       break @collect;
     }
     let member = take_back(window: &client^.items.inner);
