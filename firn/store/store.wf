@@ -710,9 +710,11 @@ fn aof_seen(store: &Keyspace) -> seen: AofSeen reads(store) waits {
   return AofSeen(commit: commit, covered: covered);
 }
 
-fn aof_note(meta: &Meta, client: &pkg::protocol::Client) -> result: unit reads(meta.commit_seq), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error), writes(client.aof_dependency), writes(client.aof_covered), writes(client.aof_noted) {
+fn aof_note(meta: &Meta, client: &pkg::protocol::Client, taken: Bool) -> result: unit reads(meta.commit_seq), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error), writes(client.aof_dependency), writes(client.aof_covered), writes(client.aof_noted) {
   doc "Called by a command's own statement under its Meta hold, after its commit: raises the client's dependency to the commit sequence, which covers every record the statement could have observed whether or not it took a sequence, keeps the covered mark it sees, and records that the command noted its dependency.";
-  set client^.aof_dependency = imax(client^.aof_dependency, meta^.commit_seq);
+  if taken {
+    set client^.aof_dependency = imax(client^.aof_dependency, meta^.commit_seq);
+  }
   let covered = aof_covered(meta: meta);
   set client^.aof_covered = imax(client^.aof_covered, covered);
   set client^.aof_noted = True();
