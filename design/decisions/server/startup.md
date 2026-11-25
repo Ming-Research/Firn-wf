@@ -7,9 +7,18 @@ firn takes an optional Redis 7.2.16 configuration file or stdin -, then --direct
 - replaced: four positional arguments (port, client count, AOF name and idle timeout) was on main; the owner changed it, because an operator replacing redis-server could not reuse its start command or config file, and firn read the config path as a port.
 - rejected: an agent proposed reading the file but ignoring unknown directives with a warning; the owner rejected it, because an ignored directive such as save or appendfsync always would let the operator believe a persistence setting was in force.
 
-### decision config-paths-stay-in-the-working-directory
-Until Whitefoot can open general paths, firn opens a configuration file only relative to its working directory, accepts only . and ./ for dir, and refuses include.
-- rejected: an agent proposed waiting for Whitefoot's path support and delivering startup in one step; the owner rejected it, because configuration, log levels and maxclients, which need no paths, would then wait on Whitefoot too.
+### decision config-paths-are-host-paths
+firn opens the configuration file, each include and each dir as a host path, absolute or relative to the working directory; dir changes that directory by swapping the held handles.
+- replaced: opening a configuration file only relative to the working directory, accepting only . and ./ for dir and refusing include was on main; the owner changed it, because Whitefoot now opens host paths, and an operator replacing redis-server could not start firn with /etc/redis/redis.conf.
+
+### decision include-refuses-wildcards
+An include path holding *, ? or [ is refused in the fatal configuration frame with a reason that names wildcards; any other include path is read where the directive stands, with line numbers of its own.
+- rejected: an agent proposed expanding wildcards in the last path component, sorted, and skipping a pattern that matches nothing; the owner rejected it, because it needs a directory listing and a rewrite of glob(3)'s details, about a day more, and character classes would still differ from Redis.
+- rejected: an agent proposed a full glob(3) in every path component; the owner rejected it, because it is the most work and no selected consumer needs it.
+
+### decision dir-reports-the-written-path
+CONFIG GET dir reports the absolute path the dir directives wrote, with . .. and repeated / removed, and reports nothing while every dir given was relative to a directory firn does not know.
+- rejected: an agent proposed leaving CONFIG GET dir unsupported until Whitefoot can query the working directory's path; the owner rejected it, because a configuration with an absolute dir would then not read back as Redis reads it, which the work's result requires.
 
 ### decision startup-accepts-only-implemented-directives
 Startup accepts only the directives firn implements, and checks the memory settings, maxclients, port and timeout with CONFIG SET's own validation code.
@@ -37,6 +46,7 @@ maxclients works as in Redis 7.2.16: default 10000, range 1 to 4294967295, a ref
 Admission reads maxclients and counts the new client in one atomic statement, and a refused peer's reply gets one shared one-second send deadline before firn closes it.
 - rejected: an agent proposed waiting until a refused peer takes the whole reply; the owner rejected it, because a peer that does not read would hold firn's single accept loop without bound.
 
-### decision descriptor-limit-left-unchanged
-firn leaves the operating system's file-descriptor limit unchanged and keeps maxclients as configured, at startup and on CONFIG SET.
-- rejected: an agent proposed lowering or refusing maxclients by a computed estimate of the descriptors available; the owner rejected it, because firn promises an application client limit, not descriptor availability, and the Whitefoot release then had no way to read the limit.
+### decision maxclients-adjusts-the-descriptor-limit
+At startup and on CONFIG SET maxclients, firn raises the soft open-files limit to maxclients plus 32 as Redis does, lowers maxclients if the host refuses, and refuses a CONFIG SET the limit cannot support.
+- replaced: leaving the operating system's file-descriptor limit unchanged was on main; the owner changed it, because Whitefoot now reads and raises the soft limit, and an operator had to set ulimit -n before every start.
+- rejected: an agent proposed adjusting the limit only at startup and letting CONFIG SET maxclients accept any value; the owner rejected it, because a limit raised while firn runs could then exceed the descriptors, where Redis refuses it.

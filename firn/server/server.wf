@@ -783,6 +783,8 @@ const log_bye: Array<u8, 37> = "firn is now ready to exit, bye bye...";
 
 const log_sigterm: Array<u8, 39> = "Received SIGTERM scheduling shutdown...";
 
+const log_fatal_load: Array<u8, 55> = "Fatal error loading the DB, check server logs. Exiting.";
+
 const log_sigint: Array<u8, 38> = "Received SIGINT scheduling shutdown...";
 
 fn log_line(log: &ServerLog, role: u8, level: u64, word: &[u8]) -> result: unit reads(log), reads(word) waits {
@@ -1190,6 +1192,7 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
   close_directory_write(factory: &handles, directory: move cwd_write);
   close_directory(factory: &handles, directory: move cwd);
   if failed {
+    log_line(log: log, role: 77_u8, level: 3_u64, word: &log_fatal_load[0_u64..55_u64]);
     std::time::cancel_fire(source: &shutdown);
     return exit_status(code: 4_u8);
   }

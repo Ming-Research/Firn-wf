@@ -37,10 +37,11 @@ timeout 300
 Start firn in the foreground. The shell sets its open-file limit to 16384
 before starting the server; this requires a hard limit of at least 16384.
 The start command stays running until shutdown and then exits with status 0
-in this example, with no output. Use another terminal in the same data
-directory for the following client commands.
+in this example. Its standard output holds firn's log lines, ending with
+`firn is now ready to exit, bye bye...`; see [Logs](#logs). Use another
+terminal in the same data directory for the following client commands.
 
-```sh firn-check start exit=0
+```sh firn-check start exit=0 stdout-contains=firn is now ready to exit, bye bye...
 ulimit -n 16384
 firn redis.conf
 ```
@@ -54,24 +55,41 @@ redis-cli --raw --no-auth-warning -a ops-example-secret -p 6379 PING
 A service manager must set the process's working directory to the data
 directory and run firn in the foreground. With systemd, use
 `WorkingDirectory=` for that directory, `ExecStart=` with the installed
-executable's absolute path and the relative configuration filename, and
-`LimitNOFILE=` for the descriptor limit. These systemd settings are guidance;
+executable's absolute path and the configuration file's path, and
+`LimitNOFILE=` for the hard descriptor limit. These systemd settings are guidance;
 the gate exercises the foreground invocation above, not systemd.
 
-Configuration filenames must be relative to firn's working directory.
-Absolute configuration paths are refused, as are all `include` directives
-and every `dir` value except `.` or `./`. An absolute executable path is
-unaffected by this restriction. Keep the configuration in the data directory
-and select that directory before launching firn. These interim rules expose
-the Whitefoot path-support gap, [board item `firn-req-host-paths`][board].
+The configuration file, each `include` and `dir` take absolute paths or
+paths relative to the working directory, as Redis does: `firn
+/etc/redis/redis.conf` starts with the same file Redis reads. `dir` changes
+the directory that later relative paths, `include`, `logfile` and the
+append-only directory, start from, and an `include` reads its file where the
+directive stands, with line numbers of its own. These differences from Redis
+remain:
+
+- An `include` path holding `*`, `?` or `[` is refused with a reason that
+  names wildcards; Redis expands it with `glob(3)`, and skips one that
+  matches nothing. List the files by name.
+- `CONFIG GET dir` reports the absolute path the `dir` directives wrote, with
+  `.`, `..` and repeated `/` removed, not the path the host resolves through
+  symbolic links, and reports nothing while every `dir` given was relative to
+  a directory firn does not know. Redis reports the resolved path.
+- A configuration file given by a relative path is named as given in the
+  line that reports it cannot be opened; Redis names its absolute path.
+- A `logfile` whose last component is a symbolic link is refused where Redis
+  follows the link.
 
 ## Configuration refusals
 
 firn refuses unknown directives, wrong argument counts, malformed quoting
 and invalid values. It prints `FATAL CONFIG FILE ERROR` on stderr, with the
 source line, its line number and the reason, then exits 1 before serving
-clients. A missing configuration file or a refused configuration path also
-exits 1, with its own startup diagnostic.
+clients. A configuration file or an `include` that cannot be opened is
+logged, as Redis logs it, in the log line `Fatal error, can't open config file
+'path': reason` on standard output, or in the `logfile` read so far, and also
+exits 1. A `dir` that cannot be entered, an `include` path with a wildcard and
+a `logfile` that cannot be opened are refused in the same fatal frame, the last
+without a line, as Redis reports it.
 
 The [invocation reference](../firn/README.md#build-and-run) lists the
 accepted directives, their validation and the common Redis directives that
@@ -96,9 +114,9 @@ firn refused.conf
 | Status | Current meaning and operator action |
 | --- | --- |
 | 0 | After startup, an orderly `SHUTDOWN`, SIGTERM or SIGINT drains clients and attempts a final AOF append and sync before exiting. A SIGTERM or SIGINT during AOF replay also exits with status 0, at once and with `appendonlydir` as the replay found it. A failed final append or sync can still lose acknowledged writes; status 0 does not certify durability. |
-| 1 | Invalid invocation or configuration, an unreadable configuration file, a refused configuration path, or a configuration with no enabled listener. Read stderr and correct the startup settings. |
+| 1 | Invalid invocation or configuration, an unreadable configuration file or `include`, a `dir` that cannot be entered, an unopenable `logfile`, a configuration with no enabled listener, or an open-files limit too low for even one client. Read stderr and the log's last line and correct the startup settings. |
 | 3 | firn cannot register delivery of stop signals, which it does before replaying the AOF, or cannot open its TCP listener. Check the listening address, port availability and host facilities; these failures currently have no diagnostic. |
-| 4 | Any AOF startup refusal, including a missing or malformed listed file, unreadable persistence state, or failure to prepare the log for appending or truncate its incomplete tail. firn has not begun listening; preserve the files and investigate or restore a known-good backup. This path currently emits no diagnostic. |
+| 4 | Any AOF startup refusal, including a missing or malformed listed file, unreadable persistence state, or failure to prepare the log for appending or truncate its incomplete tail. firn has not begun listening; preserve the files and investigate or restore a known-good backup. The log's last line is `Fatal error loading the DB, check server logs. Exiting.`, the text Redis gives for a failed load; the cause is not logged. |
 
 These are the current implementation's statuses: AOF startup refusals use
 4, not 1. A SIGTERM or SIGINT during AOF replay ends firn at the replay's
@@ -118,18 +136,25 @@ reports `maxclients` and `connected_clients`. `INFO stats` reports
 `CONFIG RESETSTAT`; rejected clients do not increase admitted-connection
 counts. Lowering the live limit leaves existing clients connected.
 
-firn neither raises the operating system's file-descriptor limit nor reduces
-`maxclients` to fit it. Set the limit yourself in the shell that launches
-firn, as in the start block, or through the service manager. Reserve
-descriptors for persistence files, listeners and other process needs in
-addition to client sockets. If the hard limit cannot support the example,
-raise it through the service configuration or reduce the client limit with
-headroom. The configured client limit alone does not promise that the host
-can supply enough descriptors. When the process runs out of descriptors,
+At startup firn raises the soft open-files limit to `maxclients` plus 32, as
+Redis does, trying 16 fewer after each refusal, and logs what it did: `Increased
+maximum number of open files to N (it was originally set to M).`, or, when the
+host will not go that far, Redis's three warnings and a `maxclients` lowered to
+what the limit supports. A limit that leaves no room for a client, 32 or
+fewer, stops firn with status 1 and the line `Your current 'ulimit -n' of N is
+not enough for the server to start. Please increase your open file limit to at
+least M. Exiting.` `CONFIG SET maxclients` adjusts the limit the same way and,
+when the host cannot support the number, answers Redis's error naming the
+number it can and keeps the old value. firn can change only the soft limit:
+where the hard limit is below the request, the limit it reaches equals
+Redis's, but the host's reason in the second warning is the text the host gives
+firn, and Redis lowers the hard limit to the same value where firn leaves it.
+Reserve descriptors for persistence files, listeners and other process needs
+by setting the hard limit through the service manager's `LimitNOFILE=`.
+When the process runs out of descriptors,
 firn logs `Accepting client connection: Too many open files` to stderr, at
 most once a second, and keeps listening; it accepts again once descriptors
-free up, up to 100 ms after they do. Whitefoot's missing resource-limit
-facility is tracked by [board item `firn-req-fd-limit`][board].
+free up, up to 100 ms after they do.
 
 ## Persistence and recovery
 
@@ -207,7 +232,7 @@ before deleting old files; copying an active directory can race those
 changes. This guide provides no tested online-backup procedure.
 
 This orderly stop exits 0 with no output; the foreground firn process also
-exits 0 in this example:
+exits 0 in this example, after it logs `firn is now ready to exit, bye bye...`:
 
 ```sh firn-check stop exit=0
 redis-cli --raw --no-auth-warning -a ops-example-secret -p 6379 SHUTDOWN NOSAVE
@@ -234,9 +259,9 @@ cp -R backup/appendonlydir .
 
 Start firn again from the data directory, then query the restored value in
 another terminal. The start remains running until the final shutdown and
-then exits 0 with no output:
+then exits 0, its standard output holding the log lines:
 
-```sh firn-check start exit=0
+```sh firn-check start exit=0 stdout-contains=firn is now ready to exit, bye bye...
 ulimit -n 16384
 firn redis.conf
 ```
@@ -259,12 +284,13 @@ the backup, validate storage hardware, or exercise service-manager startup.
 
 ### Damaged state
 
-A malformed manifest makes startup fail with status 4 and no diagnostic.
-This example, run with firn stopped, builds a data directory whose
+A malformed manifest makes startup fail with status 4 and a log line that
+names no cause. This example, run with firn stopped, builds a data directory whose
 manifest gives its base file sequence number 0, which firn does not accept,
-and starts firn in it. The command exits 4 and prints nothing:
+and starts firn in it. The command exits 4, and its standard output ends with
+the log line `Fatal error loading the DB, check server logs. Exiting.`:
 
-```sh firn-check exit=4
+```sh firn-check exit=4 stdout-contains=Fatal error loading the DB, check server logs. Exiting.
 mkdir damaged
 cp redis.conf damaged/
 cd damaged
@@ -276,13 +302,29 @@ firn redis.conf
 
 ## Logs
 
-firn writes no routine log lines yet. Startup configuration refusals are
-reported on stderr; current AOF startup and listener/signal-registration
-failures are silent, as the exit-status table notes. `logfile`, `loglevel`
-and `pidfile` are refused rather than applied. Capture stderr and process
-status through the service manager; the log format awaits Whitefoot's
-process-ID and local-time support,
-[board item `firn-req-pid-localtime`][board].
+firn writes Redis's log lines to standard output, or to the file `logfile`
+names, which it opens for every line so that a rotated file is created anew,
+as Redis does. A line has Redis's form, `pid:C dd Mon yyyy hh:mm:ss.mmm * message`,
+with the process id, the role (`C` until the server is initialized, then `M`),
+the host's local time and a mark for the level: `.` debug, `-` verbose,
+`*` notice, `#` warning. `loglevel` hides the lines below its level, `nothing`
+all of them. The lines come from these events, with Redis's message:
+the start, the configuration loaded (or the warning that none was given), the
+open-files limit, `Running mode=standalone, port=N.`, `Server initialized`,
+`DB loaded from append only file: S seconds`, `Ready to accept connections
+tcp`, the start and the end of an append-only file rewrite, a failed append
+(`Error writing to the AOF file: reason` or `Short write while writing to the
+AOF file: (nwritten=N, expected=M)`, at most one in thirty seconds), `AOF write
+error looks solved, Redis can write again.`, the first failed sync (`Fail to
+fsync the AOF file: reason`), the stop signal, `User requested shutdown...`,
+`Calling fsync() on the AOF file.` and `firn is now ready to exit, bye bye...`.
+These differences from Redis's log remain: the product name is `firn`, there
+is no version line, the rewrite line has no `by pid` because firn rewrites in
+a thread, `pidfile` and `syslog-enabled` are refused, `CONFIG SET loglevel` is
+refused, and messages Redis writes for features firn does not have do not
+appear. A write that fails drops the line, as Redis ignores a failed log write.
+Accepting an excess client or failing to accept still writes to stderr as the
+connections section says.
 
 ## Migrate from Redis
 
@@ -307,4 +349,3 @@ to answer reads for those keys exactly as Redis did. It does not validate an
 arbitrary Redis deployment's migration: other commands, expiry times and other
 Redis versions are not checked.
 
-[board]: https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip

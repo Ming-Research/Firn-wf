@@ -534,7 +534,16 @@ Supported directives, in files or after `--`, are:
 - `maxmemory`, `maxmemory-policy`, `maxmemory-samples`,
   `maxmemory-eviction-tenacity`, `lfu-log-factor` and `lfu-decay-time`, using
   the same validation as `CONFIG SET`;
-- `dir .` or `dir ./`, retaining the working directory;
+- `dir`, a directory absolute or relative to the working directory, which
+  becomes the working directory for every later relative path, `include`,
+  `logfile` and the append-only directory included, as Redis's `chdir` does;
+  `include`, one file read where the directive stands, with line numbers of
+  its own and the working directory the `dir` directives before it set; an
+  `include` path with `*`, `?` or `[` is refused;
+- `loglevel`, `debug`, `verbose`, `notice` (the default), `warning` or
+  `nothing`, and `logfile`, the file the log lines are appended to, empty by
+  default for standard output; `CONFIG GET` reports both and `dir`, and
+  `CONFIG SET` of them is refused;
 - `firn-clients`, a **firn-only test directive**: how many connections to
   admit over the server's lifetime before stopping, 0 by default for no
   limit. Connections refused by `maxclients` do not count. This shutdown
@@ -549,26 +558,21 @@ incomplete. The host send contract permits zero progress, so this deadline
 alone establishes no strict return-time bound.
 `CONFIG SET maxclients` changes admission for subsequent connections;
 lowering it below the current count leaves every existing client connected.
-The Whitefoot release firn was written against, `wf-af7665be672d`, had no
-resource-limit facility; the pinned release adds `open_files_limit` and
-`raise_open_files_limit` to `std::process`, which firn does not call yet, so
-firn leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
-`maxclients` at startup or refuse `CONFIG SET` solely because the operating
-system cannot supply enough descriptors; Redis can also refuse its event
-loop's capacity adjustment. The configured application limit does not
-promise descriptor availability. An `accept` error, descriptor exhaustion
+At startup, and on `CONFIG SET maxclients`, firn raises the soft
+`RLIMIT_NOFILE` to `maxclients` plus 32 as Redis 7.2.16's
+`adjustOpenFilesLimit` does, logging what it did, lowers `maxclients` to what the
+limit supports when the host refuses, or exits with status 1 when the limit is 32
+or less; `CONFIG SET` answers Redis's error and keeps the old value when the host
+cannot support the number. firn can change only the soft limit, so a hard limit
+below the request is left as it is. Redis's event-loop capacity adjustment has
+no equivalent. An `accept` error, descriptor exhaustion
 included, leaves firn listening and is logged (see
 [Accept-error diagnostics](#accept-error-diagnostics)); the
 [safety boundaries](../docs/safety.md) list what remains.
 
-The interim path rules follow owner card `firn-q-ops-paths-interim` while
-Whitefoot's path support is tracked by `firn-req-host-paths`. Configuration
-paths are resolved from the working directory and must be accepted by the
-standard library's relative-path interface. Absolute paths and paths it refuses
-stop startup with a firn-specific diagnostic citing that gap. Every `include`
-directive and every `dir` value other than `.` or `./` is refused in the
-fatal configuration error frame, with a reason citing the same gap.
-Startup does not create a data directory.
+Paths are host paths, absolute or relative to the working directory, which
+`dir` changes. Startup does not create a data directory. The log is described in
+[the operations guide](../docs/operations.md#logs).
 
 ```sh
 ./build/firn startup.conf --port 6380 --requirepass secret --appendonly yes
@@ -578,12 +582,14 @@ Startup does not create a data directory.
 Unknown directives, wrong argument counts, malformed quotes and invalid
 values stop startup with status 1 and a Redis 7.2.16 fatal configuration
 error on stderr. The error prints the trimmed source line and its line
-number; command-line directives continue after the configuration file,
-including Redis's extra separating newline. A file that cannot be opened
-also stops startup with status 1 and a cannot-open diagnostic.
+number, which is the line's number in the file that holds it; command-line
+directives continue after the configuration file,
+including Redis's extra separating newline. A configuration file or
+`include` that cannot be opened stops startup with status 1 after the log
+line `Fatal error, can't open config file`.
 
 Common Redis configuration directives still refused include `daemonize`,
-`supervised`, `pidfile`, `loglevel`, `logfile`, `databases`, `save`,
+`supervised`, `pidfile`, `databases`, `save`,
 `appendfsync`, `protected-mode`, `tcp-backlog`, `tcp-keepalive`
 and `aof-use-rdb-preamble`. Their default values receive no special
 acceptance in this version.
