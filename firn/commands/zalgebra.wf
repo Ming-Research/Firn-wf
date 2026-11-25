@@ -266,8 +266,7 @@ fn zalg_accumulate(acc: &HashMap<Key, f64, ceiling>, member: &Key, score: f64, a
   let absent = False();
   let edit = AggEdit(offered: score, aggregate: aggregate, found: absent);
   let edited = hash_map_edit::<KeyHash, f64, AggEdit, u64, fn zalg_edit, ceiling>(map: acc, key: member, key_env: keys, edit_env: &edit);
-  if edit.found {
-  } else {
+  if bnot(edit.found) {
     zalg_put(acc: acc, member: member, score: score, keys: keys);
   }
   return unit;
