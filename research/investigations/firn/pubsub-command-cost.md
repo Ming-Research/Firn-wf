@@ -929,10 +929,13 @@ cell of the 19 default tests at depths 16 and 1 wholly on the slower side of
     and at most T, then T′ replaces T, and the voiding is decided again from
     the readings alone.
 
-  The script is the one at the commit each run reports: main's if Firn-wf#145
-  has merged by then, that item's branch otherwise. This record makes no copy
-  of the rule. The rule cannot see a job on a server or client CPU, so this
-  work never runs two of its measurements at once.
+  The script is Firn-wf#145's `redis-bench.sh` as at that item's commit
+  `3625e77` (blob `bbba109`), taken into this branch unchanged, together with
+  that item's change to `summary.py` (`51c7be4`), and each run is dispatched
+  from this work's own branch. A run whose `redis-bench.sh` differs from that
+  blob says how, and whether the difference touches the rule. The rule cannot
+  see a job on a server or client CPU, so this work never runs two of its
+  measurements at once.
 - **Measure.** As G: `summary.py ratios` on the rate and with `--metric cpu`,
   over the clean passes (the attempts `compare-void.csv` lists are left out),
   for `head`/`before`, `head`/`main`, `main`/`before` and `head-twin`/`head`.
