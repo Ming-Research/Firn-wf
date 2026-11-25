@@ -15,29 +15,41 @@ fn servers() -> Vec<(&'static str, PathBuf)> {
     servers
 }
 
-/// Whether this process may raise its own hard open-files limit (CAP_SYS_RESOURCE, bit 24 of the
-/// effective capabilities). Redis then raises the hard limit it was started with, which firn
-/// cannot, so the cases that start below what the request needs compare nothing there.
-fn may_raise_hard_limit() -> bool {
-    let status = std::fs::read_to_string("/proc/self/status").expect("read process status");
+/// Whether a process (`self` or a process id) holds CAP_SYS_RESOURCE, bit 24 of its effective
+/// capabilities. With it Redis raises the hard limit it was started with, which firn cannot, so a
+/// subject that holds it would not meet the host's limits as the cases here need.
+fn holds_cap_sys_resource(process: &str) -> bool {
+    let status = std::fs::read_to_string(format!("/proc/{process}/status")).expect("read process status");
     let line = status.lines().find(|line| line.starts_with("CapEff:")).expect("effective capabilities");
     let effective = u64::from_str_radix(line["CapEff:".len()..].trim(), 16).expect("capability mask");
     effective & (1 << 24) != 0
 }
 
 /// Starts the server after the shell has set the soft limit to `soft` and the hard limit to `hard`
-/// (the soft limit first, which the kernel needs while it is above the new hard limit). One worker and
-/// one driver keep the descriptors the runtime itself needs well below a limit of 32, as in the
-/// accept-error cases; Redis ignores the settings.
+/// (the soft limit first, which the kernel needs while it is above the new hard limit). A test run that
+/// holds CAP_SYS_RESOURCE, as root does, starts the subject through `setpriv` without it, so that the
+/// subject meets the limits as an unprivileged operator's server does; `assert_without_capability` shows
+/// that it took effect. One worker and one driver keep the descriptors the runtime itself needs well below
+/// a limit of 32, as in the accept-error cases; Redis ignores the settings.
 fn start_limited(binary: &PathBuf, directory: &std::path::Path, hard: u32, soft: u32, arguments: &[&str]) -> ProgramChild {
     let mut command = Command::new("/bin/sh");
     command.current_dir(directory)
         .args(["-c", "ulimit -Sn \"$2\" && ulimit -Hn \"$1\" && shift 2 && exec \"$@\"", "sh"])
-        .arg(hard.to_string()).arg(soft.to_string()).arg(binary).args(arguments.iter().map(OsString::from))
+        .arg(hard.to_string()).arg(soft.to_string());
+    if holds_cap_sys_resource("self") {
+        command.args(["setpriv", "--bounding-set=-sys_resource", "--inh-caps=-sys_resource"]);
+    }
+    command.arg(binary).args(arguments.iter().map(OsString::from))
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .env("WF_WORKERS", "1").env("WF_DRIVERS", "1")
         .env_remove("WF_REQUIRE_WINDOWS_IOCP");
     ProgramChild::spawn(&mut command).expect("spawn limited subject")
+}
+
+/// Fails unless the running subject lacks CAP_SYS_RESOURCE: the cases that start below what a request
+/// needs compare nothing otherwise, and must never be skipped for it.
+fn assert_without_capability(label: &str, pid: u32) {
+    assert!(!holds_cap_sys_resource(&pid.to_string()), "{label}: the subject holds CAP_SYS_RESOURCE and would raise its hard limit");
 }
 
 /// The soft and hard limits on open files of a running process.
@@ -100,9 +112,6 @@ fn startup_raises_the_soft_limit_to_maxclients_plus_32_as_redis_does() {
 
 #[test]
 fn a_hard_limit_below_the_request_lowers_maxclients_as_redis_does() {
-    if may_raise_hard_limit() {
-        return;
-    }
     let fixture = fixture_directory();
     for (label, binary) in servers() {
         let lease = support::lease_port();
@@ -110,6 +119,7 @@ fn a_hard_limit_below_the_request_lowers_maxclients_as_redis_does() {
         let child = start_limited(&binary, fixture.path(), 2048, 1024,
             &["--bind", "127.0.0.1", "--port", &port, "--maxclients", "5000"]).with_port(&lease);
         let pid = child.id();
+        assert_without_capability(label, pid);
         let mut client = connect_when_ready(lease.port(), &child);
         assert_eq!(open_files(pid).0, 2040, "{label}: the soft limit Redis's steps of 16 reach");
         assert_eq!(maxclients(&mut client), "2008", "{label}");
@@ -129,9 +139,6 @@ fn a_hard_limit_below_the_request_lowers_maxclients_as_redis_does() {
 
 #[test]
 fn a_limit_of_32_stops_startup_with_status_1_and_redis_line() {
-    if may_raise_hard_limit() {
-        return;
-    }
     let fixture = fixture_directory();
     for (label, binary) in servers() {
         let lease = support::lease_port();
@@ -149,9 +156,6 @@ fn a_limit_of_32_stops_startup_with_status_1_and_redis_line() {
 
 #[test]
 fn config_set_maxclients_raises_the_limit_or_answers_redis_error_and_keeps_the_old_value() {
-    if may_raise_hard_limit() {
-        return;
-    }
     let fixture = fixture_directory();
     for (label, binary) in servers() {
         let lease = support::lease_port();
@@ -159,6 +163,7 @@ fn config_set_maxclients_raises_the_limit_or_answers_redis_error_and_keeps_the_o
         let child = start_limited(&binary, fixture.path(), 3000, 1024,
             &["--bind", "127.0.0.1", "--port", &port, "--maxclients", "500"]).with_port(&lease);
         let pid = child.id();
+        assert_without_capability(label, pid);
         let mut client = connect_when_ready(lease.port(), &child);
         client.write_all(&resp(&["CONFIG", "SET", "maxclients", "5000"])).expect("set too many clients");
         expect_replies(&mut client,
@@ -179,9 +184,6 @@ fn config_set_maxclients_raises_the_limit_or_answers_redis_error_and_keeps_the_o
 /// Only firn is run: Redis would exit.
 #[test]
 fn config_set_maxclients_with_no_room_left_answers_the_error_and_does_not_claim_to_exit() {
-    if may_raise_hard_limit() {
-        return;
-    }
     let fixture = fixture_directory();
     let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
     let lease = support::lease_port();
@@ -189,6 +191,7 @@ fn config_set_maxclients_with_no_room_left_answers_the_error_and_does_not_claim_
     let child = start_limited(&binary, fixture.path(), 4096, 1024,
         &["--bind", "127.0.0.1", "--port", &port, "--maxclients", "500"]).with_port(&lease);
     let pid = child.id();
+    assert_without_capability("firn", pid);
     let mut client = connect_when_ready(lease.port(), &child);
     let status = Command::new("prlimit").arg("--nofile=24:24").arg("--pid").arg(pid.to_string())
         .status().expect("run prlimit");
