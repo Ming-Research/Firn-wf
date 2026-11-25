@@ -74,8 +74,14 @@ The hypothesis, from the sources of Linux and glibc, has three parts:
 
 If this holds, blocking SIGCHLD in the test process's first thread before any
 other thread exists removes the cause: every thread inherits the mask, so no
-thread can be woken. Waiting for a child does not need the signal, and std
-gives each child an empty mask.
+thread can be woken. Waiting for a child does not need the signal. A child
+inherits the mask of the thread that starts it: std's source says, on both
+its `posix_spawn` and its `fork` path, "Inherit the signal mask from this
+process rather than resetting it" (read 2026-11-25 in the stable release's
+`std/src/sys/process/unix/unix.rs`). So the servers and the documented shell
+commands the cases run would start with SIGCHLD blocked, which is not how
+they run outside the tests, unless each child is given the original mask
+again before its exec.
 
 ### Comparisons and what would reject the hypothesis
 
@@ -90,7 +96,7 @@ configuration, traced with the kernel's signal tracepoints.
 | first thread waits, another thread reads | none interrupted: the first thread dequeues every one | the reader is interrupted |
 | first thread starts threads, another thread reads | reads interrupted | none is, with SIGCHLD queued |
 | the same with SIGCHLD blocked in every thread | none interrupted, none dequeued, in every configuration | any read is interrupted |
-| a child's mask after exec, parent blocking SIGCHLD | empty, by `posix_spawn` and by `fork` | the child blocks SIGCHLD |
+| a child's mask after exec, parent blocking SIGCHLD | SIGCHLD blocked in the child too, by `posix_spawn` and by `fork` | (decides the fix's shape, not the hypothesis: an empty mask would mean no child needs its mask restored) |
 
 In the suite (`run.sh suite`): the trace shows SIGCHLD queued for the test
 process and dequeued by threads other than its first. With SIGCHLD blocked,
