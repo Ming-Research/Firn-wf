@@ -582,8 +582,10 @@ incomplete. The host send contract permits zero progress, so this deadline
 alone establishes no strict return-time bound.
 `CONFIG SET maxclients` changes admission for subsequent connections;
 lowering it below the current count leaves every existing client connected.
-The pinned Whitefoot host APIs have no resource-limit facility, so firn
-leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
+The Whitefoot release firn was written against, `wf-af7665be672d`, had no
+resource-limit facility; the pinned release adds `open_files_limit` and
+`raise_open_files_limit` to `std::process`, which firn does not call yet, so
+firn leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
 `maxclients` at startup or refuse `CONFIG SET` solely because the operating
 system cannot supply enough descriptors; Redis can also refuse its event
 loop's capacity adjustment. The configured application limit does not
@@ -809,7 +811,7 @@ installation is durable clears a sync failure; ordinary rewrite rotation
 resets neither. This deliberately differs from Redis 7.2.16's successful
 old-file fsync-and-close, which clears its background sync error before
 rewrite completion; firn preserves the saved error until the new files are
-durable ([recovery rule](../design/firn/append-only-file.md)).
+durable ([recovery rule](../design/decisions/persistence/append-only-file/errors.md#decision-aof-rotation-keeps-saved-errors)).
 
 A refused queued write or PING dirties MULTI. EXEC with a queued WRITE command
 is discarded with EXECABORT and the MISCONF text while failure remains; read-only
@@ -831,7 +833,7 @@ background BIO queue or append postponement behind a background sync. The firn-o
 `firn_aof_rewrite_commit_seq` is the actual dataset statement sequence while
 AOF is enabled. With AOF disabled a command that queues no expiry holds only
 its keys and takes no sequence, so the field is left out, following the
-[reported-facts rule](../design/firn/reported-facts.md).
+[reported-facts rule](../design/decisions/reported-facts.md#decision-reported-facts-real-fixed-or-absent).
 It starts at zero after loading, advances once for an atomic statement that
 changes the dataset, and is shared by every write in an `EXEC` or script
 attempt. Expiry and eviction removals count; reads and access refreshes do
@@ -915,7 +917,7 @@ history. Every retained byte belongs to a command the new base already holds,
 so publication releases them and clears the append failure, and writes are
 admitted again. This deliberately differs from Redis, which keeps its retained
 bytes for its still-selected incremental file and refuses writes until they
-are written ([direct installation](../design/firn/aof-rewrite.md)). A direct
+are written ([direct installation](../design/decisions/persistence/rewrite/installation.md#decision-aof-rewrite-admits-writes-after-direct-installation)). A direct
 installation that fails before publication keeps the old manifest, and the
 retained bytes drain to the old incremental file once it accepts appends; the
 new empty incremental file stays in place, as after a failed switch, because a

@@ -9,7 +9,7 @@ scripting through Halo, the Lua engine of
 
 firn serves Whitefoot: it is the real server that shows what Whitefoot gives a
 concurrent, persistent network program under its guarantees, and exposes what
-Whitefoot still lacks. Its milestones ([design](design/firn.md)) are
+Whitefoot still lacks. Its milestones ([design](design/decisions/milestones.md)) are
 standalone Redis application workloads, cache and session storage and
 scripted conditional updates, used by existing applications through their
 ordinary clients with their business logic unchanged, and then the keyspace
@@ -105,6 +105,12 @@ When priorities conflict, first:
   `linux-modules-extra-$(uname -r)` through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
+- Each test is a target in `TESTS` of the Makefile: the gate's targets but
+  `compiler`, then `aof-sync-fault`, `design-ready` and `pin-ready`. CI runs
+  each in a step by itself through `whitefoot-kit/ci/run-tests.py`, which
+  reports it as JUnit XML; `fast.yml` runs, by hand only, just the tests it is
+  given ([downstream.md](whitefoot-kit/downstream.md#tests-in-ci)). A push to
+  a branch the engine of wf-agents makes (`work-…`, `wf-try/…`) runs no check.
 - `release.yml` is separate from `make check`: packaging pull requests and
   manual dispatches build `make firn-lto`, check its shared libraries, package
   the Linux x86-64 program and Docker image, and execute the quickstart's

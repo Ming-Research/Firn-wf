@@ -1,0 +1,369 @@
+# firn's fast workflow (`ci.fast` of wf-agents.toml): what an agent's
+# `run_tests` waits for while a work is under way. It runs only by hand, which
+# only someone who may write to the repository can ask for. The engine of
+# wf-agents always asks for it on main, so that this file as main holds it
+# runs, with the commit to test, a value only its request knows, which the
+# run's name holds, the tests to run and how long one test may run.
+#
+# A test is a target in TESTS of the Makefile, as check.yml and
+# design-readiness.yml name it in their results. This workflow runs only the
+# tests it is given, each by itself, through whitefoot-kit/ci/run-tests.py,
+# after only the setup they need: the compiler and its LLVM for any test but
+# the design checks and gate-sync; the reference Redis for the network cases,
+# the Redis suite and the sync failures; Rust for the network cases and the
+# sync failures; tclsh and patch for the Redis suite; strace for the network
+# cases and the sync failures; and the failing device for the sync failures.
+# A name no test has is said in the log and reported as nothing, which the
+# engine reads as a test that did not run. What became of each test is JUnit
+# XML in the artifact `test-results`.
+#
+# The tests run on the owner's own machine, the self-hosted runner 14900k, as
+# the fast workflow of wf-agents does, because an agent waits for this
+# workflow each time it asks for tests. Each runner of that machine keeps its
+# checkout between runs, and with it build/ (the compiler's download, firn's
+# builds and their caches, the reference Redis) and tests/target/ (the network
+# cases' Rust build), so a run builds again only what changed. The checkout
+# leaves them in place (`clean: false`), and the step after it clears the rest
+# of what the last run left. A job there has no root: it checks the LLVM the
+# machine keeps (`make toolchain-check`) and installs none, takes Rust from
+# the machine's rustup, and unpacks a tool the machine lacks from its Ubuntu
+# package into the job's own directory.
+#
+# aof-sync-fault does not run there: it needs a device-mapper device that only
+# root can make (`sudo tests/aof_sync_fault_device.sh`), and the package
+# dmsetup. It runs in the job `github`, on GitHub's ubuntu-24.04, as check.yml
+# runs it, and that job starts only when it is named.
+#
+# It runs only by hand, never on a pull request: the repository is public,
+# and a trigger by a pull request would run anyone's code on the owner's
+# machine.
+name: fast
+run-name: fast ${{ inputs.call }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit to check out and test, pushed to a branch of the repository already
+        required: true
+      call:
+        description: A value only the request that asks for this run knows, which the run's name holds
+        required: true
+      tests:
+        description: The tests to run, each name followed by a line break
+        required: false
+        default: ''
+      test_stop:
+        description: How long one test may run before it is stopped, in whole seconds; empty for no stop but the job's limit
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# No concurrency group: each run is a request an agent waits for, which
+# another request must not cancel.
+
+env:
+  # The tests that need root, which run on GitHub's machines.
+  ROOT_TESTS: aof-sync-fault
+
+jobs:
+  tests:
+    name: tests (14900k)
+    runs-on: [self-hosted, 14900k]
+    # check.yml gives the jobs of the Redis suite and the network cases 25 and
+    # 20 minutes; named together, they run one after the other here.
+    timeout-minutes: 60
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+      TESTS_JUNIT: ${{ github.workspace }}/build/test-results/tests (14900k).xml
+      TESTS_SUITE: tests (14900k)
+      TESTS_STOP: ${{ inputs.test_stop }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          submodules: true
+          fetch-depth: 0
+          clean: false
+          # No later step pushes, so the token is not left in the checkout,
+          # which the runner keeps.
+          persist-credentials: false
+
+      # What the builds make stays; what a run writes as its outcome goes: the
+      # results, which run-tests.py adds to, the suite's run and the
+      # witnesses' diagnostics.
+      - name: Clear what the last run left
+        run: |
+          git clean -ffdxq -e /build -e /tests/target
+          git submodule foreach --quiet --recursive git clean -ffdxq
+          rm -rf build/test-results build/redis-suite build/safety-witnesses
+
+      # The names given, one a line, but those of GitHub's job, and what they
+      # need set up.
+      - name: Read the names
+        id: names
+        env:
+          GIVEN: ${{ inputs.tests }}
+        run: |
+          printf '%s\n' "$GIVEN" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF && !seen[$0]++' \
+            | grep -vxF -f <(printf '%s\n' $ROOT_TESTS) > "$RUNNER_TEMP/names" || true
+          echo "Named here:"
+          cat "$RUNNER_TEMP/names"
+          compiler=false redis=false rust=false tcl=false strace=false
+          while IFS= read -r name; do
+            case "$name" in
+              design-lint|design-ready|pin-ready|gate-sync) ;;
+              *) compiler=true ;;
+            esac
+            case "$name" in
+              test) redis=true; rust=true; strace=true ;;
+              redis-suite) redis=true; tcl=true ;;
+            esac
+          done < "$RUNNER_TEMP/names"
+          {
+            echo "compiler=$compiler"
+            echo "redis=$redis"
+            echo "rust=$rust"
+            echo "tcl=$tcl"
+            echo "strace=$strace"
+          } >> "$GITHUB_OUTPUT"
+
+      # As design-readiness.yml names it, for the design checks.
+      - name: Name main as a local ref
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          git branch -f main origin/main
+
+      # The design checks review the commit as a work branch is reviewed:
+      # against its fork point from main.
+      - name: Select the design review base
+        run: |
+          design_review_base=$(git merge-base refs/remotes/origin/main HEAD)
+          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$design_review_base"
+
+      # The suite's tclsh 8.6, as Ubuntu 24.04 gives check.yml, and patch; the
+      # network cases' strace. A tool the machine has is used as it is. One it
+      # lacks is unpacked, with each package it needs that the machine has not
+      # installed, from the machine's own apt lists into the job's directory
+      # with `dpkg -x`, which needs no root; the packages are kept in the
+      # runner's tool cache, so each is downloaded once.
+      - name: Get the tools the machine lacks, without root
+        if: steps.names.outputs.tcl == 'true' || steps.names.outputs.strace == 'true'
+        env:
+          TCL: ${{ steps.names.outputs.tcl }}
+          STRACE: ${{ steps.names.outputs.strace }}
+          DEBS: ${{ runner.tool_cache }}/firn-debs
+        run: |
+          set -euo pipefail
+          want=()
+          if [ "$TCL" = true ]; then
+            [ "$(echo 'puts [info patchlevel]' | tclsh 2>/dev/null | cut -d. -f1,2)" = 8.6 ] || want+=(tcl8.6)
+            command -v patch > /dev/null || want+=(patch)
+          fi
+          if [ "$STRACE" = true ]; then
+            command -v strace > /dev/null || want+=(strace)
+          fi
+          if [ ${#want[@]} -eq 0 ]; then
+            echo "The machine has every tool the named tests need."
+            exit 0
+          fi
+          echo "The machine lacks: ${want[*]}"
+          root="$RUNNER_TEMP/tools"
+          mkdir -p "$DEBS" "$root/bin"
+          needed=$(apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks \
+            --no-replaces --no-enhances "${want[@]}" | grep -E '^[a-z0-9]' | sort -u)
+          for p in $needed; do
+            if dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed'; then continue; fi
+            ( cd "$DEBS"; ls "${p}"_*.deb > /dev/null 2>&1 || apt-get download "$p" > /dev/null 2>&1 \
+              || echo "not downloadable: $p" )
+            for d in "$DEBS/${p}"_*.deb; do
+              if [ -f "$d" ]; then dpkg -x "$d" "$root"; fi
+            done
+          done
+          # The suite runs `tclsh`; the package names it tclsh8.6.
+          if [ -x "$root/usr/bin/tclsh8.6" ]; then ln -sf ../usr/bin/tclsh8.6 "$root/bin/tclsh"; fi
+          if [ -d "$root/usr/share/tcltk/tcl8.6" ]; then
+            echo "TCL_LIBRARY=$root/usr/share/tcltk/tcl8.6" >> "$GITHUB_ENV"
+          fi
+          echo "LD_LIBRARY_PATH=$root/usr/lib/x86_64-linux-gnu:$root/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          echo "$root/usr/bin" >> "$GITHUB_PATH"
+          echo "$root/bin" >> "$GITHUB_PATH"
+
+      - name: Show the tests' tools
+        if: steps.names.outputs.tcl == 'true' || steps.names.outputs.strace == 'true'
+        env:
+          TCL: ${{ steps.names.outputs.tcl }}
+          STRACE: ${{ steps.names.outputs.strace }}
+        run: |
+          if [ "$TCL" = true ]; then
+            echo "tclsh $(echo 'puts [info patchlevel]' | tclsh)"
+            patch --version | head -n 1
+          fi
+          if [ "$STRACE" = true ]; then strace -V | head -n 1; fi
+
+      # The pinned compiler links with /usr/bin/clang and LLD of the LLVM
+      # major its release names. The machine keeps its own, which no job may
+      # change, so the job checks it (make toolchain-check, which downloads
+      # the compiler first when build/ lacks it) and installs nothing.
+      - name: Download the pinned compiler and check the machine's LLVM
+        if: steps.names.outputs.compiler == 'true'
+        run: |
+          make toolchain-check
+          ld.lld --version
+          /usr/bin/clang --version
+
+      # The machine's rustup, under the runner's home, with its own default
+      # toolchain; the job installs none.
+      - name: Put the machine's Rust on the path
+        if: steps.names.outputs.rust == 'true'
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/cargo" --version
+
+      # The reference Redis 7.2.16, built once from its release archive into
+      # build/redis-compat-cache, which the runner keeps.
+      - name: Build the reference Redis
+        if: steps.names.outputs.redis == 'true'
+        run: |
+          bin=$(tests/redis-suite/reference.sh)
+          "$bin/redis-server" --version
+          echo "REDIS_SERVER=$bin/redis-server" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: whitefoot-kit/ci/run-tests.py --names "$RUNNER_TEMP/names"
+
+      - name: Name the job's end in its results
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ job.status }}
+        run: whitefoot-kit/ci/run-tests.py --end "$STATUS"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: junit-14900k
+          path: build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The tests that need root, on GitHub's machine, as check.yml's
+  # aof-sync-fault job runs them. It starts only when one of them is named.
+  github:
+    name: tests (ubuntu-24.04)
+    if: ${{ contains(inputs.tests, 'aof-sync-fault') }}
+    runs-on: ubuntu-24.04
+    # check.yml gives the sync failures 30 minutes.
+    timeout-minutes: 30
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+      TESTS_JUNIT: ${{ github.workspace }}/build/test-results/tests (ubuntu-24.04).xml
+      TESTS_SUITE: tests (ubuntu-24.04)
+      TESTS_STOP: ${{ inputs.test_stop }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          submodules: true
+
+      # Only the names of this job's tests.
+      - name: Read the names
+        id: names
+        env:
+          GIVEN: ${{ inputs.tests }}
+        run: |
+          printf '%s\n' "$GIVEN" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF && !seen[$0]++' \
+            | grep -xF -f <(printf '%s\n' $ROOT_TESTS) > "$RUNNER_TEMP/names" || true
+          echo "Named here:"
+          cat "$RUNNER_TEMP/names"
+          device=false
+          if grep -qx aof-sync-fault "$RUNNER_TEMP/names"; then device=true; fi
+          echo "device=$device" >> "$GITHUB_OUTPUT"
+
+      # As check.yml's aof-sync-fault job: dmsetup drives the device, and the
+      # cases trace the servers with strace.
+      - name: Install the host toolchain
+        if: steps.names.outputs.device == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dmsetup strace
+          make compiler
+          make toolchain
+          ld.lld --version
+          /usr/bin/clang --version
+
+      - name: Select the Rust toolchain
+        if: steps.names.outputs.device == 'true'
+        run: rustup default stable && cargo --version
+
+      # The reference Redis 7.2.16, built as check.yml's jobs build it and
+      # cached under the same key.
+      - name: Restore the Redis build
+        id: redis-cache
+        if: steps.names.outputs.device == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis, the oracle
+        if: steps.names.outputs.device == 'true'
+        run: |
+          bin=$(tests/redis-suite/reference.sh)
+          "$bin/redis-server" --version
+          echo "REDIS_SERVER=$bin/redis-server" >> "$GITHUB_ENV"
+
+      - name: Save the Redis build
+        if: steps.names.outputs.device == 'true' && steps.redis-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      # As check.yml's aof-sync-fault job makes it, and checks that no
+      # periodic writeback reaches it.
+      - name: Make the faulty device
+        if: steps.names.outputs.device == 'true'
+        run: |
+          mount="$RUNNER_TEMP/sync-fault"
+          sudo tests/aof_sync_fault_device.sh setup "$mount" "$(id -u):$(id -g)"
+          echo "FIRN_SYNC_FAULT_MOUNT=$mount" >> "$GITHUB_ENV"
+          sudo tests/aof_sync_fault_device.sh check-writeback "$mount"
+
+      - name: Test
+        run: whitefoot-kit/ci/run-tests.py --names "$RUNNER_TEMP/names"
+
+      - name: Remove the faulty device
+        if: always() && steps.names.outputs.device == 'true'
+        run: sudo tests/aof_sync_fault_device.sh teardown "$RUNNER_TEMP/sync-fault"
+
+      - name: Name the job's end in its results
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ job.status }}
+        run: whitefoot-kit/ci/run-tests.py --end "$STATUS"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: junit-github
+          path: build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The JUnit of both jobs, in the one artifact the engine reads. It runs on
+  # the owner's machine, which picks it up at once, and runs none of the
+  # repository's code.
+  results:
+    needs: [tests, github]
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, 14900k]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/upload-artifact/merge@v4
+        continue-on-error: true
+        with:
+          name: test-results
+          pattern: junit-*

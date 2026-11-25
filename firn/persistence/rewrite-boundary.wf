@@ -52,7 +52,7 @@ fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> re
       set boundary^.whole = False();
       return unit;
     }
-    let parsed = pkg::protocol::parse_request_stream(input: input, start: consumed, held: length, args: &args, stream: &stream);
+    let parsed = pkg::protocol::parse_request_stream(input: input, start: consumed, held_bytes: length, args: &args, stream: &stream);
     if parsed.state == 1_u64 {
       let kind = aof_block_word(input: &stream.word[0_u64..5_u64], start: 0_u64, length: stream.length, count: stream.count);
       if kind == 1_u64 {
@@ -120,7 +120,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
           let input = pkg::protocol::input_new(capacity: 65536_u64);
           let args = box_slots_new::<Span>(capacity: 32768_u64);
           let stream = pkg::protocol::request_stream_new();
-          let held = 0_u64;
+          let held_bytes = 0_u64;
           let offset = 0_u64;
           let scanning = False();
           let first_multi = 0_u64;
@@ -131,7 +131,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
             if cancelled {
               break @chunks;
             }
-            if held >= input.inner.len {
+            if held_bytes >= input.inner.len {
               let old_input = input.inner.cap;
               let old_args = args.inner.cap;
               let capacity = old_input *sat 2_u64;
@@ -164,7 +164,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
               } else {
                 break @chunks;
               }
-              if held >= input.inner.len {
+              if held_bytes >= input.inner.len {
                 break @chunks;
               }
             }
@@ -172,11 +172,11 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
             let ended = False();
             let failed = False();
             let window = &input.inner[0_u64..capacity];
-            match std::fs::read_at(factory: factory, file: &file, destination: window, file_offset: offset, start: held, end: capacity) {
+            match std::fs::read_at(factory: factory, file: &file, destination: window, file_offset: offset, start: held_bytes, end: capacity) {
               Ok(value: next) => {
-                let got = next -sat held;
+                let got = next -sat held_bytes;
                 set offset = offset +sat got;
-                set held = next;
+                set held_bytes = next;
                 set ended = got == 0_u64;
               }
               Err(error: problem) => {
@@ -191,7 +191,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
               }
             }
             if ended {
-              let empty = held == 0_u64;
+              let empty = held_bytes == 0_u64;
               let at_boundary = stream.phase == 0_u64;
               let whole = band(empty, at_boundary);
               let readable = bnot(failed);
@@ -202,9 +202,9 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
               break @chunks;
             }
             let consumed = 0_u64;
-            let base = offset -sat held;
+            let base = offset -sat held_bytes;
             loop @commands {
-              let parsed = pkg::protocol::parse_request_stream(input: window, start: consumed, held: held, args: &args, stream: &stream);
+              let parsed = pkg::protocol::parse_request_stream(input: window, start: consumed, held_bytes: held_bytes, args: &args, stream: &stream);
               if parsed.state == 0_u64 {
                 set consumed = parsed.next;
                 break @commands;
@@ -231,14 +231,14 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
               }
               set consumed = parsed.next;
               set command_start = base +sat consumed;
-              if consumed >= held {
+              if consumed >= held_bytes {
                 break @commands;
               }
             }
             if failed {
               break @chunks;
             }
-            set held = pkg::protocol::keep_rest(input: &input, from: consumed, held: held);
+            set held_bytes = pkg::protocol::keep_rest(input: &input, from: consumed, held_bytes: held_bytes);
             aof_rw_pause(clock: clock);
           }
           if accepted {
