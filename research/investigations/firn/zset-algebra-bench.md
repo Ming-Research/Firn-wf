@@ -134,6 +134,30 @@ explain before this item merges. The 20 items never touch a new command; the
 change they can show is the shared dispatch's, which this item grew by ten
 names.
 
+## Runs
+
+Each is a dispatch of `redis-bench.yml` on the 14900K (`runner` 14900k), whose
+run number the results below name. Probe with `passes` 2 and `seconds` 3 first;
+the cells use at least 6 passes.
+
+1. **Exclusivity check.** `mode` workloads, `cpus` 2, `tests` `zunionstore`,
+   `workload_servers` `firn`, `connections` `1 2`, `depths` 16, `seconds` 5.
+2. **Cells.** `mode` workloads, `cpus` 2, `tests` `zunionstore zinterstore
+   zmpop`, `workload_images` true, `revisions` `head=HEAD head-twin=HEAD`,
+   `workload_servers` `reference redis-latest valkey-latest valkey-io-latest
+   dragonfly-latest garnet-latest firn`, `connections` 50, `depths` `16 1`,
+   `seconds` 3 for `zmpop` and 5 for the stores (two dispatches, since the
+   input is one value), `passes` 6. `summary.py zset` reads `zset.csv` and
+   `zset-limited.csv`.
+3. **20 default items.** `mode` scale, `revisions` `base=<main before this
+   item> head=HEAD`, `cpus` 2, `tests` the 20 items of `SUITE_DEFAULT`,
+   `workload_servers` `redis-latest valkey-latest valkey-io-latest
+   dragonfly-latest garnet-latest` (which only makes the run fetch the
+   servers), `passes` 6; then `mode` compare, `revisions` `base=...
+   head=HEAD head-twin=HEAD`, the same tests, `depths` 16, `cpus` 2, `passes`
+   6, and `summary.py ratios COMPARE.csv --base base --head head --twin
+   head-twin`.
+
 ## Results
 
 No measurement has been made. The cells, the exclusivity check and the 20 items
