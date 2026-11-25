@@ -238,7 +238,7 @@ run of the case does to the connection (`ss -tinm`, run 45631080163):
 - the server's socket holds 2768665 bytes it has not sent (`notsent`), its
   peer's window is closed, and it has probed that window four times, each
   wait twice the last (`backoff:4`, the last answer 1.6 s before);
-- the rest of the frame, 9.8 MiB, is in firn, whose send is in the ring
+- the rest of the frame, 9.4 MiB, is in firn, whose send is in the ring
   waiting for the socket to take more (`PollList: op=26`).
 
 The kernel probes a closed window 0.2 s after it closes and then after 0.4,
