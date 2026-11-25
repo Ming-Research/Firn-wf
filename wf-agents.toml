@@ -1,0 +1,114 @@
+# Firn-wf's declaration for the engine of wf-agents, read from main as the engine starts: what is firn's own, which the
+# agents of its works are given and the engine runs. A path is from the root of firn's checkout.
+
+# The directory that holds firn's design tree, which the engine looks at on each work's branch. The tree is still in its
+# older form (Design-skill's nodes, design/firn.md and design/firn/, and design/log.md); the engine's form check and its
+# agents read only the entries under design/principles/ and design/decisions/, which it does not have yet.
+tree = "design/"
+
+# firn's guide for its agents: its goal and priorities, its references, its paths and its checks.
+[files.guide]
+path = "AGENTS.md"
+
+# No [files.constitution]: firn has no constitution yet. The words the engine begins each session with name the
+# project's constitution, so the engine holds firn, saying the file is missing, until the owner writes
+# design/constitution.md and names it here.
+
+[project]
+# Where an agent keeps what it makes for research, committed: research/investigations/ and research/experiments/.
+research = "research/"
+# How an agent names a test to `run_tests`, as check.yml, design-readiness.yml and fast.yml name it in their JUnit.
+test_names = "a test of firn by its target in TESTS of the Makefile: `firn`, `test` (every network case), `redis-suite`, `design-lint`, `gate-sync`, `safety-witnesses`, `aof-sync-fault`, `design-ready` or `pin-ready`; a single network case or Redis suite test is not named alone"
+
+# Where firn's tests are, as git pathspecs, which are all a line that changes only the tests may change: the network
+# cases, the Redis suite's runner and lists and the list-ceiling fixture under tests/, and the safety witnesses the gate
+# compiles. The data its tests expect: the Redis suite's lists of passing, unstable and hung tests, the recorded
+# collection-scan replies and the witnesses' expected diagnostics.
+[tests]
+paths = ["tests/", "research/experiments/safety-witnesses/"]
+expected = [
+  "tests/redis-suite/passing.tsv",
+  "tests/redis-suite/unstable.tsv",
+  "tests/redis-suite/hung.tsv",
+  "tests/collection-scan-oracle.json",
+  "research/experiments/safety-witnesses/cases.tsv",
+]
+
+# firn's workflows, which the engine runs by hand on main's file with a commit given. Each reports every test as JUnit
+# XML, named by its target, in the artifact `test-results`; each test runs by itself through whitefoot-kit/ci/run-tests.py.
+[ci.fast]
+# Runs only the tests it is given, after only the setup they need.
+workflow = "fast.yml"
+# The owner's own machine, the self-hosted runner 14900k: an agent waits for this workflow each time it asks for tests,
+# and that machine keeps the checkout, firn's builds and the reference Redis between runs, so a run builds again only
+# what changed. aof-sync-fault needs a device only root can make, so it runs in a job of the same workflow on GitHub's
+# ubuntu-24.04.
+runner = "14900k"
+# check.yml gives the jobs of the Redis suite and the network cases 25 and 20 minutes; named together, they run one
+# after the other on the 14900k, within that job's 60 minutes, while the sync failures run beside them on GitHub's
+# machine. A run not complete by then is cancelled, and said as what it found.
+too_long = "90m"
+
+[ci.full]
+# Every check a merge needs, run once before the merge: the gate and the sync failures (check.yml), and the design
+# tree's change log and the pin of a main release (design-readiness.yml). check.yml also checks every push but those to
+# the engine's branches, and design-readiness.yml every pull request that is ready and every push to main.
+workflows = ["check.yml", "design-readiness.yml"]
+runner = "github"
+too_long = "90m"
+
+# firn merges its pull requests with a merge commit, as all of them so far. A work's branch is deleted once merged, its
+# commits being in main.
+[pull_request]
+merge_method = "merge"
+delete_branch = true
+
+# The paths that govern firn's agents, which the owner changes: a work's change to one asks the owner whether it stays.
+# The review checklist is what a work's review holds it to. The declaration is listed, since it names commands the
+# engine runs.
+[protected]
+paths = [
+  "AGENTS.md",
+  "docs/review-checklist.md",
+  "design/constitution.md",
+  "design/principles/",
+  ".github/workflows/",
+  "wf-agents.toml",
+]
+
+# firn's heavy commands, which no agent runs: builds, tests and measurements run in CI, never on the machine the agents
+# run on (whitefoot-kit/README.md). `make` reaches every build and check; the others are the compilers, the Rust
+# tests, the reference Redis and its suite, the scripts that build, run or measure servers, and the release's image, as
+# the Makefile, the workflows and AGENTS.md run them.
+[heavy]
+commands = [
+  "make",
+  "whitefootc",
+  "clang",
+  "cc",
+  "gcc",
+  "ld.lld",
+  "cargo",
+  "rustc",
+  "rustup",
+  "tclsh",
+  "redis-server",
+  "redis-benchmark",
+  "docker",
+  "tests/redis-suite/run.sh",
+  "tests/redis-suite/run-shards.sh",
+  "tests/redis-suite/reference.sh",
+  "research/experiments/redis-bench/redis-bench.sh",
+  "research/experiments/consumers/run.sh",
+  "sh research/experiments/safety-witnesses/check.sh",
+  "research/experiments/safety-witnesses/check.sh",
+  "packaging/quickstart-check.sh",
+  "whitefoot-kit/ci/run-tests.py",
+  "python3 whitefoot-kit/ci/run-tests.py",
+]
+
+# The variables every agent's command line of firn's works is given beside the engine's own. Rustup installs no Rust
+# toolchain that a command asks for and the machine lacks, as rustfmt run on a test file might: the command fails instead
+# of downloading one, which would write beyond the worktree.
+[environment]
+RUSTUP_AUTO_INSTALL = "0"
