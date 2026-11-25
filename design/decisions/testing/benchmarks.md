@@ -27,8 +27,9 @@ Competitor servers are measured in compare mode, with the firn images' server CP
 - rejected: an agent proposed extending scale mode's fixed-order measurement to the competitors; the owner rejected it, because compare mode already carries the twin and client-busy observations the baseline rules require (data: `research/investigations/perf-baseline/README.md`).
 
 ### decision benchmark-competitor-lines-check-version-and-provenance-strictly
-Selecting a competitor line makes the run check its version and archive provenance strictly; only a probe may record unverified versions and omit an absent Dragonfly or Garnet.
+A full run checks each selected competitor's version, with only the pinned tag's commit as a suffix, and its provenance; only a probe may record unverified ones or omit Dragonfly or Garnet.
 - rejected: an agent proposed allowing missing executables or unverified provenance in a full run; the owner rejected it, because a full comparison needs identified competitors, while a probe must first establish which tools are installed.
+- replaced: rejecting every build suffix was on main; the owner changed it, because Dragonfly 2.0.2 prints v2.0.2-<tag commit> and Garnet 2.2.1 prints 2.2.1+<tag commit>, so no full run could pass (data: `research/investigations/perf-baseline/README.md`).
 
 ### decision benchmark-competitor-provenance-comes-from-installer-receipts
 A competitor's provenance is checked through a receipt the installer writes, binding the pinned version, URL and archive SHA-256 to the executable's real path and content hash.

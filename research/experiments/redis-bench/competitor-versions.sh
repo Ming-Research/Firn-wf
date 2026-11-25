@@ -10,22 +10,35 @@
 # Installation in CI checks those source bytes before building. An executable
 # hash cannot replace an archive pin; missing provenance fails full runs.
 
-# Match a complete formal-release token, not a prefix (2.0.20), prerelease
-# (2.0.2-rc1), or build suffix (2.0.2+local). Accept complete v/v= forms
-# printed by Redis/Valkey and a plain token when another server provides it.
-# Dragonfly v2.0.2 dfly_main.cc constructs colored kGitTag-kGitSha output:
-# https://github.com/dragonflydb/dragonfly/blob/v2.0.2/src/server/dfly_main.cc#L994-L997
-# The exact Git SHA generation is not yet verified. Do not invent a permitted
-# suffix: a probe records the real output as mismatched until that format is
-# established. Garnet v2.2.1's --version parser is also still unverified: its
-# entry point only passes args into GarnetServer, without handling --version:
-# https://github.com/microsoft/garnet/blob/v2.2.1/main/GarnetServer/Program.cs#L12-L23
+# Match a complete formal-release token, not a prefix (2.0.20) or a
+# prerelease (2.0.2-rc1). Accept complete v/v= forms printed by Redis/Valkey
+# and a plain token when another server provides it. A build suffix is accepted
+# only for a line that names the commit its pinned tag points to (the third
+# argument, the full 40-hex id): "-" or "+" followed by at least 7 lowercase
+# hex digits that begin that commit id, as the releases print it. Dragonfly
+# v2.0.2 prints "dragonfly <green>v2.0.2-8ce4bbb1...</green>" (kGitTag-kGitSha,
+# src/server/dfly_main.cc) and Garnet v2.2.1 prints "GarnetServer
+# 2.2.1+b0255a31..." (an assembly version with its source revision); both are
+# the pinned tag's full commit id, read from the 14900K run in
+# research/investigations/perf-baseline/README.md. Terminal colour codes are
+# removed first. Any other suffix, such as -rc1, +local or another commit,
+# is rejected.
 version_release_matches() {
-    printf '%s\n' "$2" | awk -v release="$1" '
+    printf '%s\n' "$2" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk -v release="$1" -v commit="${3:-}" '
+        function tag_suffix_ok(rest,    hex) {
+            if (commit == "" || length(rest) < 8) return 0
+            if (substr(rest, 1, 1) != "-" && substr(rest, 1, 1) != "+") return 0
+            hex = substr(rest, 2)
+            return hex ~ /^[0-9a-f]+$/ && length(hex) >= 7 && substr(commit, 1, length(hex)) == hex
+        }
         {
             count = split($0, token, /[[:space:]=:,()]+/)
             for (i = 1; i <= count; i++) {
                 if (token[i] == release || token[i] == "v" release)
+                    found = 1
+                else if (index(token[i], release) == 1 && tag_suffix_ok(substr(token[i], length(release) + 1)))
+                    found = 1
+                else if (index(token[i], "v" release) == 1 && tag_suffix_ok(substr(token[i], length(release) + 2)))
                     found = 1
             }
         }
@@ -53,7 +66,9 @@ compare_version_acceptable() {
     esac
 }
 
-# Version, archive URL and immutable SHA-256, one field per line. These pins
+# Version, archive URL, immutable SHA-256 and the commit the release tag
+# points to, one field per line (valkey has no commit field: its release
+# prints the plain token). These pins
 # must agree with redis-bench.yml's install-competitors job. "unavailable"
 # is an explicit blocker, never a digest accepted from a receipt or environment.
 competitor_pin() {
@@ -61,11 +76,13 @@ competitor_pin() {
         dragonfly)
             printf '%s\n' '2.0.2' \
                 'https://github.com/dragonflydb/dragonfly/releases/download/v2.0.2/dragonfly-x86_64.tar.gz' \
-                'eb9dfe654c69ab190cb3aa329ed3599ebe19c5e9a3a437bb7bc38ef52f665c88' ;;
+                'eb9dfe654c69ab190cb3aa329ed3599ebe19c5e9a3a437bb7bc38ef52f665c88' \
+                '8ce4bbb106586057fbd85f71ed353c60d0d5bf87' ;;
         garnet)
             printf '%s\n' '2.2.1' \
                 'https://github.com/microsoft/garnet/releases/download/v2.2.1/linux-x64-based.tar.xz' \
-                '605d91a6ba4c3f4f416b74e676e945b983cf73fdd28e8cad569aa84e699d3903' ;;
+                '605d91a6ba4c3f4f416b74e676e945b983cf73fdd28e8cad569aa84e699d3903' \
+                'b0255a31de95b1e903ee187feb59ceb04819a639' ;;
         valkey)
             printf '%s\n' '9.1.2' \
                 'https://github.com/valkey-io/valkey/archive/refs/tags/9.1.2.tar.gz' \
@@ -293,14 +310,14 @@ compare_versions() (
                 continue ;;
         esac
         case $cv_name in
-            dragonfly) cv_version_support=build-suffix-unverified ;;
-            garnet) cv_version_support=version-command-unverified ;;
+            dragonfly|garnet) cv_version_support=release-token-with-tag-commit-suffix ;;
             *) cv_version_support=formal-release-token ;;
         esac
         case $cv_seen in *" $cv_name "*) continue ;; esac
         cv_seen="$cv_seen$cv_name "
         cv_archive_url=unavailable
         cv_archive_sha=unavailable
+        cv_tag_commit=
         cv_receipt_path=not-applicable
         cv_receipt_status=not-applicable
         if [ "$cv_name" != reference ]; then
@@ -308,6 +325,7 @@ compare_versions() (
             cv_expected=$(printf '%s\n' "$cv_pins" | sed -n '1p')
             cv_archive_url=$(printf '%s\n' "$cv_pins" | sed -n '2p')
             cv_archive_sha=$(printf '%s\n' "$cv_pins" | sed -n '3p')
+            cv_tag_commit=$(printf '%s\n' "$cv_pins" | sed -n '4p')
             cv_receipt_path=$HOME/.local/opt/$cv_name-$cv_expected/firn-install-receipt
         fi
         cv_path=$(command -v "$cv_bin" 2>/dev/null) || cv_path=
@@ -363,7 +381,7 @@ compare_versions() (
         fi
         cv_version_status=command-failed
         if [ "$cv_exit" -eq 0 ]; then
-            if version_release_matches "$cv_expected" "$cv_output"; then
+            if version_release_matches "$cv_expected" "$cv_output" "$cv_tag_commit"; then
                 cv_version_status=matched
             else
                 cv_version_status=mismatched
@@ -401,13 +419,13 @@ compare_versions() (
 # source archive is fetched, started or hashed by these cases.
 versions_selftest() (
     versions_expect_match() {
-        if ! version_release_matches "$1" "$2"; then
+        if ! version_release_matches "$1" "$2" "${3:-}"; then
             echo "versions-selftest: rejected release '$2'" >&2
             exit 1
         fi
     }
     versions_expect_reject() {
-        if version_release_matches "$1" "$2"; then
+        if version_release_matches "$1" "$2" "${3:-}"; then
             echo "versions-selftest: accepted non-release '$2'" >&2
             exit 1
         fi
@@ -420,12 +438,33 @@ versions_selftest() (
     versions_expect_reject 2.0.2 'dragonfly version v2.0.20'
     versions_expect_reject 2.0.2 'dragonfly version v2.0.2-rc1'
     versions_expect_reject 2.0.2 'dragonfly version v2.0.2+local'
-    # A SHA suffix remains rejected until its exact pinned build format is
-    # established; it must not accidentally reopen prerelease acceptance.
-    versions_expect_reject 2.0.2 'dragonfly v2.0.2-01234567'
     versions_expect_reject 2.0.2 'dragonfly version v2.0.2.1'
     versions_expect_reject 2.0.2 'dragonfly version prefix2.0.2'
     versions_expect_reject 2.2.1 'GarnetServer 2.1.9'
+    # A build suffix is a hex prefix, at least 7 digits, of the commit the
+    # pinned tag points to, and only for a line that names that commit. The
+    # accepted outputs are the ones the 14900K run printed, colour codes and
+    # all.
+    dragonfly_commit=8ce4bbb106586057fbd85f71ed353c60d0d5bf87
+    garnet_commit=b0255a31de95b1e903ee187feb59ceb04819a639
+    esc=$(printf '\033')
+    versions_expect_match 2.0.2 "dragonfly ${esc}[0;32mv2.0.2-$dragonfly_commit${esc}[m
+build time: ${esc}[0;33m2026-10-07 20:47:39${esc}[m" "$dragonfly_commit"
+    versions_expect_match 2.2.1 "GarnetServer 2.2.1+$garnet_commit" "$garnet_commit"
+    versions_expect_match 2.0.2 'dragonfly v2.0.2-8ce4bbb' "$dragonfly_commit"
+    versions_expect_match 2.2.1 'GarnetServer 2.2.1+b0255a3' "$garnet_commit"
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2-8ce4bbb' ''
+    versions_expect_reject 2.2.1 "GarnetServer 2.2.1+$garnet_commit" ''
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2-8ce4bb' "$dragonfly_commit"
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2-8ce4bbc1' "$dragonfly_commit"
+    versions_expect_reject 2.0.2 "dragonfly v2.0.2-${dragonfly_commit}0" "$dragonfly_commit"
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2-8CE4BBB1' "$dragonfly_commit"
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2-8ce4bbb1-dirty' "$dragonfly_commit"
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2-rc1' "$dragonfly_commit"
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2+local' "$dragonfly_commit"
+    versions_expect_reject 2.0.2 'dragonfly v2.0.20-8ce4bbb1' "$dragonfly_commit"
+    versions_expect_reject 2.0.2 "dragonfly v2.0.2.1-$dragonfly_commit" "$dragonfly_commit"
+    versions_expect_reject 2.2.1 "GarnetServer 2.2.1+$dragonfly_commit" "$garnet_commit"
     reference_origin_matches /cache/reference/bin/redis-server /cache/reference/bin/redis-server || exit 1
     if reference_origin_matches /usr/bin/redis-server /cache/reference/bin/redis-server || \
         reference_origin_matches '' /cache/reference/bin/redis-server || \
@@ -520,5 +559,25 @@ PY
     # The receipt binds the executable's bytes: a changed file is not verified.
     printf '#!/bin/sh\necho "dragonfly version v2.0.2"\n# changed\n' >"$cvs_good"
     cvs_expect false dragonfly "$cvs_good" 1 'receipt_check=executable-digest-mismatch'
+    # What Dragonfly v2.0.2 printed on the 14900K: colour codes and the tag's
+    # commit as the suffix. With its receipt a full run passes; with another
+    # commit, or the right commit and no receipt, it does not.
+    cvs_real=$cvs_dir/bin/real
+    cat >"$cvs_real" <<'FAKE'
+#!/bin/sh
+printf 'dragonfly \033[0;32mv2.0.2-8ce4bbb106586057fbd85f71ed353c60d0d5bf87\033[m\nbuild time: \033[0;33m2026-10-07 20:47:39\033[m\n'
+FAKE
+    cvs_other=$cvs_dir/bin/other
+    cat >"$cvs_other" <<'FAKE'
+#!/bin/sh
+printf 'dragonfly \033[0;32mv2.0.2-1234567890abcdef1234567890abcdef12345678\033[m\n'
+FAKE
+    chmod 755 "$cvs_real" "$cvs_other" || exit 1
+    cvs_expect false dragonfly "$cvs_real" 1 'version_status=matched'
+    cvs_write_receipt "$cvs_real"
+    cvs_expect false dragonfly "$cvs_real" 0 'version_status=matched'
+    cvs_expect false dragonfly "$cvs_real" 0 'archive_provenance=verified'
+    cvs_expect false dragonfly "$cvs_other" 1 'version_status=mismatched'
+    cvs_expect true dragonfly "$cvs_other" 0 'version_status=mismatched'
     echo 'compare-versions-selftest: passed'
 )

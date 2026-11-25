@@ -179,7 +179,9 @@ and its twin, and every competitor, see the same drift.
 - `host.txt` records each server's `--version`, the redis-benchmark
   version, the firn revision and `whitefoot.pin`, the placement lines and
   the settings. The full baseline fails unless every version line names
-  the pinned release; the probe only records them. A checked source-archive
+  the pinned release, possibly followed by the pinned tag's commit as
+  `-` or `+` and at least 7 hex digits of it; the probe only records them.
+  A checked source-archive
   hash alone does not establish which executable PATH selects: the instrument
   also requires the selected Redis server's real path to match the server
   in the build directory returned by `reference.sh bin` before recording
@@ -279,16 +281,14 @@ holds. The instrument is not the verdict: it does not calculate rule 6.
 6. *`valkey-io` passed a no-op flag and there was no `reference-io` line.*
    Closed in `compare` mode (`competitor_args`, with a `reference-io` line
    from two CPUs up).
-7. *Versions and archive hashes were recorded and not checked.* Closed for
-   everything but the version line of Dragonfly and Garnet: a full
-   (non-probe) run fails on a missing executable, a version that is not
-   the pinned release or a missing or mismatched installer receipt
-   (`versions_selftest`, `compare_versions_selftest`). The version line itself is open: by
-   its source (`src/server/dfly_main.cc`, `config.version_string`) Dragonfly
-   2.0.2 prints `dragonfly v2.0.2-<git sha>`, which the matcher rejects, and
-   Garnet 2.2.1's `--version` output is not known from its source, so a
-   full run selecting either fails on its version line until the rule
-   accepts what they print.
+7. *Versions and archive hashes were recorded and not checked.* Closed: a
+   full (non-probe) run fails on a missing executable, a version that is
+   not the pinned release or a missing or mismatched installer receipt
+   (`versions_selftest`, `compare_versions_selftest`). The release may
+   carry one suffix, the pinned tag's commit: Dragonfly 2.0.2 and Garnet
+   2.2.1 print it in full (see the first trial run below), and the matcher
+   accepts a suffix only as `-` or `+` and at least 7 lowercase hex digits
+   that begin that commit, with terminal colour codes removed.
 8. *The AOF start check was Redis-specific and ran only in `compare` mode.*
    Closed for the baseline: `compare` mode checks firn, Redis and Valkey
    through `INFO persistence`, and Garnet through its log
@@ -297,3 +297,36 @@ holds. The instrument is not the verdict: it does not calculate rule 6.
 9. *Memory was recorded only after `session-get`'s fill.* Closed for
    redis-benchmark lines in `compare` mode (`compare-memory.csv`, written by
    `compare_memory`); the session-fill record stays in `workloads` mode.
+
+## Trial runs of the instrument
+
+The 14900K, 2026-11-25, Firn-wf head 292eae7 (the instrument files of the
+work that closed the gaps above):
+
+- Install run 45651522021 (`install-competitors`) installed Valkey 9.1.2,
+  Dragonfly 2.0.2 and Garnet 2.2.1 under the runner's `~/.local/opt` with
+  their receipts.
+- Compare trial 45652263824 (probe; two server CPUs on CPUs 2 and 4; lines
+  `reference reference-io valkey valkey-io dragonfly garnet` beside `firn`
+  and `firn-twin`; depth 16, one pass of 3 seconds; tests `set get mset
+  lrange_500 xadd xadd_maxlen xrange_10 sismember srem hget hdel`). Every
+  line started as the rules say, with Dragonfly's threads checked inside the
+  server list, and the pilots of `set`, `get`, `mset`, `lrange_500` and
+  `xadd` gave a throughput and a p99 for every line but Garnet's `xadd`:
+  Garnet 2.2.1 has no streams
+  ([API compatibility](https://github.com/microsoft/garnet/blob/v2.2.1/website/docs/commands/api-compatibility.md)),
+  and the run stopped there with `compare client process failed`.
+  `host.txt` records for all four competitors `archive_provenance=verified`
+  and `receipt_check=verified` (Redis: `not-applicable`, its build is checked
+  against `reference.sh`), a matched version for Redis and Valkey, and for the
+  other two the real `--version` output:
+
+  ```
+  dragonfly <ESC>[0;32mv2.0.2-8ce4bbb106586057fbd85f71ed353c60d0d5bf87<ESC>[m
+  build time: <ESC>[0;33m2026-10-07 20:47:39<ESC>[m
+  GarnetServer 2.2.1+b0255a31de95b1e903ee187feb59ceb04819a639
+  ```
+
+  Both suffixes are the full commit that the pinned tag points to
+  (`git ls-remote` of `v2.0.2` and `v2.2.1`), which is what the version
+  rule now accepts.
