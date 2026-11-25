@@ -793,8 +793,9 @@ fn config_dir_walk(out: &Text, source: &[u8]) -> result: unit reads(source), wri
         if size == 1_u64 {
           set role = 0_u64;
         } else if size == 2_u64 {
-          invariant second_inside: from + 1_u64 < length;
-          if source^[from + 1_u64] == 46_u8 {
+          let second = from + 1_u64;
+          invariant second_inside: second < length;
+          if source^[second] == 46_u8 {
             set role = 1_u64;
           }
         }
@@ -1005,7 +1006,8 @@ fn config_lines(options: &Options, source: &[u8], first: u64, line_number: u64, 
                 set resume = end + 1_u64;
               }
             }
-            return Segment(start: resume, number: number +wrap 1_u64, state: 1_u64, path: move path);
+            let next_number = number +wrap 1_u64;
+            return Segment(start: resume, number: next_number, state: 1_u64, path: move path);
           }
           if kind == 11_u64 {
             if count != 2_u64 {

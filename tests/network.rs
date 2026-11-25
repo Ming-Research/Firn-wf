@@ -3820,7 +3820,7 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
     let expected = format!(
-        "*66\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}$10\r\nmaxclients\r\n$5\r\n10000\r\n\
+        "*70\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}$10\r\nmaxclients\r\n$5\r\n10000\r\n$8\r\nloglevel\r\n$6\r\nnotice\r\n$7\r\nlogfile\r\n$0\r\n\r\n\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\

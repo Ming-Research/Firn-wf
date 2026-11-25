@@ -72,7 +72,7 @@ fn event_write_failed(store: &Keyspace, written: u64, expected: u64, problem: &O
     log_message_append(message: &message, source: &event_write_error[0_u64..31_u64]);
     match problem^ {
       Some(value: failure) => {
-        log_message_error(message: &message, problem: &failure);
+        log_message_error(message: &message, problem: failure);
       }
       None() => {
       }

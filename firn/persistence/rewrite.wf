@@ -1125,7 +1125,8 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
     set log^.boundary.whole = False();
   }
   let failed_at = std::time::unix_nanoseconds(clock: &store^.log.clock);
-  let failed_seconds = cvt.wrap::<i64, u64>(failed_at) / 1000000000_u64;
+  let failed_unsigned = cvt.wrap::<i64, u64>(failed_at);
+  let failed_seconds = failed_unsigned / 1000000000_u64;
   if failed {
     let since = failed_seconds -sat log^.error_logged;
     if since > 30_u64 {
