@@ -148,6 +148,7 @@ unit/multi	WATCH inside MULTI is not allowed	1
 unit/other	APPEND basics	1
 unit/other	APPEND basics, integer encoded values	1
 unit/other	APPEND fuzzing	1
+unit/other	Check consistency of different data types after a reload	1
 unit/other	Coverage: MEMORY MALLOC-STATS	1
 unit/other	Coverage: MEMORY PURGE	1
 unit/other	FLUSHDB	1
@@ -635,7 +636,10 @@ unit/type/string	STRLEN against non-existing key	1
 unit/type/string	STRLEN against plain string	1
 unit/type/string	Very big payload in GET/SET	1
 unit/type/string	Very big payload random access	1
+unit/type/zset	Basic ZMPOP_MIN/ZMPOP_MAX - listpack RESP3	1
+unit/type/zset	Basic ZMPOP_MIN/ZMPOP_MAX with a single key - listpack	1
 unit/type/zset	Basic ZPOPMIN/ZPOPMAX - listpack RESP3	1
+unit/type/zset	Basic ZPOPMIN/ZPOPMAX with a single key - listpack	1
 unit/type/zset	Check encoding - listpack	1
 unit/type/zset	Check encoding - skiplist	1
 unit/type/zset	ZADD - Return value is the number of actually added items - listpack	1
@@ -686,6 +690,13 @@ unit/type/zset	ZADD with options syntax error with incomplete pair - listpack	1
 unit/type/zset	ZADD with options syntax error with incomplete pair - skiplist	1
 unit/type/zset	ZCARD basics - listpack	1
 unit/type/zset	ZCARD basics - skiplist	1
+unit/type/zset	ZDIFF algorithm 1 - listpack	1
+unit/type/zset	ZDIFF algorithm 2 - listpack	1
+unit/type/zset	ZDIFF basics - listpack	1
+unit/type/zset	ZDIFF fuzzing - listpack	1
+unit/type/zset	ZDIFF subtracting set from itself - listpack	1
+unit/type/zset	ZDIFFSTORE basics - listpack	1
+unit/type/zset	ZDIFFSTORE with a regular set - listpack	1
 unit/type/zset	ZINCRBY - can create a new sorted set - listpack	1
 unit/type/zset	ZINCRBY - increment and decrement - listpack	1
 unit/type/zset	ZINCRBY calls leading to NaN result in error - listpack	1
@@ -693,7 +704,21 @@ unit/type/zset	ZINCRBY calls leading to NaN result in error - skiplist	1
 unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - listpack	1
 unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - skiplist	1
 unit/type/zset	ZINCRBY return value - listpack	1
+unit/type/zset	ZINTER RESP3 - listpack	1
+unit/type/zset	ZINTER basics - listpack	1
+unit/type/zset	ZINTER with weights - listpack	1
+unit/type/zset	ZINTERCARD basics - listpack	1
+unit/type/zset	ZINTERSTORE basics - listpack	1
+unit/type/zset	ZINTERSTORE with +inf/-inf scores - listpack	1
+unit/type/zset	ZINTERSTORE with AGGREGATE MAX - listpack	1
+unit/type/zset	ZINTERSTORE with AGGREGATE MIN - listpack	1
+unit/type/zset	ZINTERSTORE with NaN weights - listpack	1
+unit/type/zset	ZINTERSTORE with a regular set and weights - listpack	1
+unit/type/zset	ZINTERSTORE with weights - listpack	1
 unit/type/zset	ZLEXCOUNT advanced - listpack	1
+unit/type/zset	ZMPOP_MIN/ZMPOP_MAX with count - listpack	1
+unit/type/zset	ZMPOP_MIN/ZMPOP_MAX with count - listpack RESP3	1
+unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack	1
 unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack RESP3	1
 unit/type/zset	ZRANGE basics - listpack	1
 unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - listpack	1
@@ -723,3 +748,18 @@ unit/type/zset	ZSET element can't be set to NaN with ZADD - listpack	1
 unit/type/zset	ZSET element can't be set to NaN with ZADD - skiplist	1
 unit/type/zset	ZSET element can't be set to NaN with ZINCRBY - listpack	1
 unit/type/zset	ZSET element can't be set to NaN with ZINCRBY - skiplist	1
+unit/type/zset	ZUNION with weights - listpack	1
+unit/type/zset	ZUNION/ZINTER with AGGREGATE MAX - listpack	1
+unit/type/zset	ZUNION/ZINTER with AGGREGATE MIN - listpack	1
+unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF against non-existing key - listpack	1
+unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF with empty set - listpack	1
+unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF with integer members - listpack	1
+unit/type/zset	ZUNIONSTORE against non-existing key doesn't set destination - listpack	1
+unit/type/zset	ZUNIONSTORE basics - listpack	1
+unit/type/zset	ZUNIONSTORE with +inf/-inf scores - listpack	1
+unit/type/zset	ZUNIONSTORE with AGGREGATE MAX - listpack	1
+unit/type/zset	ZUNIONSTORE with AGGREGATE MIN - listpack	1
+unit/type/zset	ZUNIONSTORE with NaN weights - listpack	1
+unit/type/zset	ZUNIONSTORE with a regular set and weights - listpack	1
+unit/type/zset	ZUNIONSTORE with empty set - listpack	1
+unit/type/zset	ZUNIONSTORE with weights - listpack	1
