@@ -472,12 +472,22 @@ fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client
   doc "Computes the operation over the sets, which are all live or absent: the sets are put in order of size, the smallest first, ties in argument order, unless the operation is a difference; a union visits every set in that order aggregating into the result, an intersection the smallest only, and a difference the first, which a later set named by the same key empties. The result's scores are filled in, its order is not. Returns the size of the result, or for a count the members every set holds, up to the limit.";
   let numkeys = plan^.end -wrap plan^.first;
   let order = box_slots_new::<u64>(capacity: numkeys);
+  let total = 0_u64;
+  let least = 0_u64;
+  let first_size = 0_u64;
   for @sizes (index in 0_u64..numkeys) {
     let argument = plan^.first +wrap index;
     let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
     let cardinality = 0_u64;
     if rank < slots^.len {
       set cardinality = zalg_size(slot: &slots^[rank]);
+    }
+    set total = total +wrap cardinality;
+    if index == 0_u64 {
+      set first_size = cardinality;
+      set least = cardinality;
+    } else if cardinality < least {
+      set least = cardinality;
     }
     let shifted = ishl.wrap(cardinality, 32_u32);
     let packed = ior(shifted, index);
@@ -487,6 +497,23 @@ fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client
   }
   if operation != zop_diff {
     zalg_sort(order: &order);
+  }
+  // The result's scores are sized for the most the operation can give, so that
+  // they are not grown and moved while it is built.
+  let hint = total;
+  if operation == zop_inter {
+    set hint = least;
+  } else if operation == zop_diff {
+    set hint = first_size;
+  }
+  if counting {
+    set hint = 0_u64;
+  }
+  if hint > 0_u64 {
+    if hint <= ceiling {
+      let sized = hash_map_new::<Key, f64, ceiling>(capacity: hint);
+      swap(first: &sized, second: &result^.scores);
+    }
   }
   if operation == zop_union {
     for @sources (step in 0_u64..order.inner.len) {
