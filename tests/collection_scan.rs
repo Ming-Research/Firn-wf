@@ -49,10 +49,17 @@ const DICT_SCORE_REPLIES: [&[u8]; 6] = [
 ];
 
 fn start(protocol: u8) -> (ProgramChild, TcpStream) {
+    start_with(protocol, &[])
+}
+
+/// Starts firn with `extra` arguments after the port and the client count.
+fn start_with(protocol: u8, extra: &[&[u8]]) -> (ProgramChild, TcpStream) {
     let lease = support::lease_port();
     let port = lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&lease);
+    let mut arguments: Vec<&[u8]> = vec![b"--port", text.as_bytes(), b"--firn-clients", b"1"];
+    arguments.extend_from_slice(extra);
+    let child = firn().spawn_on_route(true, &arguments).with_port(&lease);
     let mut client = connect_when_ready(port, &child);
     if protocol == 3 {
         let reply = request(&mut client, &["HELLO", "3"]);
@@ -875,21 +882,32 @@ fn a_set_of_integers_is_whole_up_to_512_members() {
     }
 }
 
-/// A script that writes a large collection and then needs an undeclared key is
+/// A script that writes a large collection and then reads an undeclared key is
 /// run again after a fallback that restores the collection from a logical copy.
-/// A client's scan that spans it still returns every member present throughout.
+/// A client's scan that spans such scripts still returns every member present
+/// throughout, and the collection ends exactly as the accepted runs leave it.
+/// Each script's write is not idempotent (SREM returns 1 only if the member was
+/// put back, HINCRBY and ZINCRBY return 1 only if the counter was restored to
+/// absent), so a rerun that kept the first attempt's write shows in the reply.
+/// The sequence of the AOF's rewrite commits moves once for each script, as it
+/// does for the fallback cases of the network tests.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_script_fallback_between_scan_calls_loses_no_member() {
     for protocol in [2, 3] {
-        let (child, mut client) = start(protocol);
-        for (scan, width, write) in [("SSCAN", 1, "SADD"), ("HSCAN", 2, "HSET"), ("ZSCAN", 2, "ZADD")] {
+        let (child, mut client) = start_with(protocol, &[b"--appendonly", b"yes", b"--appendfilename", b"scan-fallback.aof"]);
+        for (scan, width) in [("SSCAN", 1), ("HSCAN", 2), ("ZSCAN", 2)] {
             let key = format!("fallback:{scan}");
             change_many(&mut client, scan, &key, true, "m", 0..1000);
-            let args = match write { "SADD" => "'extra'", "HSET" => "'extra','v'", _ => "1,'extra'" };
-            let source = format!("redis.call('{write}',KEYS[1],{args}); return redis.call('GET','undeclared:'..KEYS[1])");
+            let source = match scan {
+                "SSCAN" => "local r=redis.call('SREM',KEYS[1],ARGV[1]); redis.call('GET','undeclared:'..KEYS[1]); return r",
+                "HSCAN" => "local r=redis.call('HINCRBY',KEYS[1],ARGV[1],1); redis.call('GET','undeclared:'..KEYS[1]); return r",
+                _ => "local r=redis.call('ZINCRBY',KEYS[1],1,ARGV[1]); redis.call('GET','undeclared:'..KEYS[1]); return r",
+            };
+            let before = script_fallback_sequence(&mut client);
             let mut cursor = "0".to_string();
             let mut seen = std::collections::HashSet::new();
-            let mut step = 0;
+            let (mut step, mut scripts) = (0, 0usize);
             loop {
                 let (next, got) = parts(&request(&mut client, &[scan, &key, &cursor, "COUNT", "10"]));
                 for group in got.chunks(width) { seen.insert(group[0].clone()); }
@@ -897,15 +915,39 @@ fn a_script_fallback_between_scan_calls_loses_no_member() {
                 cursor = String::from_utf8(next).unwrap();
                 step += 1;
                 if step % 5 == 0 {
-                    let reply = request(&mut client, &["EVAL", &source, "1", &key]);
-                    assert!(reply == b"$-1\r\n" || reply == b"_\r\n", "the script falls back and reads a missing key: {reply:?}");
+                    // The set loses m00900.. one at a time; the others gain a counter.
+                    let argument = if scan == "SSCAN" { format!("m{:05}", 900 + scripts) } else { format!("c{scripts:05}") };
+                    let reply = request(&mut client, &["EVAL", source, "1", &key, &argument]);
+                    assert!(reply == b":1\r\n" || reply == b"$1\r\n1\r\n" || reply == b",1\r\n", "{scan}: script {scripts} left the first attempt's write in place: {reply:?}");
+                    scripts += 1;
                 }
                 assert!(step < 100_000, "{scan}: no end in sight");
             }
+            assert!(scripts >= 10, "{scan}: {scripts} scripts ran between calls");
+            assert_eq!(script_fallback_sequence(&mut client), before + scripts as u64, "{scan}: one sequence for each script");
             for index in 0..1000 {
                 let name = format!("m{index:05}");
-                assert!(seen.contains(name.as_bytes()), "{scan}: {name} was present throughout and never returned");
+                // A member the scripts removed may or may not have been returned.
+                if scan != "SSCAN" || index < 900 {
+                    assert!(seen.contains(name.as_bytes()), "{scan}: {name} was present throughout and never returned");
+                }
             }
+            // Unchanged now, the collection comes back exactly as the scripts left it.
+            let mut expected: Vec<Vec<u8>> = Vec::new();
+            for index in 0..1000 {
+                if scan == "SSCAN" && index >= 900 && index < 900 + scripts { continue; }
+                expected.push(format!("m{index:05}").into_bytes());
+                if scan == "HSCAN" { expected.push(b"v".to_vec()); }
+                if scan == "ZSCAN" { expected.push(b"1".to_vec()); }
+            }
+            if scan != "SSCAN" {
+                for number in 0..scripts {
+                    expected.push(format!("c{number:05}").into_bytes());
+                    expected.push(b"1".to_vec());
+                }
+            }
+            let (all, _) = scan_all(&mut client, scan, &key, &["COUNT", "100"]);
+            assert_eq!(grouped(&all, width), grouped(&expected, width), "{scan}: the collection after the scripts");
         }
         drop(client); assert_eq!(finished(child).0, 0);
     }
