@@ -167,7 +167,7 @@ fn list_producer_one_key(kind: u64) -> result: Bool pure {
 }
 
 fn blocking_hold_ready(meta: &Meta, hub: &Hub, server: &ServerState) -> ready: Bool reads(meta.aof_rewrite_in_progress), reads(hub.blocking_state), reads(server.memory.maxmemory) {
-  doc "A limited-memory replay can need eviction and rewrite cleanup. Await an existing rewrite before entering the indivisible producer/service unit, so cleanup never needs Meta held by its waiter. This proposed scheduling cost affects list-service units only; it adds no GET/SET target.";
+  doc "A limited-memory replay can need eviction and rewrite cleanup. Await an existing rewrite before entering the indivisible producer/service unit, so cleanup never needs Meta held by its waiter. This scheduling cost affects list-service units only; it adds no GET/SET target.";
   if server^.memory.maxmemory == 0_u64 {
     return True();
   }
