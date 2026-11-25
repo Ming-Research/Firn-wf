@@ -226,22 +226,31 @@ the recorded probes; boundary policy after shrink comes from the owner's rule.
 The network cases compare complete member/value coverage independently of map
 order, protect cursor/error precedence, options, binary matching and flat bulk
 framing, and exercise direct commands, EXEC and both script admission modes.
-There are nineteen tests: eight recorded transcript tests, two score-selection
-boundary tests, and nine independently specified cases: cursor, options and
+There are twenty-three tests: eight recorded transcript tests, two score-selection
+boundary tests, and thirteen independently specified cases: cursor, options and
 lookup precedence; binary MATCH and pair association; the compact bound at 128,
-129, 512 and 513 entries and at 64 and 65 bytes, including a hash's value,
+129, 512 and 513 entries, including a set of integers (compact up to 512) and
+at 64 and 65 bytes in a collection of 100 members, including a hash's value,
 each checked as one call with cursor zero or as a scan that cannot finish at
-COUNT 1 and then covers every member once; a 2000-member collection of each
-kind followed in steps of COUNT 20, none holding a tenth of it, with and
-without MATCH; arbitrary cursors, COUNT beyond the table and the repeatability
-of one cursor; members present throughout returned while others are added and
-removed between calls and a burst grows the table; Lua following a large scan
-across calls for a declared and an undeclared key; script retry with an earlier
-write; and expired direct/EXEC/script reads. The expiry case
+COUNT 1 and then covers every member once; sets of integers that Redis's
+string2ll does and does not read (a leading zero, a plus sign, minus zero,
+spaces, text, a number past 64 bits); a 2000-member collection of each kind
+followed in steps of COUNT 20, none holding a tenth of it, with and without
+MATCH; sets, hashes and sorted sets of 1000 and 10000 members at COUNT 10 and
+100, where every call but the last returns at least COUNT entries and an
+unfiltered scan takes about members/COUNT calls, and where a MATCH that takes
+nothing still takes between members/(2*COUNT) and members/COUNT+1 empty calls,
+as Redis's loop samples COUNT entries before MATCH; a table filled to 20000
+members and emptied to 600, which ends each call at the 10*COUNT+1 bucket
+budget with fewer than COUNT entries and takes at least 20000/(10*COUNT+1)
+calls; arbitrary cursors, COUNT beyond the table and the repeatability of one
+cursor; members present throughout returned while others are added and removed
+between calls and a burst grows the table, and while a script falls back and
+restores the collection between two calls; Lua following a large scan across
+calls for a declared and an undeclared key; script retry with an earlier write;
+and expired direct/EXEC/script reads. The expiry case
 does not isolate lazy deletion from active expiry; it checks the externally
-visible missing-key behavior. The bounded cases fail on the whole-collection
-code they replace: its first call at COUNT 1 returns the whole collection with
-cursor zero (deduced from the code, not run).
+visible missing-key behavior.
 The score-selection cases cover 128 -> 129 -> 128 members and 64 -> 65 -> 64
 maximum member bytes, including a 65-byte UTF-8 member with 33 characters.
 MATCH hides the triggers; direct, EXEC and declared-key Lua probes must still
