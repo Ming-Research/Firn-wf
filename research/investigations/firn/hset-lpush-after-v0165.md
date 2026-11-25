@@ -63,6 +63,44 @@ and in Whitefoot between the two release commits `af7665be672d` and
   concurrent map (`ConcurrentHashMap<Entry>`), the same for every command; the
   standard library's map holds a hash's fields and a set's members.
 
+**The new home does not lengthen the probes of these fields.** The 100,000
+fields `element:000000000000` to `element:000000099999` that `-r 100000`
+draws from, hashed with FNV-1a as `window_hash` does, placed by linear
+probing in 262,144 buckets (a successful search's mean cost does not depend on
+the order of insertion), computed on 2026-11-25:
+
+| home | distinct homes | mean buckets per hit | 99th percentile | longest |
+| --- | ---: | ---: | ---: | ---: |
+| `hash % 262144` (old) | 81,376 | 1.351 | 5 | 26 |
+| top 18 bits of `hash * 11400714819323198485` (new) | 83,591 | 1.288 | 5 | 15 |
+| a uniformly random home (seed 1), for reference | 83,246 | 1.308 | 5 | 17 |
+
+So under H1 below the extra cost would come from the code of the map's
+operations, not from longer walks. The computation, in Python:
+
+```python
+M = (1 << 64) - 1
+def fnv1a(data):
+    h = 14695981039346656037
+    for b in data:
+        h = ((h ^ b) * 1099511628211) & M
+    return h
+B = 262144
+hashes = [fnv1a(b"element:%012d" % i) for i in range(100000)]
+old = lambda h: h % B
+new = lambda h: ((h * 11400714819323198485) & M) >> 46
+def mean_probes(home_of):
+    table, homes = [None] * B, []
+    for i, h in enumerate(hashes):
+        j = home = home_of(h)
+        homes.append(home)
+        while table[j] is not None:
+            j = (j + 1) % B
+        table[j] = i
+    where = {i: j for j, i in enumerate(table) if i is not None}
+    return sum((where[i] - homes[i]) % B + 1 for i in range(len(hashes))) / len(hashes)
+```
+
 ## What the earlier runs already show
 
 Server CPU per request in the first run (run
@@ -154,4 +192,7 @@ six cells, judged with the twin as in the
 
 ## Results
 
-Not yet measured.
+Dispatched on 2026-11-25 as run
+[45607701747](https://github.com/Ming-Research/Firn-wf/actions/runs/45607701747)
+(from `main`, with the inputs above and `revisions` naming `7cf12df` and
+`b08522a` in full); not yet read.
