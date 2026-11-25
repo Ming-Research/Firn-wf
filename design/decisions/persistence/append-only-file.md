@@ -17,8 +17,8 @@ With an append-only file, firn sends a reply or a subscriber's frame only once e
 
 ### decision aof-group-commit-through-a-desk
 A connection whose replies must wait takes the active file from a shared desk and appends every record collected so far; the connections waiting meanwhile send once the mark it publishes covers them.
-- rejected: an agent proposed a writer context woken for each batch that hands it back (Firn-wf#97); the owner rejected it, because the handoff cut AOF throughput to 0.21-0.69 of main, 8-core SET to 0.37 of Redis (data: `research/investigations/aof-write-errors/reply-after-append.md`).
+- rejected: an agent proposed a writer context woken for each batch that hands it back; the owner rejected it, because the handoff cut AOF throughput to 0.21-0.69 of main, 8-core SET to 0.37 of Redis (data: `research/investigations/aof-write-errors/reply-after-append.md`).
 
 ### decision aof-reply-dependency-is-the-commit-sequence
 A reply waits for the commit sequence its command's own Meta statement noted, or else one Meta statement reads before the send; a subscriber's frame waits for the one read before it.
-- rejected: an agent proposed that a reply wait only for its own command's records (Firn-wf#97); the owner rejected it, because a read could then show another client's write that a kill loses.
+- rejected: an agent proposed that a reply wait only for its own command's records; the owner rejected it, because a read could then show another client's write that a kill loses.
