@@ -4,6 +4,7 @@ mod limiter;
 mod eviction;
 mod handshake;
 mod pubsub;
+mod zset;
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -18,6 +19,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
     "evict-zipf", "handshake", "client-list", "pubsub-channel", "pubsub-pattern",
+    "zunionstore", "zinterstore", "zmpop",
 ];
 
 #[derive(Clone)]
@@ -38,10 +40,17 @@ struct Options {
     maxmemory: Option<u64>,
     // File that receives client_work_fraction after the measured run.
     work_file: Option<String>,
-    // Pub/sub only: PUBLISH commands the publisher keeps unanswered, and how
-    // many messages it may send ahead of the slowest subscriber.
+    // Commands a connection keeps unanswered: pub/sub's PUBLISH commands, or a
+    // sorted-set workload's batch; and, for pub/sub only, how many messages the
+    // publisher may send ahead of the slowest subscriber.
     pipeline: usize,
     window: usize,
+    // Sorted-set workloads: where the store commands read their sources, how
+    // many members each ZMPOP key holds before the run, and how many members
+    // each ZMPOP pops.
+    layout: zset::Layout,
+    prefill: u64,
+    pop_count: u64,
 }
 
 impl Options {
@@ -54,8 +63,10 @@ impl Options {
             seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
             sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None,
             pipeline: 1, window: 1024,
+            layout: zset::Layout::Shared, prefill: 200_000, pop_count: 1,
         };
-        let (mut keys_given, mut value_given, mut pubsub_given) = (false, false, false);
+        let (mut keys_given, mut value_given, mut window_given, mut pipeline_given) = (false, false, false, false);
+        let (mut layout_given, mut prefill_given) = (false, false);
         let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
             let value = args.next().ok_or("each option needs a value")?;
@@ -83,8 +94,11 @@ impl Options {
                 "--sample-ms" => opts.sample_interval = Duration::from_millis(value.parse()?),
                 "--maxmemory" => opts.maxmemory = Some(value.parse()?),
                 "--client-work-file" => opts.work_file = Some(value),
-                "--pipeline" => { opts.pipeline = value.parse()?; pubsub_given = true; }
-                "--window" => { opts.window = value.parse()?; pubsub_given = true; }
+                "--pipeline" => { opts.pipeline = value.parse()?; pipeline_given = true; }
+                "--window" => { opts.window = value.parse()?; window_given = true; }
+                "--layout" => { opts.layout = zset::Layout::parse(&value)?; layout_given = true; }
+                "--prefill" => { opts.prefill = value.parse()?; prefill_given = true; }
+                "--pop-count" => { opts.pop_count = value.parse()?; prefill_given = true; }
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
         }
@@ -94,8 +108,24 @@ impl Options {
         }
         let pubsub = pubsub::is_pubsub(&opts.workload);
         if pubsub && !value_given { opts.value = vec![b'x'; 64]; }
-        if pubsub_given && !pubsub {
-            return Err("--pipeline and --window only apply to the pub/sub workloads".into());
+        let sorted_set = zset::is_zset(&opts.workload);
+        if window_given && !pubsub {
+            return Err("--window only applies to the pub/sub workloads".into());
+        }
+        if pipeline_given && !pubsub && !sorted_set {
+            return Err("--pipeline only applies to the pub/sub and sorted-set workloads".into());
+        }
+        if layout_given && !matches!(opts.workload.as_str(), "zunionstore" | "zinterstore") {
+            return Err("--layout only applies to zunionstore and zinterstore".into());
+        }
+        if prefill_given && opts.workload != "zmpop" {
+            return Err("--prefill and --pop-count only apply to zmpop".into());
+        }
+        if sorted_set && (opts.pipeline == 0 || opts.prefill == 0 || opts.pop_count == 0) {
+            return Err("--pipeline, --prefill and --pop-count must be positive".into());
+        }
+        if opts.workload == "zmpop" && opts.prefill < opts.pop_count {
+            return Err("--prefill must hold at least --pop-count members".into());
         }
         if pubsub {
             if opts.requests.is_some() || opts.seconds.is_none() {
@@ -252,8 +282,9 @@ fn random_key(state: &mut u64, keys: u64) -> u64 {
     }
 }
 
-fn request(out: &mut Vec<u8>, opts: &Options, rng: &mut u64, sha: &[u8]) -> usize {
+fn request(out: &mut Vec<u8>, opts: &Options, rng: &mut u64, sha: &[u8], id: usize) -> usize {
     out.clear();
+    if zset::is_zset(&opts.workload) { return zset::request(out, opts, rng, id); }
     if opts.workload == "handshake" { return handshake::request(out); }
     if opts.workload == "client-list" {
         command(out, &[b"CLIENT", b"LIST"]);
@@ -299,6 +330,7 @@ fn request(out: &mut Vec<u8>, opts: &Options, rng: &mut u64, sha: &[u8]) -> usiz
 
 struct Connection {
     socket: Option<TcpStream>,
+    id: usize,
     sha: Vec<u8>,
     rng: u64,
     remaining: u64,
@@ -339,7 +371,7 @@ impl Connection {
         if let Some(socket) = &socket { socket.set_nonblocking(true)?; }
         let remaining = opts.requests.map_or(u64::MAX, |n| share(n, opts.connections, id));
         // The default preserves the original uniform workload's sequence.
-        Ok(Self { socket, sha, rng: (id as u64) ^ opts.seed.wrapping_sub(1), remaining,
+        Ok(Self { socket, id, sha, rng: (id as u64) ^ opts.seed.wrapping_sub(1), remaining,
             out: Vec::new(), sent: 0, input: Vec::new(), replies: 0,
             started: Instant::now(), cache_key: Vec::new(), cache_set: false, hit: false, wrote: false,
             refused_sets: 0, moved: false })
@@ -392,6 +424,8 @@ impl Connection {
                 } else {
                     self.hit = eviction::get_hit(&self.input[..size], &opts.value)?;
                 }
+            } else if zset::is_zset(&opts.workload) {
+                zset::check_reply(opts, &self.input[..size])?;
             } else if opts.maxmemory.is_some() {
                 if opts.workload == "session-get" {
                     if !eviction::get_hit(&self.input[..size], &opts.value)? {
@@ -450,7 +484,7 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
                     c.cache_set = false;
                     c.hit = false;
                 } else {
-                    c.replies = request(&mut c.out, opts, &mut c.rng, &c.sha);
+                    c.replies = request(&mut c.out, opts, &mut c.rng, &c.sha, c.id);
                 }
                 c.sent = 0;
                 c.started = Instant::now();
@@ -518,9 +552,12 @@ fn work_fraction(work: Duration, total: Duration) -> f64 {
 
 impl Measurement {
     fn client_work_fraction(&self) -> f64 { work_fraction(self.work, self.total) }
+    // The count and the rate are of commands: a request is a batch of
+    // `--pipeline` commands, whose latency the percentiles give.
     fn csv(&self, opts: &Options) -> String {
+        let commands = self.count * opts.pipeline as u64;
         format!("{},{},{},{:.6},{:.3},{:.3},{:.3}", opts.workload, opts.connections,
-            self.count, self.seconds, self.count as f64 / self.seconds, self.p50, self.p99)
+            commands, self.seconds, commands as f64 / self.seconds, self.p50, self.p99)
     }
 }
 
@@ -610,6 +647,8 @@ fn run(opts: Options) -> Result<()> {
     if opts.workload == "evict-zipf" { return eviction::run(&opts); }
     if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
     if pubsub::is_pubsub(&opts.workload) { return pubsub::run(&opts); }
+    // The sets are written before any measured connection opens.
+    if zset::is_zset(&opts.workload) { zset::setup(&opts)?; }
     if matches!(opts.workload.as_str(), "handshake" | "client-list") && !opts.warmup.is_zero() {
         let mut warm = opts.clone();
         warm.seconds = Some(opts.warmup);
@@ -642,7 +681,7 @@ mod tests {
             keys: 1, value: vec![b'x'], workload: workload.into(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::ZERO,
             sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None,
-            pipeline: 1, window: 1024 }
+            pipeline: 1, window: 1024, layout: zset::Layout::Shared, prefill: 1, pop_count: 1 }
     }
 
     pub(super) fn expect_command(socket: &mut TcpStream, args: &[&[u8]]) {
@@ -666,9 +705,9 @@ mod tests {
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
-            // Cache-aside, connection and pub/sub workloads have separate checked cases.
+            // Cache-aside, connection, pub/sub and sorted-set workloads have separate checked cases.
             if matches!(workload, "evict-zipf" | "handshake" | "client-list"
-                | "pubsub-channel" | "pubsub-pattern") { continue; }
+                | "pubsub-channel" | "pubsub-pattern") || zset::is_zset(workload) { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {

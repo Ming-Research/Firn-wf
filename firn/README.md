@@ -49,7 +49,15 @@ clients send on their own:
   `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK` and
   `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
-  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, and
+  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`,
+  `ZUNIONSTORE`, `ZINTERSTORE` and `ZDIFFSTORE` and `ZUNION`, `ZINTER` and
+  `ZDIFF` with `WEIGHTS`, `AGGREGATE SUM|MIN|MAX` and `WITHSCORES` as each
+  takes them, taking plain sets as inputs at score 1, `ZINTERCARD` with
+  `LIMIT`, `ZRANGESTORE` with `BYSCORE`, `BYLEX`, `REV` and `LIMIT`,
+  `ZRANDMEMBER` with a count and `WITHSCORES`, `ZMPOP` over several keys with
+  `MIN`, `MAX` and `COUNT` (each of these naming several keys in one
+  statement holding every key it names, and not blocking: `BZMPOP` is not
+  supported), and
   `ZSCAN key cursor [MATCH pattern] [COUNT count]`, with scores read as Redis
   reads them and replies written as Redis 7.2.16's `d2string` writes them:
   signed zeros and infinities, integers through magnitude 2^62, and other

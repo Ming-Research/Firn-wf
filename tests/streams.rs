@@ -16,12 +16,12 @@ use std::process::{Command, Stdio};
 
 const STREAM_AOF: &str = "appendonly.aof";
 
-struct Server {
+pub(super) struct Server {
     child: ProgramChild,
     client: TcpStream,
 }
 
-fn redis(directory: &Path, aof: bool) -> Server {
+pub(super) fn redis(directory: &Path, aof: bool) -> Server {
     let lease = support::lease_port();
     let port = lease.port().to_string();
     let mut command = Command::new(support::redis_oracle());
@@ -37,7 +37,7 @@ fn redis(directory: &Path, aof: bool) -> Server {
     Server { child, client }
 }
 
-fn firn_in(program: &CompiledProgram, aof: bool) -> Server {
+pub(super) fn firn_in(program: &CompiledProgram, aof: bool) -> Server {
     let lease = support::lease_port();
     let port = lease.port().to_string();
     let appendonly: &[u8] = if aof { b"yes" } else { b"no" };
@@ -50,7 +50,7 @@ fn firn_in(program: &CompiledProgram, aof: bool) -> Server {
     Server { child, client }
 }
 
-fn stop(mut server: Server) {
+pub(super) fn stop(mut server: Server) {
     server.client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("request the stop");
     let mut byte = [0_u8; 1];
     assert_eq!(server.client.read(&mut byte).expect("shutdown closes the connection"), 0);
@@ -58,12 +58,12 @@ fn stop(mut server: Server) {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
-fn ask(server: &mut Server, command: &[&str]) -> Vec<u8> {
+pub(super) fn ask(server: &mut Server, command: &[&str]) -> Vec<u8> {
     pubsub::request(&mut server.client, command)
 }
 
 /// Sends every command to both servers and compares the replies one by one.
-fn compare(firn: &mut Server, redis: &mut Server, commands: &[Vec<String>]) {
+pub(super) fn compare(firn: &mut Server, redis: &mut Server, commands: &[Vec<String>]) {
     for command in commands {
         let arguments: Vec<&str> = command.iter().map(String::as_str).collect();
         let expected = ask(redis, &arguments);
@@ -78,7 +78,7 @@ fn compare(firn: &mut Server, redis: &mut Server, commands: &[Vec<String>]) {
     }
 }
 
-fn words(text: &str) -> Vec<String> {
+pub(super) fn words(text: &str) -> Vec<String> {
     text.split(' ').map(str::to_owned).collect()
 }
 
@@ -191,7 +191,7 @@ fn streams_answer_as_redis_does() {
     stop(oracle);
 }
 
-fn increment(directory: &Path) -> Vec<u8> {
+pub(super) fn increment(directory: &Path) -> Vec<u8> {
     let manifest = std::fs::read_to_string(directory.join("appendonlydir").join(format!("{STREAM_AOF}.manifest")))
         .expect("read the manifest");
     let name = manifest.lines().find(|line| line.ends_with("type i"))

@@ -16,6 +16,7 @@ mod collection_scan;
 mod pubsub;
 mod durability;
 mod streams;
+mod zset_algebra;
 mod accept_errors;
 
 use std::io::{Read, Write};
