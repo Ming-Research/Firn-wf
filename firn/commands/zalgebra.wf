@@ -301,29 +301,27 @@ fn zalg_sort(order: &Box<Slots<u64>>) -> result: unit writes(order) {
   doc "Sorts numbers ascending by insertion, stable for equal numbers, which keeps the sets in argument order among equal sizes as Redis's sort by cardinality does.";
   let length = order^.inner.len;
   for @insert (at in 1_u64..length) {
-    if at < order^.inner.len {
-      let held_value = order^.inner[at];
-      let cursor = at;
-      loop @shift {
-        if cursor == 0_u64 {
-          break @shift;
-        }
-        let before = cursor -wrap 1_u64;
-        if before >= order^.inner.len {
-          break @shift;
-        }
-        let previous = order^.inner[before];
-        if previous <= held_value {
-          break @shift;
-        }
-        if cursor < order^.inner.len {
-          set order^.inner[cursor] = previous;
-        }
-        set cursor = before;
+    let held_value = order^.inner[at];
+    let cursor = at;
+    loop @shift {
+      if cursor == 0_u64 {
+        break @shift;
+      }
+      let before = cursor -wrap 1_u64;
+      if before >= order^.inner.len {
+        break @shift;
+      }
+      let previous = order^.inner[before];
+      if previous <= held_value {
+        break @shift;
       }
       if cursor < order^.inner.len {
-        set order^.inner[cursor] = held_value;
+        set order^.inner[cursor] = previous;
       }
+      set cursor = before;
+    }
+    if cursor < order^.inner.len {
+      set order^.inner[cursor] = held_value;
     }
   }
   return unit;
@@ -335,28 +333,26 @@ fn zalg_fold(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, p
   let keys = client^.keys;
   let present = True();
   for @others (step in 1_u64..order^.inner.len) {
-    if step < order^.inner.len {
-      let packed = order^.inner[step];
-      let index = iand(packed, 4294967295_u64);
-      let argument = plan^.first +wrap index;
-      let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
-      let weight = zalg_weight(client: client, plan: plan, index: index);
-      if rank == rank0 {
-        let value = fmul.strict(raw, weight);
+    let packed = order^.inner[step];
+    let index = iand(packed, 4294967295_u64);
+    let argument = plan^.first +wrap index;
+    let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+    let weight = zalg_weight(client: client, plan: plan, index: index);
+    if rank == rank0 {
+      let value = fmul.strict(raw, weight);
+      set score = zalg_step(current: score, offered: value, aggregate: plan^.aggregate);
+    } else if rank < slots^.len {
+      let probe = zalg_find(slot: &slots^[rank], member: member, keys: &keys);
+      if probe.found {
+        let value = fmul.strict(probe.score, weight);
         set score = zalg_step(current: score, offered: value, aggregate: plan^.aggregate);
-      } else if rank < slots^.len {
-        let probe = zalg_find(slot: &slots^[rank], member: member, keys: &keys);
-        if probe.found {
-          let value = fmul.strict(probe.score, weight);
-          set score = zalg_step(current: score, offered: value, aggregate: plan^.aggregate);
-        } else {
-          set present = False();
-          break @others;
-        }
       } else {
         set present = False();
         break @others;
       }
+    } else {
+      set present = False();
+      break @others;
     }
   }
   return Folded(present: present, score: score);
@@ -366,16 +362,14 @@ fn zalg_elsewhere(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Clie
   doc "Whether any set of a difference but the first holds the member.";
   let keys = client^.keys;
   for @others (step in 1_u64..order^.inner.len) {
-    if step < order^.inner.len {
-      let packed = order^.inner[step];
-      let index = iand(packed, 4294967295_u64);
-      let argument = plan^.first +wrap index;
-      let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
-      if rank < slots^.len {
-        let probe = zalg_find(slot: &slots^[rank], member: member, keys: &keys);
-        if probe.found {
-          return True();
-        }
+    let packed = order^.inner[step];
+    let index = iand(packed, 4294967295_u64);
+    let argument = plan^.first +wrap index;
+    let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+    if rank < slots^.len {
+      let probe = zalg_find(slot: &slots^[rank], member: member, keys: &keys);
+      if probe.found {
+        return True();
       }
     }
   }
@@ -523,15 +517,13 @@ fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client
   }
   if operation == zop_union {
     for @sources (step in 0_u64..order.inner.len) {
-      if step < order.inner.len {
-        let packed = order.inner[step];
-        let index = iand(packed, 4294967295_u64);
-        let argument = plan^.first +wrap index;
-        let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
-        let weight = zalg_weight(client: client, plan: plan, index: index);
-        if rank < slots^.len {
-          let visited = zalg_scan(slots: slots, ranks: ranks, client: client, plan: plan, order: &order, slot: &slots^[rank], rank0: rank, weight0: weight, mode: zop_union, counting: counting, limit: 0_u64, acc: &result^.scores);
-        }
+      let packed = order.inner[step];
+      let index = iand(packed, 4294967295_u64);
+      let argument = plan^.first +wrap index;
+      let rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: argument);
+      let weight = zalg_weight(client: client, plan: plan, index: index);
+      if rank < slots^.len {
+        let visited = zalg_scan(slots: slots, ranks: ranks, client: client, plan: plan, order: &order, slot: &slots^[rank], rank0: rank, weight0: weight, mode: zop_union, counting: counting, limit: 0_u64, acc: &result^.scores);
       }
     }
     let total = hash_map_len::<Key, f64, ceiling>(map: &result^.scores);
@@ -553,14 +545,12 @@ fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client
   }
   if operation == zop_diff {
     for @named (step in 1_u64..order.inner.len) {
-      if step < order.inner.len {
-        let later = order.inner[step];
-        let later_index = iand(later, 4294967295_u64);
-        let later_argument = plan^.first +wrap later_index;
-        let later_rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: later_argument);
-        if later_rank == rank0 {
-          return 0_u64;
-        }
+      let later = order.inner[step];
+      let later_index = iand(later, 4294967295_u64);
+      let later_argument = plan^.first +wrap later_index;
+      let later_rank = zalg_rank(ranks: ranks, lookups: &client^.key_lookups, argument: later_argument);
+      if later_rank == rank0 {
+        return 0_u64;
       }
     }
   }
