@@ -171,8 +171,9 @@ a function that runs in the child before its exec, with which std starts the
 child by `fork` instead of `posix_spawn`; a pass took 141 to 142 s with it,
 as it took 140 to 142 s on main on the same kind of machine.
 
-The comment above the trace step of `check.yml`, "SIGCHLD ... has no handler
-in the test process and so cannot interrupt a read", is wrong.
+The comment above the signal trace that `check.yml`'s network job ran,
+"SIGCHLD ... has no handler in the test process and so cannot interrupt a
+read", was wrong; the change that fixes the cause removed that trace (below).
 
 ### The fix's tests, tried on commits that are on no branch
 
@@ -203,6 +204,26 @@ Each variant did what was predicted of it, so the two tests tell the fixed
 state from each of the two unfixed ones. The first test's own children are
 what raises the count found already pending from about 810 a pass to about
 4815.
+
+### What removes it
+
+`tests/support.rs` blocks SIGCHLD in the test process's one thread before
+`main`, from a function in `.init_array`, so that every thread made later
+inherits the block, and keeps the mask it replaced. Every child of the cases
+is made by `support::command`, whose function before the exec gives the child
+that first mask again, so the servers, shells and `sudo` run as they do
+outside the tests. No read changes, and none retries. Three tests of
+`support::tests` guard it: the two above,
+`a_queued_child_exit_signal_interrupts_no_timed_read` and
+`a_child_starts_with_the_mask_the_test_process_started_with`, and
+`every_child_is_started_through_support_command`, which fails if a source
+file of the crate makes a command other than through `support::command`, the
+first test's raw command excepted. The decision is
+`network-test-process-blocks-sigchld` in
+`design/decisions/testing/network-cases.md`. The two steps of `check.yml` that
+traced the signals of the network job, a diagnostic for this cause, are
+removed with it; `run.sh suite` traces SIGCHLD and says which threads dequeued
+one.
 
 ## The 10 s read stall: hypotheses
 
