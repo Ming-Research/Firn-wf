@@ -147,7 +147,8 @@ fn fd_raise(factory: &HandleFactory, log: &ServerLog, maxclients: u64, maxfiles:
 }
 
 fn fdlimit_adjust(factory: &HandleFactory, log: &ServerLog, maxclients: u64) -> outcome: Adjusted reads(log), writes(factory) waits {
-  let maxfiles = maxclients +sat 32_u64;
+  let reserved_sum = maxclients +sat 32_u64;
+  let maxfiles = reserved_sum % 4294967296_u64;
   let sound = False();
   let outcome = Adjusted(maxclients: maxclients, fatal: sound);
   match std::process::open_files_limit(factory: factory) {
