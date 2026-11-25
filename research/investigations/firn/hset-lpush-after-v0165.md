@@ -449,6 +449,20 @@ cycles and retired instructions, each table in the image's `profile-*.txt`.
 The passes and profiled runs beside other jobs on the machine follow the rules
 of [the section above](#the-machines-other-jobs-stated-before-the-sample-run).
 
+**Dispatched** on 2026-11-25 at 14:14 UTC as run
+[45631892786](https://github.com/Ming-Research/Firn-wf/actions/runs/45631892786),
+from the branch ref `work-145-26e0fade` at `bc0c257` (`headSha` read from the
+run), after the rules above and the sample run's reading of T (unchanged,
+0.05) were committed. Inputs: `server_cpus` 2,4, `client_cpus` 16-31, `cpus` 2,
+`tests` `hset lpush rpush hget sismember`, `depths` 16, `passes` 16, `seconds`
+5, `profile` true, `profile_test` `hset 16;lpush 16;hget 16`, `revisions`
+`base=7cf12df4cba634c0b50a6da070b386332e7005de`,
+`head=b08522afd76216dbd7289473834e4a4a7f523a18`,
+`cross=1dddd17c1408b9f95555f9b4374db8db6f25320c` and
+`base-twin=7cf12df4cba634c0b50a6da070b386332e7005de`; no `images_run`. The
+control's failing run (loops on the server CPUs) is dispatched after this run
+ends, never beside it, since its loops would load the CPUs this run reads.
+
 **Split rule, for each of `hset`, `lpush` and `hget`.** The intervals are
 those of the pin comparison: the 95% interval of the mean log ratio of the
 per-pass rates (Student's t), as `summary.py ratios` prints it, run once for
