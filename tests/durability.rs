@@ -537,18 +537,22 @@ fn every_reply_finds_the_records_it_shows_in_the_file() {
         }
         expect_replies(&mut writer, b"+OK\r\n", "revealed SET");
 
+        // The publisher pipelines its SET before the PUBLISH and reads
+        // neither reply, so the message reaches the subscriber's connection
+        // while the SET's record may still be only in memory: only the wait
+        // before the subscriber's frame can put it in the file first.
         let published = resp(&["SET", &format!("visible:publish:{round}"), "published"]);
-        writer.write_all(&published).unwrap();
-        expect_replies(&mut writer, b"+OK\r\n", "SET before PUBLISH");
         let payload = round.to_string();
-        publisher.write_all(&resp(&["PUBLISH", "durability:visible", &payload])).unwrap();
+        let mut batch = published.clone();
+        batch.extend(resp(&["PUBLISH", "durability:visible", &payload]));
+        publisher.write_all(&batch).unwrap();
         let message = format!("*3\r\n$7\r\nmessage\r\n$18\r\ndurability:visible\r\n${}\r\n{payload}\r\n",
             payload.len());
         expect_replies(&mut subscriber, message.as_bytes(), "delivered message");
         if occurrences(&increment_bytes(&program), &published) != 1 {
             missing.push(format!("round {round}: the SET made before a delivered message"));
         }
-        expect_replies(&mut publisher, b":1\r\n", "PUBLISH");
+        expect_replies(&mut publisher, b"+OK\r\n:1\r\n", "SET and PUBLISH");
     }
     drop((writer, reader, publisher, subscriber));
     stop(child, &mut control);
