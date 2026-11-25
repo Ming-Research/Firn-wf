@@ -14,8 +14,9 @@ BUILD := $(ROOT)/build
 REDIS_COMPAT_CACHE ?= $(BUILD)/redis-compat-cache
 
 # The live design trees: every root node file directly under design/ except
-# the log, so a tree is linted in the same change that adds it.
-DESIGN_TREES := $(filter-out log,$(basename $(notdir $(wildcard $(ROOT)/design/*.md))))
+# the log and the constitution, so a tree is linted in the same change that
+# adds it.
+DESIGN_TREES := $(filter-out log constitution,$(basename $(notdir $(wildcard $(ROOT)/design/*.md))))
 
 # The revision a design-tree change is reviewed against. CI selects it per
 # event with design/skill/review-base.sh.

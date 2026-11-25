@@ -10,9 +10,9 @@ tree = "design/"
 [files.guide]
 path = "AGENTS.md"
 
-# No [files.constitution]: firn has no constitution yet. The words the engine begins each session with name the
-# project's constitution, so the engine holds firn, saying the file is missing, until the owner writes
-# design/constitution.md and names it here.
+# firn's constitution, which every agent's session holds after the guide and which decides between designs.
+[files.constitution]
+path = "design/constitution.md"
 
 [project]
 # Where an agent keeps what it makes for research, committed: research/investigations/ and research/experiments/.
