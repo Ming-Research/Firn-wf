@@ -64,7 +64,9 @@ fn minute() -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
-fn run_and_stop(binary: &Path, directory: &Path, extra: &[&str]) -> (String, String) {
+/// Runs one start of the subject, lets `during` use a connected client, stops it with SHUTDOWN NOSAVE and
+/// returns the subject's process id with what it wrote to standard output and standard error.
+fn run_logged(binary: &Path, directory: &Path, extra: &[&str], during: impl FnOnce(&mut TcpStream)) -> (u32, String, String) {
     let lease = support::lease_port();
     let port = lease.port().to_string();
     // A configuration file, when there is one, is the first argument.
@@ -76,11 +78,48 @@ fn run_and_stop(binary: &Path, directory: &Path, extra: &[&str]) -> (String, Str
     arguments.extend(["--bind", "127.0.0.1", "--port", port.as_str()]);
     arguments.extend_from_slice(rest);
     let child = start(binary, directory, &arguments).with_port(&lease);
-    let _ready = connect_when_ready(lease.port(), &child);
-    drop(_ready);
+    let pid = child.id();
+    let mut client = connect_when_ready(lease.port(), &child);
+    during(&mut client);
+    drop(client);
     let output = stop(lease.port(), child);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    (String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned())
+    (pid, String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
+fn run_and_stop(binary: &Path, directory: &Path, extra: &[&str]) -> (String, String) {
+    let (_, stdout, stderr) = run_logged(binary, directory, extra, |_| {});
+    (stdout, stderr)
+}
+
+/// Every line of a log as (role, mark, body) with what differs between two runs or between the two
+/// products made equal: the product name, the port, the load time and the rewrite child's process id.
+/// Redis's signal-handler line has another form and is left out.
+fn normalized(log: &str) -> Vec<(char, char, String)> {
+    log.lines().filter(|line| !line.contains(":signal-handler (")).map(|line| {
+        let role = line.split(' ').next().and_then(|origin| origin.split_once(':')).and_then(|(_, role)| role.chars().next())
+            .unwrap_or('?');
+        let rest = line.splitn(6, ' ').nth(5).unwrap_or_default();
+        let mark = rest.chars().next().unwrap_or('?');
+        let mut body = rest.get(2..).unwrap_or_default().replacen("firn is ", "Redis is ", 1);
+        for prefix in ["Running mode=standalone, port=", "DB loaded from append only file: ", "Background append only file rewriting started"] {
+            if body.starts_with(prefix) {
+                body = format!("{prefix}...");
+            }
+        }
+        (role, mark, body)
+    }).collect()
+}
+
+/// Fails unless every line of `ours` is found in `reference`, in the same order.
+fn assert_ordered_subsequence(ours: &[(char, char, String)], reference: &[(char, char, String)], log: &str, oracle_log: &str) {
+    let mut at = 0;
+    for line in ours {
+        match reference[at..].iter().position(|candidate| candidate == line) {
+            Some(found) => at += found + 1,
+            None => panic!("{line:?} of firn's log is not in Redis's after position {at}\nfirn:\n{log}\nRedis:\n{oracle_log}"),
+        }
+    }
 }
 
 #[test]
@@ -310,5 +349,91 @@ fn a_cut_append_only_tail_is_logged_as_redis_logs_it() {
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{label}: the lines are out of order in {stdout}");
         let kept = std::fs::read(aof.join(name)).expect("read the increment");
         assert_eq!(kept, whole, "{label}: the file is cut after its last whole command");
+    }
+}
+
+/// Redis 7.2.16 logs a line's role as `C` until the server is initialized and `M` afterwards, and the
+/// process id is the server's own. Each of firn's lines must be a line of Redis's log with the same role,
+/// mark and message, in the same order, and carry the subject's process id.
+#[test]
+fn every_firn_log_line_is_a_redis_line_with_the_same_role_mark_order_and_the_childs_pid() {
+    let fixture = fixture_directory();
+    let mut logs: Vec<(String, Vec<(char, char, String)>, String)> = Vec::new();
+    for (label, binary) in servers() {
+        let directory = fixture.path().join(label.replace(' ', "-"));
+        std::fs::create_dir(&directory).expect("create directory");
+        std::fs::write(directory.join("seed.conf"), "appendonly yes\n").expect("write config");
+        run_and_stop(&binary, &directory, &["seed.conf"]);
+        let (pid, stdout, _) = run_logged(&binary, &directory, &["seed.conf"], |_| {});
+        for line in stdout.lines() {
+            assert_eq!(line.split(':').next(), Some(pid.to_string().as_str()), "{label}: the line carries the child's pid: {line:?}");
+        }
+        let lines = normalized(&stdout);
+        let role_of = |body: &str| lines.iter().find(|(_, _, text)| text.starts_with(body)).map(|(role, _, _)| *role);
+        assert_eq!(role_of("oO0OoO0OoO0Oo Redis is starting"), Some('C'), "{label}: {stdout}");
+        assert_eq!(role_of("Configuration loaded"), Some('C'), "{label}: {stdout}");
+        assert_eq!(role_of("Ready to accept connections tcp"), Some('M'), "{label}: {stdout}");
+        logs.push((label.to_owned(), lines, stdout));
+    }
+    if let [(_, ours, log), (_, reference, oracle_log)] = &logs[..] {
+        assert_ordered_subsequence(ours, reference, log, oracle_log);
+    }
+}
+
+/// A rewrite logs its start (Redis adds `by pid N`, which firn has no process to name), the child's
+/// success and the finished line, as Redis 7.2.16's rewrite handler writes them, in that order.
+#[test]
+fn a_rewrite_is_logged_as_redis_logs_it() {
+    let fixture = fixture_directory();
+    for (label, binary) in servers() {
+        let directory = fixture.path().join(label.replace(' ', "-"));
+        std::fs::create_dir(&directory).expect("create directory");
+        let (_, stdout, _) = run_logged(&binary, &directory, &["--appendonly", "yes"], |client| {
+            client.write_all(&resp(&["SET", "k", "v"])).expect("write");
+            expect_replies(client, b"+OK\r\n", &format!("{label}: set"));
+            client.write_all(&resp(&["BGREWRITEAOF"])).expect("rewrite");
+            expect_replies(client, b"+Background append only file rewriting started\r\n", &format!("{label}: rewrite"));
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                client.write_all(&resp(&["INFO", "persistence"])).expect("query the rewrite");
+                let info = bulk_reply(client, "persistence");
+                if info_field(&info, "aof_rewrite_in_progress").as_deref() == Some("0") {
+                    assert_eq!(info_field(&info, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{label}: {info:?}");
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{label}: the rewrite did not finish: {info:?}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let lines = normalized(&stdout);
+        let wanted = [
+            ('M', '*', "Background append only file rewriting started...".to_owned()),
+            ('M', '*', "Background AOF rewrite terminated with success".to_owned()),
+            ('M', '*', "Background AOF rewrite finished successfully".to_owned()),
+        ];
+        assert_ordered_subsequence(&wanted, &lines, "the three rewrite lines", &stdout);
+    }
+}
+
+/// Redis 7.2.16 logs a configuration file it cannot open to the log file and level the directives before
+/// it set; a level above warning writes nothing. Both servers write the line to the file, or nothing.
+#[test]
+fn the_failure_to_open_an_include_follows_the_logfile_and_loglevel_read_so_far() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve fixture");
+    let missing = root.join("absent.conf");
+    for (label, binary) in servers() {
+        let log = root.join(format!("{}.log", label.replace(' ', "-")));
+        std::fs::write(root.join("a.conf"), format!("logfile {}\ninclude {}\n", log.display(), missing.display())).expect("write");
+        let output = start(&binary, &root, &["a.conf"]).wait_with_output().expect("bounded refusal");
+        assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
+        assert!(output.stdout.is_empty() && output.stderr.is_empty(), "{label}: the line goes to the log file: {output:?}");
+        let text = std::fs::read_to_string(&log).unwrap_or_else(|error| panic!("{label}: no log file: {error}"));
+        let expected = format!("Fatal error, can't open config file '{}': No such file or directory", missing.display());
+        assert!(text.lines().any(|line| line.ends_with(&expected) && is_log_line(line)), "{label}: {text:?}");
+        std::fs::write(root.join("b.conf"), format!("loglevel nothing\ninclude {}\n", missing.display())).expect("write");
+        let output = start(&binary, &root, &["b.conf"]).wait_with_output().expect("bounded refusal");
+        assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
+        assert!(output.stdout.is_empty() && output.stderr.is_empty(), "{label}: loglevel nothing writes no line: {output:?}");
     }
 }

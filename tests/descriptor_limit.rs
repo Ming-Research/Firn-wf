@@ -207,3 +207,48 @@ fn config_set_maxclients_with_no_room_left_answers_the_error_and_does_not_claim_
     let bodies = log_bodies(&String::from_utf8_lossy(&output.stdout));
     assert!(!bodies.iter().any(|body| body.contains("Exiting.")), "firn keeps serving, so it must not log an exit: {bodies:?}");
 }
+
+/// Without `maxclients` the default 10000 asks for 10032 descriptors. With a hard limit of 8192 Redis's
+/// steps of 16 land on 8192 and maxclients becomes 8160; a later `CONFIG SET maxclients` below the limit
+/// leaves the soft limit where it is.
+#[test]
+fn the_default_maxclients_meets_a_hard_limit_and_a_lower_setting_keeps_the_soft_limit() {
+    let fixture = fixture_directory();
+    for (label, binary) in servers() {
+        let lease = support::lease_port();
+        let port = lease.port().to_string();
+        let child = start_limited(&binary, fixture.path(), 8192, 1024, &["--bind", "127.0.0.1", "--port", &port])
+            .with_port(&lease);
+        let pid = child.id();
+        assert_without_capability(label, pid);
+        let mut client = connect_when_ready(lease.port(), &child);
+        assert_eq!(open_files(pid).0, 8192, "{label}: the soft limit after startup");
+        assert_eq!(maxclients(&mut client), "8160", "{label}");
+        client.write_all(&resp(&["CONFIG", "SET", "maxclients", "100"])).expect("lower maxclients");
+        expect_replies(&mut client, b"+OK\r\n", &format!("{label}: lowering"));
+        assert_eq!(maxclients(&mut client), "100", "{label}");
+        assert_eq!(open_files(pid).0, 8192, "{label}: a lower maxclients does not lower the soft limit");
+        drop(client);
+        stop(lease.port(), child);
+    }
+}
+
+/// A soft limit that already covers maxclients + 32 is left alone and nothing about the limit is logged.
+#[test]
+fn a_soft_limit_that_is_enough_stays_and_logs_nothing_about_descriptors() {
+    let fixture = fixture_directory();
+    for (label, binary) in servers() {
+        let lease = support::lease_port();
+        let port = lease.port().to_string();
+        let child = start_limited(&binary, fixture.path(), 8192, 4096,
+            &["--bind", "127.0.0.1", "--port", &port, "--maxclients", "100"]).with_port(&lease);
+        let pid = child.id();
+        let client = connect_when_ready(lease.port(), &child);
+        assert_eq!(open_files(pid).0, 4096, "{label}: the soft limit is not touched");
+        drop(client);
+        let output = stop(lease.port(), child);
+        let bodies = log_bodies(&String::from_utf8_lossy(&output.stdout));
+        assert!(!bodies.iter().any(|body| body.contains("maximum number of open files") || body.contains("maxclients")
+            || body.contains("ulimit")), "{label}: {bodies:?}");
+    }
+}

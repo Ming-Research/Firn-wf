@@ -665,6 +665,59 @@ fn startup_refuses_unusable_include_dir_and_wildcard_paths() {
     }
 }
 
+/// Redis resolves a relative `include` against the process's current directory, not against the directory
+/// of the file that holds the directive, and names the path as the directive gave it when it cannot open it.
+#[test]
+fn a_relative_include_is_read_from_the_current_directory_not_from_the_including_file() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::create_dir(root.join("conf")).expect("create conf");
+    std::fs::write(root.join("conf/deeper.conf"), "loglevel warning\n").expect("write deeper");
+    std::fs::write(root.join("conf/inner.conf"), "include deeper.conf\n").expect("write inner");
+    std::fs::write(root.join("main.conf"), "include conf/inner.conf\n").expect("write main");
+    for (label, binary) in servers() {
+        let output = start(&binary, &root, &arguments(&["main.conf"]), None)
+            .wait_with_output().expect("bounded include refusal");
+        assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
+        assert!(output.stderr.is_empty(), "{label}: {output:?}");
+        let expected = "Fatal error, can't open config file 'deeper.conf': No such file or directory";
+        assert!(String::from_utf8_lossy(&output.stdout).lines().any(|line| line.ends_with(expected)), "{label}: {output:?}");
+    }
+}
+
+/// Redis opens an included directory with fopen, which succeeds on Linux, and reads nothing from it, so a
+/// directory is an empty include. The line after it shows that both servers went on reading.
+#[test]
+fn an_include_naming_a_directory_reads_nothing_and_startup_goes_on_as_in_redis() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::create_dir(root.join("conf.d")).expect("create conf.d");
+    std::fs::write(root.join("main.conf"), format!("include {}\ntimeout nope\n", root.join("conf.d").display()))
+        .expect("write main");
+    for (label, binary) in servers() {
+        let output = start(&binary, &root, &arguments(&["main.conf"]), None)
+            .wait_with_output().expect("bounded refusal");
+        assert_fatal(output, &fatal(2, "timeout nope", "argument couldn't be parsed into an integer"), label);
+    }
+}
+
+/// An include chain that never ends must stop with a diagnostic: Redis would recurse until it ran out of
+/// descriptors or stack, so there is no reference text, only the requirement that firn exits 1 with the
+/// fatal-configuration frame and does not hang or crash.
+#[test]
+fn an_include_that_includes_itself_is_refused_with_a_frame() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::write(root.join("loop.conf"), "include loop.conf\n").expect("write loop");
+    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
+    let output = start(&binary, &root, &arguments(&["loop.conf"]), None)
+        .wait_with_output().expect("bounded refusal");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("\n*** FATAL CONFIG FILE ERROR (Redis 7.2.16) ***\nReading the configuration file, at line 1\n>>> 'include loop.conf'\n"),
+        "{output:?}");
+}
+
 #[test]
 fn startup_single_quotes_only_unescape_apostrophes() {
     let fixture = fixture_directory();
