@@ -1011,3 +1011,14 @@ loses nothing with the file on and 16% with it off. Whether the fourth version's
 Meta field, its registration bookkeeping and its stale-value correction are worth
 that is the owner's to rule on the open card, which now has both versions measured
 at the same placement.
+
+## The compiler of these runs
+
+Every run above, and the base images they compare with, was built with the
+compiler release `wf-af7665be672d`, which `whitefoot.pin` named at `dd8c06c` and at
+`c35b01c`. The pin now names `wf-63b7cbb03820`
+([whitefoot-v0165-pin.md](whitefoot-v0165-pin.md)), which that record measured at
+2.4% fewer pushes per second for `main`'s `lpush` at depth 16 (interval 1.6% to
+2.8%) and 3.1% for `hset`. No run in this record used the new compiler, so the
+ratios to `main` above are those of two images of the old compiler, and the
+absolute rates are not those of the pin.
