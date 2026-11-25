@@ -1026,3 +1026,30 @@ of the path, so a build with the old Halo could say only which side's addresses 
 No firn change that is not itself a placement of the same code is available, none is
 made, and the 2% stays; whether to spend an experiment on placement is the owner's
 choice.
+
+## The self-tests seen failing
+
+The new cases of `placement-selftest` (`redis-bench.sh`), of `summary.py selftest` and
+of `hash-map-release/run.py selftest` each have to fail once for the condition they
+protect. They run on fixtures in seconds, so each mutation below was made on a copy
+of the committed file (the line shown replaced by the text after the arrow), the
+self-test run on the copy, and the first line of its output kept. The unmutated
+files pass: `placement-selftest: passed`, `summary selftest: passed`, `selftest ok`.
+They ran on the author's macOS machine, not in CI; CI runs the unmutated
+self-tests at the start of every compare run (the four-image run's log has `summary
+selftest: passed`, and its workflow ran `invocation-selftest` and `placement-selftest`).
+
+| file | mutation | result (exit status 1) |
+| --- | --- | --- |
+| `redis-bench.sh` | `other_cpus_of`: `split(servers "," clients, used, ",")` → `split(servers, used, ",")`, so client CPUs count as other | `the other CPUs were '1,3,5,6,7,...,31'` (the 32-CPU fixture must give 1,3,5-15) |
+| | `above_threshold`: `>` → `>=` | `above_threshold read 0.0500 against 0.05 wrongly` |
+| | `attempt_void`: `>` → `>=` | `attempt_void gave status 0 '2 1 0.0500' for cpus 2 pass 1, expected 1 '2 0 0.0500'` |
+| | `attempt_void`: `exit !(above > 0)` → `exit 1`, never void | `attempt_void gave status 1 '2 1 0.0501' for cpus 2 pass 2, expected 0 '2 1 0.0501'` |
+| | `control_verdict`: `>` → `>=` | `control_verdict gave status 0 for idle 0.0100 loaded 0.0500 loops 1 others 13, expected 1` |
+| | `cpu_busy`: the `other` list removed | `other_busy: no other CPU` |
+| | `other_busy`: reads `client` rows | `other_busy: no other CPU` |
+| `summary.py` | `void_attempts`: reads `compare-void-unread.csv`, not `compare-void.csv` | `AssertionError` on the case whose listed passes must be dropped |
+| `run.py` | `verdict`: `new[1] > 1.0` → `new[1] >= 0.9` | `AssertionError` at the `faster` case |
+| | `RESOLUTION = (0.5, 2.0)` | `AssertionError` at the case of the sample's own intervals, which must read `unresolved` |
+| | `low_mean`: the highest values instead of the lowest | `AssertionError` at the `low_mean` case |
+| `probes.py` | `% BUCKETS` → `% (BUCKETS + 1)` | `AssertionError` in its self-test |
