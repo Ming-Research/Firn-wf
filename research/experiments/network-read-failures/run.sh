@@ -278,13 +278,15 @@ tcp_reopen_vm() {
   sudo rm -rf "$vm"
   mkdir -p "$vm/root/bin" "$vm/root/proc" "$vm/root/sys" "$vm/root/dev" "$vm/root/tmp" "$vm/package"
   server=
+  libraries=
   if [ "$sender" = firn ]; then
-    # The server and the libraries it is linked with, at the paths it finds
-    # them by.
+    # The server and the libraries it is linked with, at the paths the
+    # runner's loader found them by, which the machine's loader is told.
     build_server
     cp "$server" "$vm/root/firn-test" || exit 1
     for library in $(ldd "$server" | grep -o '/[^ ]*'); do
       mkdir -p "$vm/root$(dirname "$library")" && cp -L "$library" "$vm/root$library" || exit 1
+      libraries=$libraries:$(dirname "$library")
     done
     ldd "$server" | cut -c 1-200
     server=/firn-test
@@ -312,6 +314,7 @@ tcp_reopen_vm() {
 /bin/busybox mount -t sysfs sys /sys
 /bin/busybox ip link set lo up || /bin/busybox ifconfig lo 127.0.0.1 up
 [ -z "$receive" ] || echo "4096 131072 $receive" > /proc/sys/net/ipv4/tcp_rmem
+[ -z "$libraries" ] || export LD_LIBRARY_PATH="${libraries#:}"
 echo "vm: kernel \$(/bin/busybox uname -r), processors \$(/bin/busybox grep -c ^processor /proc/cpuinfo), \$(/bin/busybox grep MemTotal /proc/meminfo)"
 echo "vm: tcp_rmem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_rmem) tcp_wmem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_wmem) tcp_mem \$(/bin/busybox cat /proc/sys/net/ipv4/tcp_mem)"
 /tcp_window_reopen $seconds $interval $waits $server
