@@ -22,7 +22,7 @@ The shared glob matcher stays iterative and returns no match past Redis 7.2.16's
 ### decision collection-scans-step-by-count-over-hash-positions
 SSCAN, HSCAN and ZSCAN return a listpack- or intset-sized collection whole with cursor 0, and scan a larger one in hash_map_scan steps until COUNT entries are sampled, as Redis's dictScan loop does.
 - replaced: returning the whole MATCH-filtered collection with cursor 0 at every size was on main; the owner changed it, because it was a stopgap while Whitefoot's hash map could not resume a scan, and it is slow on large collections.
-- rejected: an agent proposed keeping Redis's encoding history and listpack order to reproduce its batches; the owner rejected it, because the scope allows firn's element order and batch boundaries, and the compact test and the cursor need only the current content, not history kept in every collection.
+- rejected: an agent proposed keeping Redis's encoding history and listpack order to reproduce its batches; the owner rejected it, because the scope allows firn's element order and batch boundaries, and the compact test and the cursor need only the current content, not history in every collection.
 - rejected: an agent proposed reading the map's buckets or resuming a whole-map visitor at a numeric offset; the owner rejected it, because a rebuild may move elements present throughout the scan and skip them between calls.
 - rejected: an agent proposed returning part of a large collection with cursor 0, or dropping elements above a compact size; the owner rejected it, because a full iteration would then miss elements present throughout it.
 
