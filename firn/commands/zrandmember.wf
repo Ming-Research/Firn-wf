@@ -34,22 +34,45 @@ struct ScoredKey {
   score: f64;
 }
 
-fn pick_scored(scores: &HashMap<Key, f64, ceiling>, start: u64) -> found: Option<ScoredKey> reads(scores) {
-  doc "Copies the member and score of the first filled bucket at or after a start position, wrapping around the buckets; none for an empty map.";
+fn pick_scored(env: &Client, scores: &HashMap<Key, f64, ceiling>) -> found: Option<ScoredKey> reads(scores), writes(env) {
+  doc "Copies a member and its score chosen with equal chance from the map, none for an empty map: the first filled bucket among 32 buckets drawn at random, which at the map's load takes a few draws, and else the filled bucket whose place among the filled ones, from the first bucket, is a draw modulo the number of members. Each draw steps the client's random state.";
   let buckets = scores^.cells.inner.len;
   if buckets == 0_u64 {
     return None<ScoredKey>();
   }
-  let first = start % buckets;
-  for @scan (step in 0_u64..buckets) {
-    let offset = first +wrap step;
-    let index = offset % buckets;
+  let size = hash_map_len::<Key, f64, ceiling>(map: scores);
+  if size == 0_u64 {
+    return None<ScoredKey>();
+  }
+  for @probes (attempt in 0_u64..32_u64) {
+    set env^.random = next_random(state: env^.random);
+    let index = env^.random % buckets;
     let slot = &scores^.cells.inner[index];
     match slot^ {
       HashMapFilled(key: member, value: current) => {
         let copied = copy_key(key: member);
         let drawn = ScoredKey(member: move copied, score: current^);
         return Some<ScoredKey>(value: move drawn);
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
+      }
+    }
+  }
+  set env^.random = next_random(state: env^.random);
+  let target = env^.random % size;
+  let passed = 0_u64;
+  for @scan (index in 0_u64..buckets) {
+    let slot = &scores^.cells.inner[index];
+    match slot^ {
+      HashMapFilled(key: member, value: current) => {
+        if passed == target {
+          let copied = copy_key(key: member);
+          let drawn = ScoredKey(member: move copied, score: current^);
+          return Some<ScoredKey>(value: move drawn);
+        }
+        set passed = passed +wrap 1_u64;
       }
       HashMapVacant() => {
       }
@@ -106,8 +129,7 @@ fn random_ranked(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
       set env^.state = state_done;
       let size = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
       if env^.high == 0_i64 {
-        set env^.random = next_random(state: env^.random);
-        let picked = pick_scored(scores: &sorted^.scores, start: env^.random);
+        let picked = pick_scored(env: env, scores: &sorted^.scores);
         match move picked {
           Some(value: drawn) => {
             reply_text(client: env, text: &drawn.member.bytes);
@@ -133,8 +155,7 @@ fn random_ranked(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
       if drawn_each {
         scored_header(env: env, count: magnitude);
         for @draws (step in 0_u64..magnitude) {
-          set env^.random = next_random(state: env^.random);
-          let picked = pick_scored(scores: &sorted^.scores, start: env^.random);
+          let picked = pick_scored(env: env, scores: &sorted^.scores);
           match move picked {
             Some(value: drawn) => {
               scored_emit(env: env, member: &drawn.member, score: drawn.score);
@@ -190,8 +211,7 @@ fn random_ranked(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
           if held_count >= magnitude {
             break @draws;
           }
-          set env^.random = next_random(state: env^.random);
-          let picked = pick_scored(scores: &sorted^.scores, start: env^.random);
+          let picked = pick_scored(env: env, scores: &sorted^.scores);
           match move picked {
             Some(value: drawn) => {
               let ScoredKey(member: picked_key, score: picked_score) = move drawn;
