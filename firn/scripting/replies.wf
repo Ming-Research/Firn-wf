@@ -50,11 +50,9 @@ fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit read
       }
     }
     for (i in 0_u64..end) {
-      if i < bytes.inner.len {
-        let b = bytes.inner[i];
-        let shown = pkg::protocol::echoed(byte: b);
-        reply_byte(client: client, value: shown);
-      }
+      let b = bytes.inner[i];
+      let shown = pkg::protocol::echoed(byte: b);
+      reply_byte(client: client, value: shown);
     }
     reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);
   }
@@ -454,28 +452,26 @@ fn protocol_to_lua(vm: &Vm, bytes: &[u8], pos: &Position, resp: u8) -> v: Value 
         let first = pos^.at;
         let last = first +sat n;
         set pos^.at = last +sat 2_u64;
-        if first <= last {
-          if last <= bytes^.len {
-            let value = literal(vm: vm, text: &bytes^[first..last]);
-            if blob_error {
-              return protocol_error(vm: vm, message: value);
-            }
-            if verbatim {
-              let form_end = first +sat 3_u64;
-              let text_start = first +sat 4_u64;
-              if form_end <= text_start {
-                if text_start <= last {
-                  let format = literal(vm: vm, text: &bytes^[first..form_end]);
-                  let text = literal(vm: vm, text: &bytes^[text_start..last]);
-                  let table = reply_table(vm: vm, field: &replies_text_6[0_u64..6_u64], v: format);
-                  let key = literal(vm: vm, text: &replies_text_7[0_u64..6_u64]);
-                  raw(vm: vm, table: table, key: key, value: text);
-                  return reply_table(vm: vm, field: &replies_text_5[0_u64..15_u64], v: table);
-                }
+        if last <= bytes^.len {
+          let value = literal(vm: vm, text: &bytes^[first..last]);
+          if blob_error {
+            return protocol_error(vm: vm, message: value);
+          }
+          if verbatim {
+            let form_end = first +sat 3_u64;
+            let text_start = first +sat 4_u64;
+            if form_end <= text_start {
+              if text_start <= last {
+                let format = literal(vm: vm, text: &bytes^[first..form_end]);
+                let text = literal(vm: vm, text: &bytes^[text_start..last]);
+                let table = reply_table(vm: vm, field: &replies_text_6[0_u64..6_u64], v: format);
+                let key = literal(vm: vm, text: &replies_text_7[0_u64..6_u64]);
+                raw(vm: vm, table: table, key: key, value: text);
+                return reply_table(vm: vm, field: &replies_text_5[0_u64..15_u64], v: table);
               }
             }
-            return value;
           }
+          return value;
         }
       }
       let mapped = tag == 37_u8;

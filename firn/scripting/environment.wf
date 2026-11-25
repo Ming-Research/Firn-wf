@@ -245,11 +245,9 @@ fn error_reply_value(vm: &Vm, v: Value) -> r: Value writes(vm) {
   }
   let code_end = end;
   for (i in start..end) {
-    if i < bytes.inner.len {
-      if bytes.inner[i] == 32_u8 {
-        set code_end = i;
-        break;
-      }
+    if bytes.inner[i] == 32_u8 {
+      set code_end = i;
+      break;
     }
   }
   let has_code = code_end < end;
@@ -261,16 +259,12 @@ fn error_reply_value(vm: &Vm, v: Value) -> r: Value writes(vm) {
     if first >= end {
       break;
     }
-    if first < bytes.inner.len {
-      let b = bytes.inner[first];
-      let cr = b == 13_u8;
-      let lf = b == 10_u8;
-      let newline = bor(cr, lf);
-      if newline {
-        set first = first + 1_u64;
-      } else {
-        break;
-      }
+    let b = bytes.inner[first];
+    let cr = b == 13_u8;
+    let lf = b == 10_u8;
+    let newline = bor(cr, lf);
+    if newline {
+      set first = first + 1_u64;
     } else {
       break;
     }
@@ -296,11 +290,7 @@ fn error_reply_value(vm: &Vm, v: Value) -> r: Value writes(vm) {
   }
   let out = box_slots_new::<u8>(capacity: 0_u64);
   if has_code {
-    if start <= code_end {
-      if code_end <= bytes.inner.len {
-        text_bytes(out: &out, bytes: &bytes.inner[start..code_end]);
-      }
-    }
+    text_bytes(out: &out, bytes: &bytes.inner[start..code_end]);
     push(out: &out, byte: 32_u8);
   } else {
     text_bytes(out: &out, bytes: &env_text_15[0_u64..4_u64]);

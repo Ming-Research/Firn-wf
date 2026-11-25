@@ -217,18 +217,18 @@ fn output_promoted(send: TcpSend, factory: HandleFactory, connection: EventConne
   return unit;
 }
 
-fn promoted_input(input: &Box<Slots<u8>>, held: u64, chunk: Box<Slots<u8>>) -> next: Option<u64> writes(input) contract {
+fn promoted_input(input: &Box<Slots<u8>>, held_bytes: u64, chunk: Box<Slots<u8>>) -> next: Option<u64> writes(input) contract {
   ensures when Some(value: count): count <= input^.inner.len;
 } {
   doc "Appends a received chunk to the command owner's incomplete query. The one-GiB query limit bounds this buffer as well as the shared receiver queue; an oversized query closes rather than dropping bytes or stopping reads before EOF.";
   let count = chunk.inner.len;
-  if held > 1073741824_u64 {
+  if held_bytes > 1073741824_u64 {
     return None<u64>();
   }
   if count > 1073741824_u64 {
     return None<u64>();
   }
-  let next = held + count;
+  let next = held_bytes + count;
   if next > 1073741824_u64 {
     return None<u64>();
   }
@@ -238,7 +238,7 @@ fn promoted_input(input: &Box<Slots<u8>>, held: u64, chunk: Box<Slots<u8>>) -> n
     }
     pkg::protocol::input_grow(input: input);
   }
-  let destination = &input^.inner[held..next];
+  let destination = &input^.inner[held_bytes..next];
   for @bytes (index in 0_u64..count) {
     set destination^[index] = chunk.inner[index];
   }
@@ -248,21 +248,21 @@ fn promoted_input(input: &Box<Slots<u8>>, held: u64, chunk: Box<Slots<u8>>) -> n
 fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown: &CancelSource, connection: &EventConnection, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, initial: u64, transaction: Transaction) -> graceful: Bool reads(store), reads(wall), reads(connection), writes(clock), writes(shutdown) waits {
   doc "Owns parsing, client settings and the transaction after promotion. The unconsumed pipeline suffix enters unchanged. Every command completes before the suffix runs; its entire output group is committed before another command is parsed. Input bytes remain charged until parsing consumes them. QUIT and protocol errors request an ordered output finish; receive, send, pressure or shutdown cancellation abandons pending commands.";
   let env = KeyEnv();
-  let held = initial;
+  let held_bytes = initial;
   let watch = std::time::cancel_watch(source: &connection^.stop);
   let stopped = std::time::cancel_state(watch: &watch);
   loop @input {
     if client.closing {
       return True();
     }
-    if held == 0_u64 {
+    if held_bytes == 0_u64 {
       let incoming = pkg::connection_events::input_take(connection: connection);
       match move incoming {
         Some(value: chunk) => {
-          let appended = promoted_input(input: &input, held: held, chunk: move chunk);
+          let appended = promoted_input(input: &input, held_bytes: held_bytes, chunk: move chunk);
           match appended {
             Some(value: count) => {
-              set held = count;
+              set held_bytes = count;
             }
             None() => {
               return False();
@@ -296,7 +296,7 @@ fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown
       }
       let capacity = input.inner.len;
       let bytes = &input.inner[0_u64..capacity];
-      let parsed = pkg::protocol::parse_request(input: bytes, start: consumed, held: held, args: &args, locked: client.locked);
+      let parsed = pkg::protocol::parse_request(input: bytes, start: consumed, held_bytes: held_bytes, args: &args, locked: client.locked);
       if parsed.state == 0_u64 {
         set need_more = True();
         break @commands;
@@ -330,20 +330,20 @@ fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown
       if client.closing {
         return True();
       }
-      if consumed >= held {
+      if consumed >= held_bytes {
         break @commands;
       }
     }
-    set held = pkg::protocol::keep_rest(input: &input, from: consumed, held: held);
+    set held_bytes = pkg::protocol::keep_rest(input: &input, from: consumed, held_bytes: held_bytes);
     pkg::connection_events::input_used(connection: connection, bytes: consumed);
     if need_more {
       let incoming = pkg::connection_events::input_take(connection: connection);
       match move incoming {
         Some(value: chunk) => {
-          let appended = promoted_input(input: &input, held: held, chunk: move chunk);
+          let appended = promoted_input(input: &input, held_bytes: held_bytes, chunk: move chunk);
           match appended {
             Some(value: count) => {
-              set held = count;
+              set held_bytes = count;
             }
             None() => {
               return False();
@@ -358,13 +358,13 @@ fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown
   }
 }
 
-fn serve_promoted(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, shutdown: CancelSource, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, held: u64, transaction: Transaction) -> result: unit pure waits {
+fn serve_promoted(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, shutdown: CancelSource, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, held_bytes: u64, transaction: Transaction) -> result: unit pure waits {
   doc "Transfers the two socket halves once to independent owners, retaining parser, client and transaction ownership in the command activity. Cleanup enables every child to finish before the activation's implicit joins. A registration id is never reused, so an old retained delivery cannot name a later connection.";
   let found = pkg::connection_events::connection_get(hub: &store.pubsub, id: client.pubsub_id);
   let TcpConnection(receive: receive, send: send) = move connection;
   match move found {
     Some(value: events) => {
-      let accepted = pkg::connection_events::input_seed(connection: &events, bytes: held);
+      let accepted = pkg::connection_events::input_seed(connection: &events, bytes: held_bytes);
       if accepted {
       } else {
         pkg::connection_events::forget(hub: &store.pubsub, id: events.id);
@@ -386,7 +386,7 @@ fn serve_promoted(connection: TcpConnection, factory: HandleFactory, store: Keys
       let ending_events = pkg::connection_events::connection_share(connection: &events);
       let ending_watch = std::time::cancel_watch(source: &shutdown);
       spawn promoted_shutdown(connection: move ending_events, shutdown: move ending_watch);
-      let graceful = promoted_commands(store: &store, clock: &clock, wall: &wall, shutdown: &shutdown, connection: &events, client: move client, args: move args, input: move input, initial: held, transaction: move transaction);
+      let graceful = promoted_commands(store: &store, clock: &clock, wall: &wall, shutdown: &shutdown, connection: &events, client: move client, args: move args, input: move input, initial: held_bytes, transaction: move transaction);
       if graceful {
         pkg::connection_events::finish(hub: &store.pubsub, id: events.id);
       } else {

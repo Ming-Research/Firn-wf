@@ -168,6 +168,10 @@ fn set_fields(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -276,6 +280,10 @@ fn set_field_once(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -353,6 +361,10 @@ fn get_field(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env)
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -419,6 +431,10 @@ fn get_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -491,6 +507,10 @@ fn delete_fields(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(v
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -559,6 +579,10 @@ fn find_field(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -609,6 +633,10 @@ fn hash_size(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env)
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -698,6 +726,10 @@ fn all_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -784,6 +816,10 @@ fn add_to_field(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(va
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -908,6 +944,10 @@ fn add_float(env: &Client, value: &Entry, floating: &Floating) -> kind: u64 writ
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -961,23 +1001,21 @@ fn random_field(fields: &HashMap<Key, Bytes, ceiling>, start: u64, client: &Clie
   for @scan (step in 0_u64..buckets) {
     let offset = first +wrap step;
     let index = offset % buckets;
-    if index < fields^.cells.inner.len {
-      let slot = &fields^.cells.inner[index];
-      match slot^ {
-        HashMapFilled(key: field, value: stored) => {
-          if with_values {
-            reply_pair(client: client);
-          }
-          reply_text(client: client, text: &field^.bytes);
-          if with_values {
-            reply_text(client: client, text: stored);
-          }
-          return True();
+    let slot = &fields^.cells.inner[index];
+    match slot^ {
+      HashMapFilled(key: field, value: stored) => {
+        if with_values {
+          reply_pair(client: client);
         }
-        HashMapVacant() => {
+        reply_text(client: client, text: &field^.bytes);
+        if with_values {
+          reply_text(client: client, text: stored);
         }
-        HashMapDeleted() => {
-        }
+        return True();
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
       }
     }
   }
@@ -996,28 +1034,26 @@ fn distinct_fields(fields: &HashMap<Key, Bytes, ceiling>, wanted: u64, client: &
     if remaining == 0_u64 {
       break @scan;
     }
-    if index < fields^.cells.inner.len {
-      let slot = &fields^.cells.inner[index];
-      match slot^ {
-        HashMapFilled(key: field, value: stored) => {
-          set client^.random = next_random(state: client^.random);
-          let draw = client^.random % remaining;
-          if draw < needed {
-            if with_values {
-              reply_pair(client: client);
-            }
-            reply_text(client: client, text: &field^.bytes);
-            if with_values {
-              reply_text(client: client, text: stored);
-            }
-            set needed = needed -wrap 1_u64;
+    let slot = &fields^.cells.inner[index];
+    match slot^ {
+      HashMapFilled(key: field, value: stored) => {
+        set client^.random = next_random(state: client^.random);
+        let draw = client^.random % remaining;
+        if draw < needed {
+          if with_values {
+            reply_pair(client: client);
           }
-          set remaining = remaining -wrap 1_u64;
+          reply_text(client: client, text: &field^.bytes);
+          if with_values {
+            reply_text(client: client, text: stored);
+          }
+          set needed = needed -wrap 1_u64;
         }
-        HashMapVacant() => {
-        }
-        HashMapDeleted() => {
-        }
+        set remaining = remaining -wrap 1_u64;
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
       }
     }
   }
@@ -1090,6 +1126,10 @@ fn random_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -1427,8 +1467,8 @@ fn hset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "HSET and HMSET's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = set_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = set_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1464,8 +1504,8 @@ fn hsetnx_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   doc "HSETNX's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = set_field_once(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = set_field_once(env: client, value: held_value);
     }
     None() => {
     }
@@ -1503,8 +1543,8 @@ fn hget_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   doc "HGET's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = get_field(env: client, value: held);
+    Some(value: held_value) => {
+      let found = get_field(env: client, value: held_value);
     }
     None() => {
     }
@@ -1533,8 +1573,8 @@ fn hmget_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   doc "HMGET's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = get_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let found = get_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1558,8 +1598,8 @@ fn hdel_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   doc "HDEL's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = delete_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = delete_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1598,8 +1638,8 @@ fn hfield_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   doc "HEXISTS and HSTRLEN's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = find_field(env: client, value: held);
+    Some(value: held_value) => {
+      let found = find_field(env: client, value: held_value);
     }
     None() => {
     }
@@ -1622,8 +1662,8 @@ fn hlen_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   doc "HLEN's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = hash_size(env: client, value: held);
+    Some(value: held_value) => {
+      let found = hash_size(env: client, value: held_value);
     }
     None() => {
     }
@@ -1652,8 +1692,8 @@ fn hall_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   doc "HGETALL, HKEYS and HVALS's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let found = all_fields(env: client, value: held);
+    Some(value: held_value) => {
+      let found = all_fields(env: client, value: held_value);
     }
     None() => {
     }
@@ -1681,8 +1721,8 @@ fn hincrby_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   doc "HINCRBY's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = add_to_field(env: client, value: held);
+    Some(value: held_value) => {
+      let edited = add_to_field(env: client, value: held_value);
     }
     None() => {
     }
@@ -1738,8 +1778,8 @@ fn hincrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   doc "HINCRBYFLOAT's work on one held entry; the caller owns the statement and expiry metadata.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
-    Some(value: held) => {
-      let edited = add_float(env: client, value: held, floating: floating);
+    Some(value: held_value) => {
+      let edited = add_float(env: client, value: held_value, floating: floating);
     }
     None() => {
     }
@@ -1802,16 +1842,16 @@ fn hrandfield_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   if reading {
     match slot^ {
-      Some(value: held) => {
-        let found = random_fields(env: client, value: held);
+      Some(value: held_value) => {
+        let found = random_fields(env: client, value: held_value);
       }
       None() => {
       }
     }
   } else {
     match slot^ {
-      Some(value: held) => {
-        let found = hash_size(env: client, value: held);
+      Some(value: held_value) => {
+        let found = hash_size(env: client, value: held_value);
       }
       None() => {
       }
