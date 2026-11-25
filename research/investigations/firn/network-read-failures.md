@@ -337,6 +337,12 @@ differ from what was predicted:
   receiver refuses a segment that the sender then keeps retransmitting. The
   reader's socket had dropped 16 or 17 packets under both kernels.
 
+Which change makes Ubuntu's 7.0 differ was not looked for. The third version
+of the series named above (2026-03-09,
+<https://lkml.iu.edu/2603.1/00982.html>) says its base already has commit
+026dfef287c0, "tcp: give up on stronger sk_rcvbuf checks (for now)"; this too
+was read through a summary.
+
 ### firn as the sender under each kernel
 
 Two things are still open after the runs above. The rate differs from CI's
