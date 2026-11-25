@@ -896,9 +896,9 @@ cell of the 19 default tests at depths 16 and 1 wholly on the slower side of
   16-31, 2 server CPUs, the 19 tests at depths 16 and 1, 8 interleaved passes
   of 5 s, no `reference` line, and no profile: the workflow's `profile` input
   is on unless the dispatch sets it off. G's measuring step took 106 minutes.
-  The images are built first by a run of the workflow's `build` mode, and H
-  names that run as `images_run`, so that no build runs in the window that
-  must be quiet.
+  The images of H and H2 (`head-nops` below included) are built first by one
+  run of the workflow's `build` mode, and H and H2 name that run as
+  `images_run`, so that no build runs in the window that must be quiet.
 - **The host.** The 14900K carries several runner instances of this
   repository (`14900k-4`, `14900k-6` and `14900k-8` ran jobs on 2026-11-25),
   and the `fast.yml` jobs of other works run on them beside a measurement. In
@@ -935,9 +935,7 @@ Written before H runs, so that its reading does not follow H's numbers.
 - **Settings.** The tests of the cells H flagged, at both depths (the depth is
   a setting of the whole run), 16 interleaved passes of 5 s, the placement of
   H. With k tests the measuring step is about k x 2 x 5 x 16 x 5 s, and G2 took
-  75 minutes for 7 tests and 4 images. A second `build` run, naming H's build
-  run as `images_run`, keeps H's four images and adds `head-nops`; H2 names it
-  as `images_run`.
+  75 minutes for 7 tests and 4 images. Its images come from H's build run.
 - **Profile.** After the passes, each image is profiled under each flagged
   test at depth 16 (`profile_test`, 4999 Hz, flat), with the instructions of
   `serve`'s and of the ordinary instance of `execute_client`'s resume symbols
