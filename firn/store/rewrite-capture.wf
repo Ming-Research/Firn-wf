@@ -113,7 +113,7 @@ fn sequence_subject(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
   doc "For a statement opened for one key, retains the name of the first key it captures, charged before allocation, and whether that key is present after its latest change, and answers true when the captured key differs from it. Names are compared byte for byte, so a key removed and written again in the same statement stays the one key.";
   let present = False();
   match slot^ {
-    Some(value: held) => {
+    Some(value: held_value) => {
       set present = True();
     }
     None() => {
@@ -163,9 +163,9 @@ fn sequence_revoke(sequence: &WriteSequence) -> result: unit writes(sequence) {
     sequence_fail(sequence: sequence, reason: present_reason);
     return unit;
   }
-  let held = None<Box<Slots<u8>>>();
-  swap(first: &sequence^.subject, second: &held);
-  match move held {
+  let held_subject = None<Box<Slots<u8>>>();
+  swap(first: &sequence^.subject, second: &held_subject);
+  match move held_subject {
     Some(value: named) => {
       let length = named.inner.len;
       let absent = None<Entry>();

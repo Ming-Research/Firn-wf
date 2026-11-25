@@ -705,8 +705,8 @@ fn case_blocking_move(wall: &std::time::WallClock, full: Bool) -> passed: Bool r
   let effects = box_slots_new::<u8>(capacity: 64_u64);
   let completed = False();
   let records = 99_u64;
-  atomic held = &store.keys {
-    let (done, appended) = blocking_move_try(sequence: &sequence, journal: &journal, kind: 204_u64, keys: held, effects: &effects, logged: no, input: input, args: &args, client: &client, time: &time);
+  atomic claimed_keys = &store.keys {
+    let (done, appended) = blocking_move_try(sequence: &sequence, journal: &journal, kind: 204_u64, keys: claimed_keys, effects: &effects, logged: no, input: input, args: &args, client: &client, time: &time);
     set completed = done;
     set records = appended;
   }
@@ -861,16 +861,16 @@ fn case_stored_length(store: &pkg::store::Keyspace, key: &[u8], expected: u64) -
 fn case_waiter_bound(store: &pkg::store::Keyspace) -> bound: u64 reads(store) waits {
   doc "Meta's bound on the keys blocked clients wait on.";
   let bound = 0_u64;
-  atomic held = &store^.meta {
-    set bound = held^.waiter_keys_bound;
+  atomic held_meta = &store^.meta {
+    set bound = held_meta^.waiter_keys_bound;
   }
   return bound;
 }
 
 fn case_stale_bound(store: &pkg::store::Keyspace) -> result: unit reads(store) waits {
   doc "Leaves Meta's bound on the keys blocked clients wait on above the count of registered keys, which is zero in these cases, as it stands after the last waiter has gone.";
-  atomic held = &store^.meta {
-    set held^.waiter_keys_bound = 3_u64;
+  atomic held_meta = &store^.meta {
+    set held_meta^.waiter_keys_bound = 3_u64;
   }
   return unit;
 }

@@ -293,8 +293,8 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let unstaged = False();
   atomic slot = &store^.keys[key], m = &store^.meta {
     if bnot(existing) {
-      let held = list_kind(slot: slot, now: client^.now);
-      if held != entry_wanted {
+      let found_kind = list_kind(slot: slot, now: client^.now);
+      if found_kind != entry_wanted {
         if m^.waiter_keys_bound != 0_u64 {
           set probing = True();
         }

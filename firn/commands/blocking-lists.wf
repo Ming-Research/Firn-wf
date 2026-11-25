@@ -78,8 +78,8 @@ fn blocking_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: 
 fn blocking_list_nonempty(slot: &Option<Entry>) -> ready: Bool reads(slot) {
   doc "Whether a previously classified live list has an element. This observation adds no access refresh; pop_body performs the one Redis lookup refresh before mutation.";
   match slot^ {
-    Some(value: held) => {
-      match held^.value {
+    Some(value: held_value) => {
+      match held_value^.value {
         Items(items: list) => {
           return list^.inner.len > 0_u64;
         }

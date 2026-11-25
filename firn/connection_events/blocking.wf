@@ -216,14 +216,14 @@ fn block_complete(hub: &Hub, request: BlockedList, client: &Client, time: u64) -
 fn block_wait(hub: &Shared<Hub>, connection: &Connection) -> resumed: Option<BlockResume> reads(hub), reads(connection) waits {
   let watch = std::time::cancel_watch(source: &connection^.stop);
   let cancelled = std::time::cancel_state(watch: &watch);
-  atomic held = &hub^, stopped = &cancelled when block_wait_ready(hub: held, id: connection^.id, cancelled: stopped^.fired) {
+  atomic held_hub = &hub^, stopped = &cancelled when block_wait_ready(hub: held_hub, id: connection^.id, cancelled: stopped^.fired) {
     if stopped^.fired {
       return None<BlockResume>();
     }
-    if held^.stopping {
+    if held_hub^.stopping {
       return None<BlockResume>();
     }
-    return block_resume_take(hub: held, id: connection^.id);
+    return block_resume_take(hub: held_hub, id: connection^.id);
   }
 }
 
