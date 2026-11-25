@@ -74,19 +74,19 @@ fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> re
   return unit;
 }
 
-fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> result: AofBoundary reads(store), writes(factory), writes(log), writes(clock) waits {
-  doc "Reuse startup and acknowledged-append syntax state. Only an uncertain append or truncate outcome, an existing increment not selected for startup replay, or unexpected generated syntax needs the charged historical reader. Authoritative files have the same sole-writer assumption as ordinary append accounting. Cache successful recovery even when a later switch step fails.";
+fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, slot: &AofSlot, clock: &Clock) -> result: AofBoundary reads(store), reads(log), writes(factory), writes(slot), writes(clock) waits {
+  doc "Reuse startup and acknowledged-append syntax state. Only an uncertain append or truncate outcome, an existing increment not selected for startup replay, or unexpected generated syntax needs the charged historical reader. The kept state stays exact because every append to the active file goes through the slot, which one context holds at a time and whose holder advances it, the same assumption as ordinary append accounting. Cache successful recovery even when a later switch step fails.";
   let cancelled = aof_rw_cancelled(store: store);
   if cancelled {
     let refused = False();
     return AofBoundary(whole: refused, unfinished: refused, reverted: 0_u64, size: 0_u64);
   }
-  if log^.boundary.whole {
-    return log^.boundary;
+  if slot^.boundary.whole {
+    return slot^.boundary;
   }
   let scanned = aof_rw_boundary_read(store: store, factory: factory, log: log, clock: clock);
   if scanned.whole {
-    set log^.boundary = scanned;
+    set slot^.boundary = scanned;
   }
   return scanned;
 }

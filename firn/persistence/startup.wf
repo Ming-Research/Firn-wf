@@ -308,8 +308,8 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
   }
 }
 
-fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, prefix: &[u8], time: &Time, clock: &Clock) -> result: Result<AofLog, AofStartError> reads(store), reads(cwd), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(clock) waits {
-  doc "Opens appendonlydir, loads and upgrades Redis's manifest layout, cuts only its last active file, removes listed history and opens its last incremental file. A refusal returns Err before firn listens; a stop request the replay saw returns Interrupted before anything after the replay writes appendonlydir.";
+fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, prefix: &[u8], time: &Time, clock: &Clock) -> result: Result<AofStarted, AofStartError> reads(store), reads(cwd), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(clock) waits {
+  doc "Opens appendonlydir, loads and upgrades Redis's manifest layout, cuts only its last active file, removes listed history and opens its last incremental file with an empty 64-KiB pending buffer, whose capacity Meta counts. A refusal returns Err before firn listens; a stop request the replay saw returns Interrupted before anything after the replay writes appendonlydir.";
   let refusal = AofStartError::Failed();
   let directory_name = &aof_directory_name[0_u64..13_u64];
   match std::fs::open_directory_write(factory: factory, root: cwd_write, name: directory_name, start: 0_u64, end: 13_u64) {
@@ -323,8 +323,15 @@ fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd
           match aof_prepare(store: store, factory: factory, cwd: cwd, cwd_write: cwd_write, directory: &directory, writable: &writable, prefix: prefix, manifest: &manifest, boundary: &boundary, time: time, clock: clock) {
             Ok(value: opened) => {
               let filename = aof_copy(input: prefix);
-              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened, boundary: boundary);
-              return Ok<AofLog, AofStartError>(value: move log);
+              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest);
+              let pending = box_slots_new::<u8>(capacity: 0_u64);
+              atomic pending_meta = &store^.meta {
+                set pending = box_slots_new::<u8>(capacity: 65536_u64);
+                set pending_meta^.aof_pending_capacity = pending.inner.cap;
+              }
+              let slot = AofSlot(file: move opened, boundary: boundary, pending: move pending);
+              let started = AofStarted(log: move log, slot: move slot);
+              return Ok<AofStarted, AofStartError>(value: move started);
             }
             Err(error: problem) => {
               set refusal = problem;
@@ -340,5 +347,5 @@ fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd
     Err(error: problem) => {
     }
   }
-  return Err<AofLog, AofStartError>(error: refusal);
+  return Err<AofStarted, AofStartError>(error: refusal);
 }

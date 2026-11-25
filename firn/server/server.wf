@@ -1,4 +1,5 @@
 alias AcceptedConnection = std::net::AcceptedConnection;
+alias AofDesk = pkg::persistence::AofDesk;
 alias CancelSource = std::time::CancelSource;
 alias CancelWatch = std::time::CancelWatch;
 alias Client = pkg::protocol::Client;
@@ -325,10 +326,9 @@ fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock:
   return Ok<unit, IoError>(value: unit);
 }
 
-fn flush(send: &TcpSend, client: &Client, store: &Keyspace, clock: &Clock, base: Instant) -> sent: Bool reads(store), writes(send), writes(client), writes(clock) waits {
-  doc "Sends the replies the client holds and empties them; false reports a connection that refused them. With an append-only file the replies first wait until every record committed before the send is in the file, as Redis 7.2.16 writes the AOF before it sends the replies of an event-loop iteration (server.c:1721-1739), so no reply shows a write a process kill can lose.";
-  let observed = pkg::store::aof_reply_sequence(store: store);
-  pkg::store::aof_reply_wait(store: store, sequence: observed);
+fn flush(send: &TcpSend, client: &Client, store: &Keyspace, desk: &Shared<AofDesk>, factory: &HandleFactory, clock: &Clock, base: Instant) -> sent: Bool reads(store), reads(desk), writes(send), writes(client), writes(factory), writes(clock) waits {
+  doc "Sends the replies the client holds and empties them; false reports a connection that refused them. With an append-only file the replies first wait, as aof_reply_wait does, until every record they may have observed is in the file, as Redis 7.2.16 writes the AOF before it sends the replies of an event-loop iteration (server.c:1721-1739), so no reply shows a write a process kill can lose; the connection that finds the file free appends for every waiting one.";
+  pkg::persistence::aof_reply_wait(store: store, desk: desk, factory: factory, client: client);
   let written = client^.at;
   let capacity = client^.bytes.inner.len;
   let window = &client^.bytes.inner[0_u64..capacity];
@@ -513,7 +513,7 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
   return Reading(time: time, unix_us: unix_us);
 }
 
-fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
+fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, desk: Shared<AofDesk>, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
   doc "Before its first successful subscription, serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A first successful subscription commits the accumulated reply prefix in the event hub and ends these loops before transferring socket, parser, client and transaction ownership to serve_promoted; a connection that never subscribes retains this path. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
@@ -645,6 +645,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       }
       if parsed.state == 1_u64 {
         let requested = execute_client::<0>(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
+        pkg::store::aof_command_end(client: &client);
         if requested {
           std::time::cancel_fire(source: &shutdown);
         }
@@ -665,7 +666,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       }
       set consumed = parsed.next;
       if client.at > 16384_u64 {
-        let delivered = flush(send: &connection.send, client: &client, store: &store, clock: &clock, base: woke);
+        let delivered = flush(send: &connection.send, client: &client, store: &store, desk: &desk, factory: &factory, clock: &clock, base: woke);
         if delivered {
         } else {
           set broken = True();
@@ -678,7 +679,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       break @requests;
     }
     if client.at > 0_u64 {
-      let delivered = flush(send: &connection.send, client: &client, store: &store, clock: &clock, base: woke);
+      let delivered = flush(send: &connection.send, client: &client, store: &store, desk: &desk, factory: &factory, clock: &clock, base: woke);
       if delivered {
       } else {
         set broken = True();
@@ -696,7 +697,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     let promoted_clock = clock_share(clock: &clock);
     let promoted_wall = wall_clock_share(clock: &wall);
     let promoted_shutdown = std::time::cancel_share(source: &shutdown);
-    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held_bytes: held_bytes, transaction: move transaction);
+    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, desk: move desk, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held_bytes: held_bytes, transaction: move transaction);
     std::time::close_cancel_source(source: move shutdown);
     atomic m = &store.meta {
       set m^.clients = m^.clients -wrap 1_u64;
@@ -705,6 +706,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   }
   std::time::close_cancel_watch(watch: move limits.cancel);
   std::time::close_cancel_source(source: move shutdown);
+  pkg::persistence::aof_desk_close(desk: move desk, factory: &factory);
   let TcpConnection(receive: closing_receive, send: closing_send) = move connection;
   close_receive(factory: &factory, receive: move closing_receive);
   close_send(factory: &factory, send: move closing_send);
@@ -1085,18 +1087,22 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
     close_directory(factory: &handles, directory: move cwd);
     return exit_status(code: 3_u8);
   }
+  let desk = pkg::persistence::aof_desk_new();
   if options.logging {
     let read = read_time(wall: &wall_clock);
     let replaying = True();
     let time = Time(unix_ms: read.time.unix_ms, check: 0_u64, loading: replaying);
     match pkg::persistence::aof_start(store: &root, factory: &handles, cwd: &cwd, cwd_write: &cwd_write, prefix: name, time: &time, clock: &clock) {
-      Ok(value: started_log) => {
+      Ok(value: started) => {
         set logging = True();
+        let pkg::persistence::AofStarted(log: started_log, slot: started_slot) = move started;
+        pkg::persistence::aof_desk_open(desk: &desk, factory: &handles, slot: move started_slot);
         let writer_store = keyspace_logging(store: &root, logging: logging);
         let writer_factory = factory_share(factory: &handles);
+        let writer_desk = shared_share::<AofDesk>(shared: &desk);
         let writer_clock = clock_share(clock: &clock);
         let writer_meter = std::process::meter_share(meter: &memory_meter);
-        spawn write_log(store: move writer_store, factory: move writer_factory, log: move started_log, clock: move writer_clock, time: time, meter: move writer_meter);
+        spawn write_log(store: move writer_store, factory: move writer_factory, log: move started_log, desk: move writer_desk, clock: move writer_clock, time: time, meter: move writer_meter);
       }
       Err(error: problem) => {
         match problem {
@@ -1113,10 +1119,12 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   close_directory_write(factory: &handles, directory: move cwd_write);
   close_directory(factory: &handles, directory: move cwd);
   if failed {
+    pkg::persistence::aof_desk_close(desk: move desk, factory: &handles);
     std::time::cancel_fire(source: &shutdown);
     return exit_status(code: 4_u8);
   }
   if interrupted {
+    pkg::persistence::aof_desk_close(desk: move desk, factory: &handles);
     std::time::cancel_fire(source: &shutdown);
     return exit_status(code: 0_u8);
   }
@@ -1179,6 +1187,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
             }
             let factory = factory_share(factory: &handles);
             let handle = keyspace_share(store: &keyspace);
+            let serving_desk = shared_share::<AofDesk>(shared: &desk);
             let serving_clock = clock_share(clock: &clock);
             let serving_wall = wall_clock_share(clock: &wall_clock);
             let serving_meter = std::process::meter_share(meter: &memory_meter);
@@ -1186,7 +1195,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
             let id = accepted +wrap 1_u64;
             set accepted = accepted +wrap 1_u64;
             let serving_shutdown = std::time::cancel_share(source: &shutdown);
-            spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
+            spawn serve(connection: move connection, factory: move factory, store: move handle, desk: move serving_desk, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
           }
           Err(error: problem) => {
             let cancelled = IoError::Cancelled();
@@ -1254,6 +1263,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   std::time::cancel_fire(source: &shutdown);
   std::time::close_cancel_source(source: move shutdown);
+  pkg::persistence::aof_desk_close(desk: move desk, factory: &handles);
   if listened {
     return exit_status(code: 0_u8);
   }

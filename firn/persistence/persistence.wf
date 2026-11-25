@@ -9,7 +9,6 @@ alias WriteFile = std::fs::WriteFile;
 alias append_once = std::fs::append_once;
 alias client_new = pkg::protocol::client_new;
 alias close_read = std::fs::close_read;
-alias close_write = std::fs::close_write;
 alias execute = pkg::commands::execute;
 alias input_grow = pkg::protocol::input_grow;
 alias input_new = pkg::protocol::input_new;
@@ -58,13 +57,8 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
   return AofAppend(written: written, error: error);
 }
 
-fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits {
-  doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Retain failed appends for periodic recovery. After a saved sync error, each later successful sync with nothing retained starts a recovery rewrite, whatever the automatic-rewrite block, and only its durable installation clears the error; a recovery attempt that fails blocks automatic rewrites as any failed attempt does, and one that succeeds leaves the block as it found it, which only a manual success lifts. Main sets stopping only after clients have left; then take all collecting bytes for one final append and sync attempt, abandoning failures as Redis 7.0.15 everysec does (server.c:4239-4247,4301-4308).";
-  let pending = box_slots_new::<u8>(capacity: 0_u64);
-  atomic pending_meta = &store.meta {
-    set pending = box_slots_new::<u8>(capacity: 65536_u64);
-    set pending_meta^.aof_pending_capacity = pending.inner.cap;
-  }
+fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, desk: Shared<AofDesk>, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits {
+  doc "The maintenance context. Every 10 ms it takes the active file from the desk for a turn that appends the records no reply waits for, retries a failed append and syncs; start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Retain failed appends for periodic recovery. After a saved sync error, each later successful sync with nothing retained starts a recovery rewrite, whatever the automatic-rewrite block, and only its durable installation clears the error; a recovery attempt that fails blocks automatic rewrites as any failed attempt does, and one that succeeds leaves the block as it found it, which only a manual success lifts. Main sets stopping only after clients have left; then take all collecting bytes for one final append and sync attempt, abandoning failures as Redis 7.0.15 everysec does (server.c:4239-4247,4301-4308), and retire the desk, closing the file.";
   let last_sync = std::time::now(clock: &clock);
   let last_append = last_sync;
   let healed = False();
@@ -82,7 +76,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     atomic m = &store.meta {
       set stop = m^.stopping;
     }
-    aof_rw_flush(store: &store, factory: &factory, log: &log, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop, healed: &healed);
+    aof_rw_turn(store: &store, factory: &factory, desk: &desk, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop, healed: &healed);
     if stop {
       break @writing;
     } else {
@@ -128,7 +122,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
         }
         if rewrite {
           set healed = False();
-          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, manual: manual, meter: &meter);
+          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, desk: &desk, clock: &clock, last_sync: &last_sync, last_append: &last_append, manual: manual, meter: &meter);
           set log = move aof_cycled;
           if recovery {
             atomic m = &store.meta {
@@ -142,8 +136,9 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     }
   }
   std::time::close_cancel_watch(watch: move never);
-  let AofLog(directory: directory, writable: writable, prefix: prefix, manifest: manifest, file: file, boundary: boundary) = move log;
-  close_write(factory: &factory, file: move file);
+  aof_desk_retire(desk: &desk, factory: &factory);
+  aof_desk_close(desk: move desk, factory: &factory);
+  let AofLog(directory: directory, writable: writable, prefix: prefix, manifest: manifest) = move log;
   std::fs::close_directory(factory: &factory, directory: move directory);
   std::fs::close_directory_write(factory: &factory, directory: move writable);
   return unit;

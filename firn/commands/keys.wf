@@ -417,6 +417,7 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     if logged {
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::aof_note(meta: m, client: client);
     }
   }
   count_finish(client: client, count: removed);
@@ -486,6 +487,7 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     if logged {
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::aof_note(meta: m, client: client);
     }
   }
   count_finish(client: client, count: live);
@@ -513,6 +515,7 @@ fn run_type(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       let removed = client^.state == state_expired;
       let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::aof_note(meta: m, client: client);
     }
   }
   type_finish(client: client, kind: kind);
@@ -863,6 +866,7 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let lapsed = client^.state == state_expired;
     let appended = expire_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env, budget: &log_budget);
     pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    pkg::store::aof_note(meta: m, client: client);
   }
   expire_finish(client: client, outcome: outcome);
   return unit;
@@ -940,6 +944,7 @@ fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = ttl_meta(log: &m^.log, logged: logged, removed: removed, key: key, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::aof_note(meta: m, client: client);
     }
   }
   ttl_finish(client: client, remaining: &remaining, now: time^.check, in_seconds: in_seconds, absolute: absolute);
@@ -969,6 +974,7 @@ fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = persist_meta(log: &m^.log, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::aof_note(meta: m, client: client);
     }
   }
   persist_finish(client: client, expiry: &expiry);
@@ -1230,6 +1236,7 @@ fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
     set outcome = work.outcome;
     pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    pkg::store::aof_note(meta: m, client: client);
   }
   rename_finish(client: client, outcome: outcome, fresh: fresh);
   return unit;
@@ -1267,6 +1274,7 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
     set outcome = work.outcome;
     pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    pkg::store::aof_note(meta: m, client: client);
   }
   copy_finish(client: client, error: 0_u64, outcome: outcome);
   return unit;

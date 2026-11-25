@@ -683,44 +683,53 @@ fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.
   return budget;
 }
 
-fn aof_reply_ready(meta: &Meta, sequence: u64) -> ready: Bool reads(meta.log), reads(meta.aof_pending_length), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error) {
-  doc "Whether output that observed the commit sequence may leave: every record through it is in the file, or an append failure released it, or an append error is saved, while which Redis 7.2.16 everysec sends the replies it produced (aof.c:1191-1213). At the saturated sequence an old maximum watermark cannot tell a later record apart, so only both buffers being empty releases it.";
+fn aof_covered(meta: &Meta) -> covered: u64 reads(meta.commit_seq), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error) {
+  doc "The mark below which every collected record is written or released, as AofSeen's covered.";
   match meta^.aof_append_error {
     Some(..) => {
-      return True();
+      return meta^.commit_seq;
     }
     None() => {
     }
   }
-  if sequence == 18446744073709551615_u64 {
-    let collecting_empty = meta^.log.inner.len == 0_u64;
-    let pending_empty = meta^.aof_pending_length == 0_u64;
-    return band(collecting_empty, pending_empty);
-  }
-  let written = meta^.aof_written_sequence >= sequence;
-  let failed = meta^.aof_failed_sequence >= sequence;
-  return bor(written, failed);
+  return imax(meta^.aof_written_sequence, meta^.aof_failed_sequence);
 }
 
-fn aof_reply_sequence(store: &Keyspace) -> sequence: u64 reads(store) waits {
-  doc "The commit sequence that output produced so far may have observed, zero without an append-only file.";
+fn aof_seen(store: &Keyspace) -> seen: AofSeen reads(store) waits {
+  doc "The commit sequence and the covered mark in one Meta statement; both zero without an append-only file.";
   if store^.logging {
   } else {
-    return 0_u64;
+    return AofSeen(commit: 0_u64, covered: 0_u64);
   }
-  let sequence = 0_u64;
+  let commit = 0_u64;
+  let covered = 0_u64;
   atomic m = &store^.meta {
-    set sequence = m^.commit_seq;
+    set commit = m^.commit_seq;
+    set covered = aof_covered(meta: m);
   }
-  return sequence;
+  return AofSeen(commit: commit, covered: covered);
 }
 
-fn aof_reply_wait(store: &Keyspace, sequence: u64) -> result: unit reads(store) waits {
-  doc "Waits until output that observed the commit sequence may leave, as aof_reply_ready decides; zero, output that observed no logged state, does not wait.";
-  if sequence == 0_u64 {
-    return unit;
-  }
-  atomic m = &store^.meta when aof_reply_ready(meta: m, sequence: sequence) {
+fn aof_note(meta: &Meta, client: &pkg::protocol::Client) -> result: unit reads(meta.commit_seq), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error), writes(client.aof_dependency), writes(client.aof_covered), writes(client.aof_noted) {
+  doc "Called by a command's own statement under its Meta hold, after its commit: raises the client's dependency to the commit sequence, which covers every record the statement could have observed whether or not it took a sequence, keeps the covered mark it sees, and records that the command noted its dependency.";
+  set client^.aof_dependency = imax(client^.aof_dependency, meta^.commit_seq);
+  let covered = aof_covered(meta: meta);
+  set client^.aof_covered = imax(client^.aof_covered, covered);
+  set client^.aof_noted = True();
+  return unit;
+}
+
+fn aof_command_begin(client: &pkg::protocol::Client) -> result: unit writes(client.aof_noted) {
+  doc "Clears the command's note; execute_client calls it again after eviction and admission, immediately before the command's handler, so that no commit before the handler stands for what the handler reads.";
+  set client^.aof_noted = False();
+  return unit;
+}
+
+fn aof_command_end(client: &pkg::protocol::Client) -> result: unit reads(client.aof_noted), writes(client.aof_unnoted) {
+  doc "After a command: a command whose own statement noted no dependency makes the send of the replies the client holds read the commit sequence first.";
+  if client^.aof_noted {
+  } else {
+    set client^.aof_unnoted = True();
   }
   return unit;
 }
