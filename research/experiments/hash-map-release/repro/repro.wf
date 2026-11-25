@@ -34,9 +34,7 @@ fn field_key(number: u64) -> made: Key pure {
     let narrow = cvt.wrap::<u64, u8>(low);
     let glyph = narrow +wrap 48_u8;
     let place = 11_u64 -wrap index;
-    if place < 12_u64 {
-      set digits[place] = glyph;
-    }
+    set digits[place] = glyph;
     set rest = rest / 10_u64;
   }
   let window = slots_new::<u8, 24>();
