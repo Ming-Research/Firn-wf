@@ -39,7 +39,7 @@ later specification added. The five limits under the page's
 Firn has concrete waits for its script engine and for all clients to leave;
 scripts and guarded waits can delay shutdown, and filesystem calls have no
 deadline/cancellation parameter. See [script engine acquisition](../firn/scripting/entry.wf#L54),
-[shutdown drain](../firn/server/server.wf#L1128), [orderly-stop design](../design/firn/orderly-stop.md)
+[shutdown drain](../firn/server/server.wf#L1128), [orderly-stop design](../design/decisions/server/orderly-stop.md)
 and [PRE-2][host].
 
 Resource availability is [not claimed][not-claimed]. Heap exhaustion does not

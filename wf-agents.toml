@@ -1,9 +1,9 @@
 # Firn-wf's declaration for the engine of wf-agents, read from main as the engine starts: what is firn's own, which the
 # agents of its works are given and the engine runs. A path is from the root of firn's checkout.
 
-# The directory that holds firn's design tree, which the engine looks at on each work's branch. The tree is still in its
-# older form (Design-skill's nodes, design/firn.md and design/firn/, and design/log.md); the engine's form check and its
-# agents read only the entries under design/principles/ and design/decisions/, which it does not have yet.
+# The directory that holds firn's design tree, which the engine looks at on each work's branch: the entries under
+# design/principles/ and design/decisions/, which the engine's form check and its agents read. design/log.md is the
+# record of the changes of the tree's older form, whose node files are gone; it is not part of the tree.
 tree = "design/"
 
 # firn's guide for its agents: its goal and priorities, its references, its paths and its checks.

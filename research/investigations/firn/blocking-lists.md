@@ -4,7 +4,7 @@ This is the implementation study for `firn-scope-blocking-lists`, based on
 Redis 7.2.16 `src/t_list.c`, `src/blocked.c`, `src/timeout.c`, `src/db.c`,
 `src/networking.c`, `src/server.c` and its list/scripting tests. Sources were
 read from the pinned reference cache, not executed on the development machine.
-The proposed decisions are in [blocking lists](../../../design/firn/blocking-lists.md).
+The proposed decisions are in [blocking lists](../../../design/decisions/commands/lists/blocking.md).
 Compilation, reference recordings and runtime acceptance remain CI work.
 
 ## Service boundary
@@ -272,7 +272,7 @@ field to the ordinary connection Client. Per-attempt adapters still allocate
 general scratch on each retry and terminal timeout/UNBLOCK; this trade has
 not been timed and can change actual maxmemory observations. Completion
 continues using the shared protocol writers, as required by the
-[protocol decision](../../../design/firn/protocol-versions.md), rather than
+[protocol decision](../../../design/decisions/protocol.md), rather than
 duplicating RESP selection and null/error bytes in the hub. Reusable adapters
 or a broad narrow-context API split are separate future choices requiring evidence. Ordinary GET/SET
 handlers and shared targets remain untouched; they do not inspect pending
@@ -704,7 +704,7 @@ blocking commands are kinds 201 (`BLPOP`) to 204 (`BLMOVE`); a shared number
 would run `EVALSHA_RO` as `BLPOP`. Two list-related rules of main reach them
 as well.
 
-Framing. [append-only-file](../../../design/firn/append-only-file.md) frames
+Framing. [append-only-file](../../../design/decisions/persistence/append-only-file.md) frames
 an execution unit that propagated several commands in `MULTI`/`EXEC`,
 including a command's own lazy-expiry `DEL`s. Redis 7.2.16 runs a served
 waiter's command as its own unit (`unblockClientOnKey` wraps

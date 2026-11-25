@@ -32,7 +32,7 @@
    versions and for the third (`2d91961`); the fourth version's runs are added
    after they are made.
    The design decision for the staged copy is
-   [firn-q-list-producer-staging](../../../design/firn/append-only-file.md),
+   [firn-q-list-producer-staging](../../../design/decisions/persistence/append-only-file.md),
    ruled A: keep the staged copy, provided this record's measurement shows no
    regression; a regression caused by the copy itself falls back to restoring
    the in-place append, one caused by the allocation to a buffer the connection
@@ -54,7 +54,7 @@
 
 The definitions of medians, twins and intervals are those of the firn
 investigation's [criteria](DESIGN.md#criteria-stated-before-measuring); the
-placement is [measurement-sessions](../../../design/firn/measurement-sessions.md):
+placement is [measurement-sessions](../../../design/decisions/testing/benchmarks.md):
 on the 14900K the servers on CPUs 2 and 4 (P-cores) and the clients on CPUs
 16-31 (E-cores), for every line and the noise floor alike. Every run is
 dispatched on the head commit of the PR that merges; the base is the revision of
@@ -254,7 +254,7 @@ images `base` (`dd8c06c`, the tip of main that the PR last merged), `head` and
 ### The third and the fourth version at one placement (stated before its runs)
 
 Round 15 of the review found that the third `Rejected:` line of
-`design/firn/blocking-lists.md` rests on the third version's rates, which were
+`design/decisions/commands/lists/blocking.md` rests on the third version's rates, which were
 measured with the clients on the P-cores (note at the head of Results), while the
 fourth version's rates are at the design placement. Nothing compares the two on
 equal terms, and that comparison is what says whether the bound in Meta, its
@@ -414,10 +414,10 @@ per-key entry hold) at 14.13% in `base`; `lmove 16` has `wf_cmap_hold` at
 `memcpy` are each below 1% in `head` (`malloc` 0.57%, `__memmove_avx_unaligned_erms`
 0.36% in `lpush 16`). So the cost of these commands is the whole-keyspace,
 metadata, event-hub and server-state hold that
-[blocking-lists.md](../../../design/firn/blocking-lists.md) gave every list
+[blocking-lists.md](../../../design/decisions/commands/lists/blocking.md) gave every list
 producer in this first version (`run_list_producer`), which serialises the two server contexts,
 and not the staged copy or its buffer: neither of the other two options of
-[firn-q-list-producer-staging](../../../design/firn/append-only-file.md) (restore
+[firn-q-list-producer-staging](../../../design/decisions/persistence/append-only-file.md) (restore
 the in-place append, reuse a buffer) would remove it. This is read from one
 profile of one pass per image; the ratio of the cells is the measurement,
 the attribution to the hold is inferred. The head is the variant that would

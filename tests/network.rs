@@ -11814,7 +11814,7 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
 
 /// A one-key list push on a key already journaled in the rewrite window
 /// journals only its own append-only bytes, as every one-key command does
-/// (design/firn/aof-rewrite.md). Journaling a complete list image per push
+/// (design/decisions/persistence/rewrite.md). Journaling a complete list image per push
 /// instead makes the rewritten base grow with pushes times list length:
 /// here 200 pushes on a 20,000-element list would add about 28 MB to a base
 /// of about 9 MB, and restart replays all of it.
@@ -11871,7 +11871,7 @@ fn firn_rewrite_journals_one_key_list_pushes_as_their_bytes() {
 /// A served BLPOP or BRPOP whose keys name one list journals only the LPOP or
 /// RPOP bytes it logs once that list is journaled in the rewrite window, both
 /// when a producer serves a waiter and when the list is ready at once
-/// (design/firn/aof-rewrite.md). Journaling a complete list image per pop
+/// (design/decisions/persistence/rewrite.md). Journaling a complete list image per pop
 /// instead adds pops times list length to the rewritten base: each image of
 /// this 20,000-element list of six-byte values is about 0.25 MB, so the 200
 /// pops here would add about 49 MB to a base of about 9 MB.
@@ -11956,7 +11956,7 @@ fn firn_rewrite_journals_one_key_blocking_pops_as_their_bytes() {
 /// A served BLPOP or BRPOP over several distinct keys that, at run time,
 /// changes only the list it serves journals only the LPOP or RPOP bytes it
 /// logs once that list is journaled in the rewrite window, as Sidekiq's and
-/// Resque's `BRPOP q1 q2 ... 0` does on every job (design/firn/aof-rewrite/
+/// Resque's `BRPOP q1 q2 ... 0` does on every job (design/decisions/persistence/rewrite/
 /// capture.md). Opening such a statement for several keys journals a complete
 /// list image per pop instead: each image of this 20,000-element list of
 /// six-byte values is about 0.25 MB, so the 200 pops here would add about
@@ -12040,7 +12040,7 @@ fn firn_rewrite_journals_blocking_pops_over_several_keys_as_their_bytes() {
 
 /// A BRPOP over several keys that removes an expired earlier key before it
 /// serves a later list changes two keys, so it must fall back to complete
-/// images at run time (design/firn/aof-rewrite/capture.md). Each `early` key
+/// images at run time (design/decisions/persistence/rewrite/capture.md). Each `early` key
 /// is written inside the rewrite window with an absolute expiry already
 /// passed, so its removal is the pop's first change and is anchored; the
 /// queue was last written before the window. Journaling the pop's own bytes
