@@ -300,26 +300,25 @@ holds. The instrument is not the verdict: it does not calculate rule 6.
 
 ## Trial runs of the instrument
 
-The 14900K, 2026-11-25, Firn-wf head 292eae7 (the instrument files of the
-work that closed the gaps above):
+The 14900K, 2026-11-25. The instrument files are those of Firn-wf head
+6a6612f (the runs below used that commit; `git diff 6a6612f` over
+`research/experiments/redis-bench/` and `.github/workflows/redis-bench.yml`
+is empty on the merging head). None is a baseline: each ran 1 pass of 3
+seconds on 2 server CPUs, to show that the instrument runs the baseline's
+conditions.
 
-- Install run 45651522021 (`install-competitors`) installed Valkey 9.1.2,
-  Dragonfly 2.0.2 and Garnet 2.2.1 under the runner's `~/.local/opt` with
-  their receipts.
-- Compare trial 45652263824 (probe; two server CPUs on CPUs 2 and 4; lines
-  `reference reference-io valkey valkey-io dragonfly garnet` beside `firn`
-  and `firn-twin`; depth 16, one pass of 3 seconds; tests `set get mset
-  lrange_500 xadd xadd_maxlen xrange_10 sismember srem hget hdel`). Every
-  line started as the rules say, with Dragonfly's threads checked inside the
-  server list, and the pilots of `set`, `get`, `mset`, `lrange_500` and
-  `xadd` gave a throughput and a p99 for every line but Garnet's `xadd`:
-  Garnet 2.2.1 has no streams
+- **Install run 45651522021** (`install-competitors`) installed Valkey 9.1.2,
+  Dragonfly 2.0.2 and Garnet 2.2.1 under the runner's `~/.local/opt`, each
+  with its receipt.
+- **First compare trial 45652263824** (head 292eae7, probe; `set get mset
+  lrange_500 xadd xadd_maxlen xrange_10 sismember srem hget hdel`, depth 16).
+  The pilots of `set`, `get`, `mset`, `lrange_500` and `xadd` gave a
+  throughput and a p99 for every line but Garnet's `xadd`: Garnet 2.2.1 has
+  no streams
   ([API compatibility](https://github.com/microsoft/garnet/blob/v2.2.1/website/docs/commands/api-compatibility.md)),
-  and the run stopped there with `compare client process failed`.
-  `host.txt` records for all four competitors `archive_provenance=verified`
-  and `receipt_check=verified` (Redis: `not-applicable`, its build is checked
-  against `reference.sh`), a matched version for Redis and Valkey, and for the
-  other two the real `--version` output:
+  redis-benchmark exited on the error reply, and the run stopped with
+  `compare client process failed`. Its `host.txt` held the real `--version`
+  outputs, which the version rule was written from:
 
   ```
   dragonfly <ESC>[0;32mv2.0.2-8ce4bbb106586057fbd85f71ed353c60d0d5bf87<ESC>[m
@@ -328,5 +327,27 @@ work that closed the gaps above):
   ```
 
   Both suffixes are the full commit that the pinned tag points to
-  (`git ls-remote` of `v2.0.2` and `v2.2.1`), which is what the version
-  rule now accepts.
+  (`git ls-remote` of `v2.0.2` and `v2.2.1`).
+- **Trial A 45661567349** (full run, no probe; lines `reference
+  reference-io valkey valkey-io dragonfly garnet` beside `firn` and
+  `firn-twin`; tests `set get mset lrange_500 sismember srem hget hdel`;
+  depths 16 and 1; 38 minutes). All 8 lines have a throughput and an exact
+  p99 (`pass=exact`, `quantiles=exact`) in each of the 16 test and depth
+  cells, 128 rows. `host.txt` has `version_status=matched` and
+  `archive_provenance=verified` for Redis, Valkey, Dragonfly and Garnet.
+- **Trial B 45672319633** (full run, no probe; the same lines without
+  `garnet`; tests `xadd xadd_maxlen xrange_10`; depths 16 and 1; 12
+  minutes). All 7 lines have a throughput and an exact p99 in each of the 6
+  cells, 42 rows; Redis, Valkey and Dragonfly are `matched` and `verified`.
+  The run is separate because Garnet 2.2.1 cannot run these three tests,
+  and a full run that selects a line for a test it cannot run fails.
+
+A result row for a test proves that redis-benchmark printed the title the
+instrument expects: `compare-client.py` fails a sample whose CSV title is
+not the command it sent, and the 128 and 42 rows are all there. The last
+raw rows kept in the artifacts are
+`"HDEL myhash element:__rand_int__"` (trial A) and
+`"XRANGE mystream - + COUNT 10"` (trial B), so a custom command's title is
+its words joined by one space, `__rand_int__` as written. `lrange_500`
+reads 0..449, as redis-benchmark's own `lrange_500` does; a measurement made
+earlier on the instrument rules branch with 0..499 is not comparable.
