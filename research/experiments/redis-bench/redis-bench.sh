@@ -1761,6 +1761,9 @@ other_control() {
         control_pids="$control_pids $!"
         control_loops=$((control_loops + 1))
     done
+    for control_pid in $control_pids; do
+        echo "control,loop $(taskset -cp "$control_pid" 2>&1 | tr '\n' ' ')"
+    done
     control_loaded=$(other_read 2) || exit 1
     kill $control_pids 2>/dev/null || true
     wait $control_pids 2>/dev/null || true
@@ -1812,6 +1815,7 @@ profile_image() {
         -F "${PERF_FREQUENCY:-4999}" -p "$server" -o "$OUT/perf-$name-$n-$ptest.data" >/dev/null 2>&1 &
     recorder=$!
     sleep 1
+    echo "profile,$name,$ptest $pdepth,perf $(taskset -cp "$recorder" 2>&1 | tr '\n' ' ')"
     compare_client "$ptest" "$pdepth" "$requests" | sed "s/^/profiled,$name,$n,$ptest,/"
     kill -INT "$recorder"
     wait "$recorder" || true
