@@ -193,7 +193,6 @@ fn output_promoted(send: TcpSend, factory: HandleFactory, connection: EventConne
     let pending = pkg::connection_events::output_take(connection: &connection);
     match move pending {
       Some(value: frame) => {
-        pkg::persistence::aof_frame_wait(store: &store, desk: &desk, factory: &factory);
         let outcome = send_promoted_frame(send: &send, frame: move frame, cancel: &cancel);
         match outcome {
           Some(value: charge) => {
