@@ -94,7 +94,8 @@ test: firn-test list-ceiling
 	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked --test network rewrite_faults:: -- \
 	  --test-threads=1 --nocapture >"$$log" 2>&1; status=$$?; cat "$$log"; \
 	[ $$status -eq 0 ] && grep -q '^test result: ok\. 4 passed' "$$log"
-	cargo test --manifest-path $(ROOT)/research/experiments/redis-bench/workload/Cargo.toml --locked
+	cargo test --manifest-path $(ROOT)/research/experiments/redis-bench/workload/Cargo.toml --locked \
+	  --target-dir $(BUILD)/workload-target
 
 # Direct Whitefoot fixtures exercise the real private list command bodies at
 # an eight-element ceiling, without a production test hook or a giant network
