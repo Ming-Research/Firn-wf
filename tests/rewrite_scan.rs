@@ -1094,6 +1094,13 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(10));
     }
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
+    let mut subscriber = connect_when_ready(port, &child);
+    subscriber.write_all(&wire(&[b"SUBSCRIBE", b"held:channel"])).unwrap();
+    assert_eq!(read_reply(&mut subscriber), Reply::Array(vec![
+        Reply::Bulk(Some(b"subscribe".to_vec())),
+        Reply::Bulk(Some(b"held:channel".to_vec())),
+        Reply::Line(b":1".to_vec()),
+    ]));
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -1110,17 +1117,27 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     // shows its value, B2's SETNX finds the key and B3's STRLEN measures it,
     // each on a connection of its own; the first reads the commit sequence
     // before it sends, the other two note it in their own Meta statement.
-    // Each reader takes the old increment's length the moment its reply
-    // arrives, and A's record must lie inside that length.
+    // B4 publishes after A's SET, and the message to the connection that
+    // subscribed before the cut reads the commit sequence before it is sent.
+    // Each reader takes the old increment's length the moment its reply or
+    // message arrives, and A's record must lie inside that length.
     let marker = wire(&[b"SET", b"held:marker", b"v"]);
     let before_marker = std::fs::metadata(&increment).unwrap().len();
     let mut holder = connect_when_ready(port, &child);
     holder.write_all(&marker).unwrap();
     std::thread::sleep(Duration::from_millis(50));
+    subscriber.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    let subscriber_path = increment.clone();
+    let delivered = std::thread::spawn(move || {
+        let message = read_reply(&mut subscriber);
+        let length = std::fs::metadata(&subscriber_path).unwrap().len();
+        (message, length)
+    });
     let observers: Vec<_> = [
         (vec![b"GET".as_slice(), b"held:marker"], Reply::Bulk(Some(b"v".to_vec()))),
         (vec![b"SETNX".as_slice(), b"held:marker", b"x"], Reply::Line(b":0".to_vec())),
         (vec![b"STRLEN".as_slice(), b"held:marker"], Reply::Line(b":1".to_vec())),
+        (vec![b"PUBLISH".as_slice(), b"held:channel", b"m"], Reply::Line(b":1".to_vec())),
     ].into_iter().map(|(command, expected)| {
         let mut observer = connect_when_ready(port, &child);
         observer.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
@@ -1179,6 +1196,14 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         assert!(length >= marker_end,
             "{name}'s reply arrived while the old increment held {length} bytes, before A's record ended at {marker_end}");
     }
+    let (message, length) = delivered.join().unwrap();
+    assert_eq!(message, Reply::Array(vec![
+        Reply::Bulk(Some(b"message".to_vec())),
+        Reply::Bulk(Some(b"held:channel".to_vec())),
+        Reply::Bulk(Some(b"m".to_vec())),
+    ]), "the message published while the switch held the file");
+    assert!(length >= marker_end,
+        "the subscriber's message arrived while the old increment held {length} bytes, before A's record ended at {marker_end}");
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);
     let (child, mut restored, _) = start(&program);
