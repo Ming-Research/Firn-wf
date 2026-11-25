@@ -40,12 +40,35 @@ def interval(logs):
     if n < 2:
         return math.exp(mean), math.nan, math.nan
     spread = math.sqrt(sum((x - mean) ** 2 for x in logs) / (n - 1))
-    t = T95[n - 2] if n - 1 <= 30 else 1.96
+    t = T95[n - 2] if n - 1 <= 30 else 1.96 + 2.4 / (n - 1)
     half = t * spread / math.sqrt(n)
     return math.exp(mean), math.exp(mean - half), math.exp(mean + half)
 
 
+# A run is read for an operation only if its twin's interval lies within these
+# bounds and holds 1.000: a smaller effect than the twin's spread cannot be seen.
+RESOLUTION = (0.985, 1.015)
+
+
+def verdict(new, twin):
+    """The reading of a run for one operation from the (mean, low, high) ratios of the new build and of the twin."""
+    if not (RESOLUTION[0] <= twin[1] <= 1.0 <= twin[2] <= RESOLUTION[1]):
+        return "unresolved"
+    if new[1] > 1.0:
+        return "slower"
+    if new[2] < 1.0:
+        return "faster"
+    return "no difference seen"
+
+
 def selftest():
+    quiet = (1.0, 0.995, 1.005)
+    assert verdict((1.04, 1.03, 1.05), quiet) == "slower"
+    assert verdict((0.96, 0.95, 0.97), quiet) == "faster"
+    assert verdict((1.003, 0.995, 1.010), quiet) == "no difference seen"
+    assert verdict((1.0187, 0.6986, 1.4852), (1.0039, 0.9507, 1.0600)) == "unresolved"
+    assert verdict((1.04, 1.03, 1.05), (1.02, 1.015, 1.025)) == "unresolved"
+    assert verdict((1.04, 1.03, 1.05), (1.0, 0.98, 1.02)) == "unresolved"
     mean, low, high = interval([math.log(1.04)] * 5)
     assert abs(mean - 1.04) < 1e-9 and abs(low - 1.04) < 1e-9 and abs(high - 1.04) < 1e-9
     mean, low, high = interval([math.log(x) for x in (1.00, 1.02, 0.98, 1.01, 0.99)])
@@ -208,13 +231,15 @@ def main():
         for metric in metrics:
             cost = {}
             for role in ("old", "new", "twin"):
-                cost[role] = [(results[(rep, entry, role)][metric] - results[(rep, "fill", role)][metric]) / args.operations for rep in range(args.reps)]
+                base = sorted(results[(rep, "fill", role)][metric] for rep in range(args.reps))[args.reps // 2]
+                cost[role] = [(results[(rep, entry, role)][metric] - base) / args.operations for rep in range(args.reps)]
             ratios = {}
             for role in ("new", "twin"):
                 ratios[role] = interval([math.log(cost[role][rep] / cost["old"][rep]) for rep in range(args.reps)])
             unit = "ns" if metric == "wall" else metric
             median = sorted(cost["old"])[args.reps // 2]
-            print(f"{entry:7} {metric:12} old {median:9.2f} {unit}/op  new/old {ratios['new'][0]:.4f} [{ratios['new'][1]:.4f}, {ratios['new'][2]:.4f}]  twin/old {ratios['twin'][0]:.4f} [{ratios['twin'][1]:.4f}, {ratios['twin'][2]:.4f}]")
+            slower = sum(1 for rep in range(args.reps) if cost["new"][rep] > cost["old"][rep])
+            print(f"{entry:7} {metric:12} old {median:9.2f} {unit}/op  new/old {ratios['new'][0]:.4f} [{ratios['new'][1]:.4f}, {ratios['new'][2]:.4f}]  twin/old {ratios['twin'][0]:.4f} [{ratios['twin'][1]:.4f}, {ratios['twin'][2]:.4f}]  new slower in {slower}/{args.reps}  {verdict(ratios['new'], ratios['twin'])}")
     for entry in ("fill",):
         for metric in metrics:
             values = {role: sorted(results[(rep, entry, role)][metric] for rep in range(args.reps))[args.reps // 2] for role in ("old", "new", "twin")}

@@ -184,8 +184,8 @@ gate-sync:
 .PHONY: hash-map-release
 
 HASH_MAP_OLD ?= wf-af7665be672d
-HASH_MAP_OPERATIONS ?= 2000000
-HASH_MAP_REPS ?= 3
+HASH_MAP_OPERATIONS ?= 3000000
+HASH_MAP_REPS ?= 40
 
 hash-map-release: compiler
 	@mkdir -p $(BUILD)/hash-map-release
