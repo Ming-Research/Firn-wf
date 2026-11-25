@@ -784,20 +784,26 @@ fn config_dir_walk(out: &Text, source: &[u8]) -> result: unit reads(source), wri
       }
       set to = to + 1_u64;
     }
-    let size = to - from;
-    if size == 0_u64 {
+    if to == from {
     } else {
+      invariant nonempty_component: from < to;
       invariant first_inside: from < length;
+      let size = to - from;
       let dot = source^[from] == 46_u8;
       let role = 2_u64;
       if dot {
         if size == 1_u64 {
           set role = 0_u64;
-        } else if size == 2_u64 {
+        } else {
           let second = from + 1_u64;
-          invariant second_inside: second < length;
-          if source^[second] == 46_u8 {
-            set role = 1_u64;
+          if second < to {
+            invariant second_inside: second < length;
+            let twin = source^[second] == 46_u8;
+            if size == 2_u64 {
+              if twin {
+                set role = 1_u64;
+              }
+            }
           }
         }
       }
