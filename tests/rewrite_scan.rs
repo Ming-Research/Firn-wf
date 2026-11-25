@@ -949,9 +949,8 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     }
     // Whether these writes land while the writer rotates, and so charge the
     // ledger, is a race (CI run 39525916088 sampled a charge of 0), so the
-    // exclusion is only reconciled here. No client observes a charge held
-    // open by the post-cut backlog case either: every reply waits until the
-    // records committed before it are in the file, after the rotation.
+    // exclusion is only reconciled here; the post-cut backlog case holds the
+    // rotation open and requires a nonzero charge.
     client.write_all(&resp(&["INFO", "all"])).unwrap();
     let rotated = bulk_reply(&mut client, "rotation memory exclusion");
     assert_rotation_exclusion(&rotated);
@@ -980,9 +979,10 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
 #[test]
 fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
     // The files live in memory. Between S1 and the new increment's
-    // publication the sole writer syncs files, and on a shared disk those
-    // syncs wait behind other cases' large writebacks while this case's
-    // writer fills the rotation backlog: past 4 MiB of it the rewrite aborts.
+    // publication the maintenance context syncs files while it holds the
+    // active one, and on a shared disk those syncs wait behind other cases'
+    // large writebacks while this case's writer fills the rotation backlog:
+    // past 4 MiB of it the rewrite aborts.
     // The case checks that S1 does no work proportional to the history, not
     // the disk's speed. The reread it guards against still fails it in memory
     // (test-stability.md in research/investigations/aof-rewrite).
@@ -1104,43 +1104,93 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_old_manifest(&program);
-    // Every reply, INFO's included, waits until the records committed before
-    // it are in the file, so nothing is observed while the reread holds the
-    // switch, and a client that waits for each reply adds one record to the
-    // backlog. Sixteen 256 KiB writes from connections of their own outgrow the
+    // From the cut until the switch's reread ends, the maintenance context
+    // holds the active file, so no record reaches it, and a reply that may
+    // have observed one waits. A's SET commits and stays unread. B1's GET
+    // shows its value, B2's SETNX finds the key and B3's STRLEN measures it,
+    // each on a connection of its own; the first reads the commit sequence
+    // before it sends, the other two note it in their own Meta statement.
+    // Each reader takes the old increment's length the moment its reply
+    // arrives, and A's record must lie inside that length.
+    let marker = wire(&[b"SET", b"held:marker", b"v"]);
+    let before_marker = std::fs::metadata(&increment).unwrap().len();
+    let mut holder = connect_when_ready(port, &child);
+    holder.write_all(&marker).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let observers: Vec<_> = [
+        (vec![b"GET".as_slice(), b"held:marker"], Reply::Bulk(Some(b"v".to_vec()))),
+        (vec![b"SETNX".as_slice(), b"held:marker", b"x"], Reply::Line(b":0".to_vec())),
+        (vec![b"STRLEN".as_slice(), b"held:marker"], Reply::Line(b":1".to_vec())),
+    ].into_iter().map(|(command, expected)| {
+        let mut observer = connect_when_ready(port, &child);
+        observer.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+        observer.write_all(&wire(&command)).unwrap();
+        let name = String::from_utf8_lossy(command[0]).into_owned();
+        let path = increment.clone();
+        std::thread::spawn(move || {
+            let reply = read_reply(&mut observer);
+            let length = std::fs::metadata(&path).unwrap().len();
+            (name, expected, reply, length)
+        })
+    }).collect();
+    // A client that waits for each reply adds one record to the backlog per
+    // hold. Sixteen 256 KiB writes from connections of their own outgrow the
     // 3.2 MiB reserve (maxmemory/20), each growth of the collecting buffer
-    // charging its full capacity; their replies are read once it aborted.
+    // charging its full capacity. Each pipelines INFO after its SET: INFO
+    // runs while the rotation is held open and charged, and its reply waits
+    // with the SET's until the abort lets the file go.
     let value = vec![b'n'; 256 * 1024];
     let writers: Vec<TcpStream> = (0..16).map(|_| {
         let mut writer = connect_when_ready(port, &child);
-        writer.write_all(&wire(&[b"SET", b"hot", &value])).unwrap();
+        let mut batch = wire(&[b"SET", b"hot", &value]);
+        batch.extend(wire(&[b"INFO", b"all"]));
+        writer.write_all(&batch).unwrap();
         writer
     }).collect();
     let info = rewrite_wait(&mut client);
     assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance: {info:?}");
     assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
+    let mut reconciled = false;
     for mut writer in writers {
         assert_eq!(read_reply(&mut writer), Reply::Line(b"+OK".to_vec()));
+        let all = String::from_utf8(bulk(read_reply(&mut writer))).unwrap();
+        // The rotation is held open here, so the collecting buffer's growth
+        // charges the ledger and stays charged until the attempt ends: the
+        // exclusion must then leave those charges out of the ledger once.
+        if info_field(&all, "aof_rewrite_in_progress").as_deref() == Some("1")
+            && info_field(&all, "firn_aof_rewrite_abort_reason").as_deref() == Some("")
+            && info_field(&all, "firn_aof_rewrite_charged").as_deref() != Some("0")
+        {
+            assert!(assert_rotation_exclusion(&all) > 0, "{all}");
+            reconciled = true;
+        }
     }
+    assert!(reconciled, "the exclusion was never checked while the backlog was charged");
     assert_old_manifest(&program);
-    // The charged backlog was in the ledger only while the reread held the
-    // switch, when no reply, INFO's included, could be sent. Once the attempt
-    // ends, only the AOF buffers stay excluded; firn_aof_rewrite_used then
-    // reports the aborted attempt's ledger, not a live one.
-    client.write_all(&resp(&["INFO", "all"])).unwrap();
-    let all = bulk_reply(&mut client, "exclusion after the backlog aborted");
-    assert_eq!(info_field(&all, "firn_aof_rewrite_charged").as_deref(), Some("0"), "{all}");
-    assert_eq!(info_field(&all, "mem_not_counted_for_evict"), info_field(&all, "mem_aof_buffer"),
-        "an ended attempt must leave no rewrite charge excluded: {all}");
+    assert_eq!(read_reply(&mut holder), Reply::Line(b"+OK".to_vec()));
+    let file = std::fs::read(&increment).unwrap();
+    let tail = &file[before_marker as usize..];
+    let offset = tail.windows(marker.len()).position(|window| window == marker.as_slice())
+        .expect("A's SET must reach the old increment once the attempt ends");
+    let marker_end = before_marker + (offset + marker.len()) as u64;
+    for observer in observers {
+        let (name, expected, reply, length) = observer.join().unwrap();
+        assert_eq!(reply, expected, "{name} while the switch held the file");
+        assert!(length >= marker_end,
+            "{name}'s reply arrived while the old increment held {length} bytes, before A's record ended at {marker_end}");
+    }
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);
     let (child, mut restored, _) = start(&program);
     assert_eq!(bulk(request(&mut restored, &[b"GET", b"hot"])), value);
     assert_eq!(bulk(request(&mut restored, &[b"GET", b"after-backlog"])), b"1");
-    assert_eq!(request(&mut restored, &[b"DBSIZE"]), Reply::Line(b":6002".to_vec()));
+    assert_eq!(bulk(request(&mut restored, &[b"GET", b"held:marker"])), b"v");
+    assert_eq!(request(&mut restored, &[b"DBSIZE"]), Reply::Line(b":6003".to_vec()));
     rewrite_stop(&mut restored, child);
 }
 
+/// Keys above 512 elements or 64 KiB serialized, scanned and written during
+/// the rewrite, rewrite and restore as main's replay and Redis rewrite them.
 #[test]
 fn reconciled_scan_rewrites_large_keys_scanned_and_written() {
     let program = CompiledProgram::from_environment();
