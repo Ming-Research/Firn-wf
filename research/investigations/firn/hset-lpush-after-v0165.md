@@ -697,3 +697,151 @@ differs is shown with its difference. A path whose symbols are all identical,
 with `cross`/`base` below 1, says the source edits changed no code of the path
 and the effect lies in where it sits (H4); a symbol that differs names the edit.
 The run attributes; it accepts or rejects nothing.
+
+### Second profile run, results
+
+Run [45644686875](https://github.com/Ming-Research/Firn-wf/actions/runs/45644686875)
+succeeded (job 15:25:58 to 15:40:28 UTC; builds 4 min 1 s; Measure 9 min 56 s).
+Its control held (idle 0.0242, loaded 0.1592), both passes were clean (highest
+reading 0.0142), no profiled run was void, and every `annotate-*.txt` has the
+listing of its symbol (176 files; those of a symbol the test does not run, such
+as `hset_body` under `lpush`, are empty). Listings are compared with
+rip-relative operands and call targets removed.
+
+**The per-symbol instruction counts of the profiles do not give the size of a
+difference.** The second run's whole-profile instructions per request are again
+equal across the four images (`hset` 4950, 4945, 4946, 4962; `hget` 5094, 5115,
+5110, 5111 for `base`, `base-twin`, `cross`, `head`), as the first run's were. The
+per-symbol numbers move between the two runs by as much as the differences they
+were read for: `hash_map_lookup` instructions per request were 154, 148, 150, 188
+in the first run and 154, 152, 174, 187 in the second, so that `cross` reads 20
+above `base` in the second run for an instruction sequence the listings below show
+identical, and `head` reads above `cross` in both runs by 38 and 13 (`hash_map_try_put`:
+14 and 13) where its listing has fewer instructions (91 against 97 and 314
+against 321). So the first run's "+25% instructions in `hash_map_lookup`" is not
+confirmed as a size, only as a sign that two runs repeat; the profile cannot say
+whether the sign is a difference or the spread of sampling, and the program that
+follows counts retired instructions exactly. The cycles of the contended lock
+move more: `try_entry` of `hset` was 573 and 639 per request in the first run
+for `cross` and `head` and 599 and 890 in the second. `try_entry` is a `pause`
+spin loop, and its samples measure the other driver's wait, not work.
+
+**The source edits changed no instruction of any annotated function.** The eleven
+annotated functions (`try_entry`, `acquire_entry`, `make_key`,
+`hash_map_try_put`, `hash_map_lookup`, `execute_client`, `push_body`,
+`hset_body`, `run_hget`, `record_memory_peak` and `push_item`) have the same
+instruction sequence in `base`, `base-twin` and `cross`, from 93 to 1050
+instructions each, `execute_client` and `push_body` of the `lpush` path among
+them. Every one starts at a 64-byte boundary in all images and at a different
+offset in the page: `try_entry` at 0x540, 0x340 and 0xcc0 of a page in `base`,
+`cross` and `head`; `push_body` at 0x400, 0x2c0 and 0x1c0; `execute_client` at
+0xc00, 0xa00 and 0x400. So the 2% `lpush` and 3% `sismember` that `cross` loses
+against `base` come with no change to the code of the `lpush` path: the edits move
+it, and what the listings cannot show is whether the move is the cause.
+
+**What `head` changes in the annotated code.**
+
+- `hash_map_lookup` and `hash_map_try_put` compute the home bucket with `imul`,
+  `shr %cl` and `cmovae` where `base` and `cross` have a 64-bit `div` (and a
+  32-bit `div` behind a test of the operands' width): 91 listed instructions
+  against 97 and 314 against 321, none of the loop's. The probe loop is the same
+  in both, with 96-byte slots (`lea (%rax,%rax,2)` and `shl $5`).
+- `run_hget`, `hset_body` and `push_body` read the entry's fields 8 bytes further
+  in (`0x40(%r13)` becomes `0x48(%r13)` and `0x48` becomes `0x50`; in `push_body`
+  `0x50` becomes `0x58` too). `hset_body` and `push_body` have a frame 16 bytes
+  larger (`0x58` to `0x68`, `0x78` to `0x88`) and copy 16 bytes through `movups`
+  and `movaps` where `cross` copies one word; `push_body` has 306 instructions
+  against 302. The map's header has a word more (`shift`), and what contains it
+  moves.
+- `try_entry`, `acquire_entry`, `make_key`, `execute_client`,
+  `record_memory_peak` and `push_item` are identical between `cross` and `head`.
+
+**Where `head` spends the cycles the map functions gain.** In each of the two
+functions the samples of the cycles event sit mostly on one instruction (53% to
+82%), the compare after the load of a probed slot's tag byte (`movzbl (slot),%edx`,
+then `cmp $0x1,%edx`), the first touch of a slot in a table of 262,144 slots of 96
+bytes (25 MB: the 100,000 fields of the test's one hash need more than the 98,304
+that 131,072 buckets hold at three quarters, and both releases double a map at that
+limit):
+
+| function | image | samples | at the tag load | everywhere else |
+| --- | --- | ---: | ---: | ---: |
+| `hash_map_lookup` (`hget`) | base | 2385 | 1735 (72.7%) | 650 |
+| | base-twin | 2446 | 1798 (73.5%) | 648 |
+| | cross | 2842 | 2129 (74.9%) | 713 |
+| | head | 3094 | 2544 (82.2%) | 550 |
+| `hash_map_try_put` (`hset`) | base | 3891 | 2085 (53.6%) | 1806 |
+| | base-twin | 3762 | 1981 (52.6%) | 1781 |
+| | cross | 3903 | 2091 (53.6%) | 1812 |
+| | head | 5785 | 3881 (67.1%) | 1904 |
+
+The four profiled runs of a test hold the same number of requests (17,741,136 of
+`hset`, 19,426,064 of `hget`), so samples compare. Away from the tag load `head`
+has 163 samples fewer than `cross` in lookup (550 against 713: the division is
+gone) and 92 more in put (1904 against 1812); the load itself has 415 samples more
+in lookup (+19%) and 1790 more in put (+86%) than in `cross`, whose own lookup
+lies 394 above `base`'s with the same instructions. One profiled run of each image
+does not carry a per-function conclusion, but the direction is that of the
+throughput intervals: the compiler's share of `hset` and `hget` shows as more
+cycles at the first touch of a slot, and the instructions the map functions lose
+do not make up for it.
+
+**What this leaves open, and what is next.** A cost at the first touch of a slot
+in a 25 MB table depends on how the table lies in memory (its alignment and
+backing pages, the probe sequence of each key, the size of a slot) and not on the
+instructions around it; the header of the map, and with it the entry that holds
+it, has changed size. The next step is a program of a library map alone, the
+`HashMap<Key, Bytes>` of this record without firn's server, built by both
+releases and timed one against the other (cycles and retired instructions per
+lookup and per replace).
+
+### A library-map program on both releases, stated before measuring
+
+Question. Does the release change alone, with no firn code, slow the library
+`HashMap<Key, Bytes>` on the two operations the slow tests spend in it: a put on a
+present field (HSET) and a lookup (HGET)? Firn's `Key`, `Bytes` and `KeyHash` are
+used as they are (`pkg::bytes` is copied from `firn/bytes/`, not rewritten), and
+the program ([`research/experiments/hash-map-release/`](../../experiments/hash-map-release/))
+holds the 100,000 fields `element:` and twelve digits with three-byte values, built
+by the map's own puts from four buckets as the server's hash is. Three entries come
+from one source: `fill` builds the map, `replace` builds it and then puts a random
+present field N times, `lookup` builds it and then looks up a random present field
+N times, and each exits 1 unless it did what it counts (100,000 fields held; every
+put a replacement; the lengths of N values found). Both releases build it with full
+link-time optimization, as firn is measured.
+
+Comparison. The two builds are run on one CPU in the same job, interleaved: each
+repetition runs every entry once per executable, in an order that rotates. The old
+build is also run from a byte-identical second copy, the twin, so that its ratio
+to the old build is noise by construction. The cost of an operation is the entry's
+user cycles minus those of `fill` (the same build's), over N, from `perf stat` on
+the CPU; with no usable counters the cost is wall time and the result says so.
+Retired instructions are counted the same way, to say whether a cycle difference
+comes with an instruction difference. The summary is the mean log ratio of
+new to old over the repetitions and its 95% interval (Student's t), for `replace`
+and `lookup` alone.
+
+Criterion, before any measurement. The program reproduces the slowdown for an
+operation if the 95% interval of its new/old cycle ratio lies wholly above 1.000
+and the twin's interval contains 1.000. The size is reported with the cycle
+difference per operation, to read against the 21 to 106 cycles per request the
+profiles show `head` above `cross` in `hash_map_try_put` and 27 to 32 in
+`hash_map_lookup`; matching them is not a condition. It rejects the proposal that
+the release alone makes the library map slower, in this program, if both
+operations' intervals contain 1.000 or lie below it, or if the twin's interval
+excludes 1.000 (the run's noise is then larger than what it was to read, and it is
+not a result). A rejection leaves the profile evidence above as the whole of the
+attribution, without a minimal example; it is not an exoneration of the release,
+because this program has one thread, no network and no other keys, which the
+server has. The machine is the shared 14900K: no void rule applies to this program,
+and the share of the other CPUs' busy time over the measurement is printed with the
+result, as the twin is its control.
+
+The first run of the target is a sample (2,000,000 operations, 3 repetitions) to see
+that the program builds and runs on both releases, and to time it; it counts for
+nothing else. The operation count and repetitions of the run that counts are chosen
+from its time and written here before that run.
+
+The job is a scratch target of the Makefile, `hash-map-release`, which a later commit
+removes; it always ends in failure so that the harness returns its output, which
+stands in this record for the run's result.

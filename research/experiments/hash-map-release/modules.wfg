@@ -1,0 +1,6 @@
+pkg::bytes: [std::collections::hash_map];
+pkg::repro: [pkg::bytes, std::collections::hash_map, std::process];
+
+entry fill = pkg::repro::fill;
+entry replace = pkg::repro::replace;
+entry lookup = pkg::repro::lookup;
