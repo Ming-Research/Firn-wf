@@ -254,3 +254,23 @@ fn a_stop_signal_is_logged_and_followed_by_the_shutdown_lines() {
         }
     }
 }
+
+/// Redis follows a symbolic link named as its log file; firn refuses the link, because the host opens a log
+/// file's last name for appending without following links. The refusal is firn's documented difference, so
+/// only firn is started here.
+#[cfg(unix)]
+#[test]
+fn a_logfile_that_is_a_symbolic_link_is_refused_at_startup() {
+    let fixture = fixture_directory();
+    let target = fixture.path().join("target.log");
+    std::fs::write(&target, "").expect("write target");
+    let link = fixture.path().join("link.log");
+    std::os::unix::fs::symlink(&target, &link).expect("create link");
+    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
+    let output = start(&binary, fixture.path(), &["--logfile", link.to_str().expect("path")])
+        .wait_with_output().expect("bounded refusal");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("\n*** FATAL CONFIG FILE ERROR (Redis 7.2.16) ***\nCan't open the log file: "), "{output:?}");
+    assert_eq!(std::fs::read_to_string(&target).expect("read target"), "", "nothing is written through the link");
+}
