@@ -528,6 +528,8 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
   set client.meter = Some<std::process::MemoryMeter>(value: move meter);
+  let command_factory = factory_share(factory: &factory);
+  set client.factory = Some<HandleFactory>(value: move command_factory);
   atomic m = &store.meta {
     set client.random = m^.random;
     let stepped = m^.random *wrap 6364136223846793005_u64;
@@ -1048,7 +1050,11 @@ fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Cl
   let password_length = options.password.inner.len;
   let password_window = &options.password.inner[0_u64..password_length];
   let password_text = bytes_new(input: password_window, start: 0_u64, length: password_length);
-  let settings = Settings(port: options.port, bind: move bind_text, appendfilename: move file_text);
+  let dir_length = options.dir.inner.len;
+  let logfile_length = options.logfile.inner.len;
+  let dir_text = bytes_new(input: &options.dir.inner[0_u64..dir_length], start: 0_u64, length: dir_length);
+  let logfile_text = bytes_new(input: &options.logfile.inner[0_u64..logfile_length], start: 0_u64, length: logfile_length);
+  let settings = Settings(port: options.port, bind: move bind_text, appendfilename: move file_text, dir: move dir_text, loglevel: options.loglevel, logfile: move logfile_text);
   let origin = std::time::now(clock: &clock);
   let calendar = unix_nanoseconds(clock: &wall_clock);
   let seed = cvt.wrap::<i64, u64>(calendar);

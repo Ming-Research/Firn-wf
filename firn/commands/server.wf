@@ -18,6 +18,7 @@ alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
 alias reply_ok = pkg::protocol::reply_ok;
 alias byte_at = pkg::bytes::byte_at;
 alias bytes_copy = pkg::bytes::bytes_copy;
+alias bytes_length = pkg::bytes::bytes_length;
 alias glob_match = pkg::bytes::glob_match;
 alias lower = pkg::bytes::lower;
 alias name_is = pkg::bytes::name_is;
@@ -43,7 +44,7 @@ const text_quote_end: Array<u8, 3> =[39_u8, 13_u8, 10_u8];
 
 const text_try_config: Array<u8, 21> =[39_u8, 46_u8, 32_u8, 84_u8, 114_u8, 121_u8, 32_u8, 67_u8, 79_u8, 78_u8, 70_u8, 73_u8, 71_u8, 32_u8, 72_u8, 69_u8, 76_u8, 80_u8, 46_u8, 13_u8, 10_u8];
 
-const parameter_ends: Array<u64, 34> =[14_u64, 24_u64, 28_u64, 37_u64, 62_u64, 85_u64, 109_u64, 131_u64, 150_u64, 172_u64, 193_u64, 197_u64, 208_u64, 212_u64, 234_u64, 258_u64, 280_u64, 301_u64, 324_u64, 331_u64, 356_u64, 379_u64, 403_u64, 425_u64, 434_u64, 450_u64, 467_u64, 481_u64, 495_u64, 522_u64, 549_u64, 574_u64, 592_u64, 602_u64];
+const parameter_ends: Array<u64, 37> =[14_u64, 24_u64, 28_u64, 37_u64, 62_u64, 85_u64, 109_u64, 131_u64, 150_u64, 172_u64, 193_u64, 197_u64, 208_u64, 212_u64, 234_u64, 258_u64, 280_u64, 301_u64, 324_u64, 331_u64, 356_u64, 379_u64, 403_u64, 425_u64, 434_u64, 450_u64, 467_u64, 481_u64, 495_u64, 522_u64, 549_u64, 574_u64, 592_u64, 602_u64, 605_u64, 613_u64, 620_u64];
 
 const parameter_slots: Array<u64, 32> =[11_u64, 11_u64, 11_u64, 11_u64, 0_u64, 1_u64, 0_u64, 1_u64, 2_u64, 3_u64, 3_u64, 11_u64, 11_u64, 11_u64, 4_u64, 5_u64, 6_u64, 7_u64, 8_u64, 11_u64, 9_u64, 10_u64, 9_u64, 10_u64, 11_u64, 11_u64, 11_u64, 11_u64, 11_u64, 11_u64, 11_u64, 11_u64];
 
@@ -55,7 +56,7 @@ const encoding_memory: Array<u64, 11> =[0_u64, 1_u64, 0_u64, 0_u64, 0_u64, 0_u64
 
 const text_unknown_subcommand: Array<u8, 25> =[45_u8, 69_u8, 82_u8, 82_u8, 32_u8, 117_u8, 110_u8, 107_u8, 110_u8, 111_u8, 119_u8, 110_u8, 32_u8, 115_u8, 117_u8, 98_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8, 32_u8, 39_u8];
 
-const parameter_names: Array<u8, 602> = "appendfilenameappendonlybinddatabaseshash-max-listpack-entrieshash-max-listpack-valuehash-max-ziplist-entrieshash-max-ziplist-valuelist-compress-depthlist-max-listpack-sizelist-max-ziplist-sizeportrequirepasssaveset-max-intset-entriesset-max-listpack-entriesset-max-listpack-valuestream-node-max-bytesstream-node-max-entriestimeoutzset-max-listpack-entrieszset-max-listpack-valuezset-max-ziplist-entrieszset-max-ziplist-valuemaxmemorymaxmemory-policymaxmemory-sampleslfu-log-factorlfu-decay-timemaxmemory-eviction-tenacityauto-aof-rewrite-percentageauto-aof-rewrite-min-sizerdb-key-save-delaymaxclients";
+const parameter_names: Array<u8, 620> = "appendfilenameappendonlybinddatabaseshash-max-listpack-entrieshash-max-listpack-valuehash-max-ziplist-entrieshash-max-ziplist-valuelist-compress-depthlist-max-listpack-sizelist-max-ziplist-sizeportrequirepasssaveset-max-intset-entriesset-max-listpack-entriesset-max-listpack-valuestream-node-max-bytesstream-node-max-entriestimeoutzset-max-listpack-entrieszset-max-listpack-valuezset-max-ziplist-entrieszset-max-ziplist-valuemaxmemorymaxmemory-policymaxmemory-sampleslfu-log-factorlfu-decay-timemaxmemory-eviction-tenacityauto-aof-rewrite-percentageauto-aof-rewrite-min-sizerdb-key-save-delaymaxclientsdirloglevellogfile";
 
 const text_minus: Array<u8, 1> = "-";
 
@@ -287,20 +288,20 @@ fn parameter_start(which: u64) -> start: u64 pure {
     return 0_u64;
   }
   let before = which -wrap 1_u64;
-  if before < 34_u64 {
+  if before < 37_u64 {
     let start = parameter_ends[before];
     return start;
   }
-  return 602_u64;
+  return 620_u64;
 }
 
 fn parameter_end(which: u64) -> end: u64 pure {
   doc "Where the name of parameter which ends in parameter_names.";
-  if which < 34_u64 {
+  if which < 37_u64 {
     let end = parameter_ends[which];
     return end;
   }
-  return 602_u64;
+  return 620_u64;
 }
 
 fn same_name(input: &[u8], start: u64, length: u64, name: &[u8]) -> same: Bool reads(input), reads(name) {
@@ -324,7 +325,7 @@ fn parameter_matches(input: &[u8], start: u64, length: u64, globbing: Bool, whic
   doc "Whether length bytes of the input from start reach parameter which: as a glob pattern matched as Redis matches one when globbing is true, or else as the parameter's name in either case.";
   let first = parameter_start(which: which);
   let last = parameter_end(which: which);
-  if last <= 602_u64 {
+  if last <= 620_u64 {
     if first <= last {
       let name = &parameter_names[first..last];
       if globbing {
@@ -343,7 +344,7 @@ fn reply_parameter_name(client: &Client, which: u64) -> result: unit writes(clie
   doc "Writes the name of parameter which as a bulk string, in lower case.";
   let first = parameter_start(which: which);
   let last = parameter_end(which: which);
-  if last <= 602_u64 {
+  if last <= 620_u64 {
     if first <= last {
       let name = &parameter_names[first..last];
       let length = last -wrap first;
@@ -357,7 +358,7 @@ fn reply_parameter_word(client: &Client, which: u64) -> result: unit writes(clie
   doc "Writes the name of parameter which into an error reply, in lower case.";
   let first = parameter_start(which: which);
   let last = parameter_end(which: which);
-  if last <= 602_u64 {
+  if last <= 620_u64 {
     if first <= last {
       reply_word(client: client, word: &parameter_names[first..last]);
     }
@@ -392,6 +393,32 @@ fn config_copy(store: &Keyspace) -> made: ConfigSnapshot reads(store) waits {
     let server = ServerState(password: move password, timeout: v^.timeout, maxclients: v^.maxclients, wake: move wake, shutdown: v^.shutdown, encodings: v^.encodings, connections: v^.connections, rejected_connections: v^.rejected_connections, started: v^.started, memory: v^.memory);
     return ConfigSnapshot(server: move server, rewrite_percentage: m^.aof_rewrite_percentage, rewrite_min_size: m^.aof_rewrite_min_size, key_delay: m^.aof_rewrite_key_delay);
   }
+}
+
+const loglevel_debug: Array<u8, 5> = "debug";
+
+const loglevel_verbose: Array<u8, 7> = "verbose";
+
+const loglevel_notice: Array<u8, 6> = "notice";
+
+const loglevel_warning: Array<u8, 7> = "warning";
+
+const loglevel_nothing: Array<u8, 7> = "nothing";
+
+fn reply_loglevel(client: &Client, level: u64) -> result: unit writes(client) {
+  doc "Writes the name of the loglevel whose number is level, as Redis's enum names it.";
+  if level == 0_u64 {
+    reply_bulk_input(client: client, input: &loglevel_debug[0_u64..5_u64], start: 0_u64, length: 5_u64);
+  } else if level == 1_u64 {
+    reply_bulk_input(client: client, input: &loglevel_verbose[0_u64..7_u64], start: 0_u64, length: 7_u64);
+  } else if level == 2_u64 {
+    reply_bulk_input(client: client, input: &loglevel_notice[0_u64..6_u64], start: 0_u64, length: 6_u64);
+  } else if level == 3_u64 {
+    reply_bulk_input(client: client, input: &loglevel_warning[0_u64..7_u64], start: 0_u64, length: 7_u64);
+  } else {
+    reply_bulk_input(client: client, input: &loglevel_nothing[0_u64..7_u64], start: 0_u64, length: 7_u64);
+  }
+  return unit;
 }
 
 fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, snapshot: &ConfigSnapshot) -> result: unit reads(store), reads(snapshot), writes(client) {
@@ -441,6 +468,14 @@ fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, snapshot
     reply_bulk_decimal(client: client, value: snapshot^.key_delay);
   } else if which == 33_u64 {
     reply_memory_unsigned(client: client, value: server^.maxclients);
+  } else if which == 34_u64 {
+    let directory = bytes_copy(bytes: &client^.settings.dir);
+    reply_text(client: client, text: &directory);
+  } else if which == 35_u64 {
+    reply_loglevel(client: client, level: client^.settings.loglevel);
+  } else if which == 36_u64 {
+    let file = bytes_copy(bytes: &client^.settings.logfile);
+    reply_text(client: client, text: &file);
   } else if which < 32_u64 {
     let slot = parameter_slots[which];
     if slot < 11_u64 {
@@ -772,9 +807,12 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       return unit;
     }
     let snapshot = config_copy(store: store);
-    let found = array_filled::<u64, 34>(value: 0_u64);
-    let spelled_start = array_filled::<u64, 34>(value: 0_u64);
-    let spelled_length = array_filled::<u64, 34>(value: 0_u64);
+    let found = array_filled::<u64, 37>(value: 0_u64);
+    let spelled_start = array_filled::<u64, 37>(value: 0_u64);
+    let spelled_length = array_filled::<u64, 37>(value: 0_u64);
+    let directory_size = bytes_length(bytes: &client^.settings.dir);
+    let directory_known = directory_size > 0_u64;
+    let directory_unknown = bnot(directory_known);
     for @arguments (index in 2_u64..count) {
       let parameter = arg(args: args, index: index);
       let held_value = before_zero(input: input, span: parameter);
@@ -783,11 +821,16 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       if globbing {
         set length = held_value;
       }
-      for @parameters (which in 0_u64..34_u64) {
+      for @parameters (which in 0_u64..37_u64) {
         let unseen = found[which] == 0_u64;
         let hidden = which == 32_u64;
         let patterned = band(globbing, hidden);
         if patterned {
+          set unseen = False();
+        }
+        let directory_parameter = which == 34_u64;
+        let unknown_directory = band(directory_parameter, directory_unknown);
+        if unknown_directory {
           set unseen = False();
         }
         if unseen {
@@ -805,13 +848,13 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       }
     }
     let pairs = 0_u64;
-    for @counting (which in 0_u64..34_u64) {
+    for @counting (which in 0_u64..37_u64) {
       if found[which] != 0_u64 {
         set pairs = pairs +wrap 1_u64;
       }
     }
     reply_map(client: client, pairs: pairs);
-    for @answers (which in 0_u64..34_u64) {
+    for @answers (which in 0_u64..37_u64) {
       let how = found[which];
       if how == 1_u64 {
         let start = spelled_start[which];
@@ -864,6 +907,34 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let shown = imin(sub.length, 128_u64);
   let echoed = reply_echoed(client: client, input: input, span: sub, limit: shown);
   reply_word(client: client, word: &text_try_config[0_u64..21_u64]);
+  return unit;
+}
+
+const maxclients_unsupported: Array<u8, 85> = "The operating system is not able to handle the specified number of clients, try with ";
+
+fn config_adjust_maxclients(store: &Keyspace, client: &Client, wanted: u64) -> granted: u64 reads(store), writes(client) waits {
+  doc "Raises the open-files limit for wanted clients as Redis's updateMaxclients does through adjustOpenFilesLimit, and answers the clients the limit supports, wanted when it supports them all. A client with no handle factory, which no server configured, asks for nothing.";
+  match client^.factory {
+    Some(value: factory) => {
+      let outcome = pkg::fdlimit::fdlimit_adjust(factory: factory, log: &store^.log, maxclients: wanted);
+      if outcome.fatal {
+        return 0_u64;
+      }
+      return outcome.maxclients;
+    }
+    None() => {
+      return wanted;
+    }
+  }
+}
+
+fn reply_maxclients_unsupported(client: &Client, granted: u64) -> result: unit writes(client) {
+  doc "Writes Redis's refusal of a maxclients the operating system cannot handle, naming the number it can.";
+  let message = pkg::serverlog::log_message_new();
+  pkg::serverlog::log_message_append(message: &message, source: &maxclients_unsupported[0_u64..85]);
+  pkg::serverlog::log_message_number(message: &message, number: granted);
+  let length = message.inner.len;
+  reply_set_failed(client: client, which: 33_u64, reason: &message.inner[0_u64..length]);
   return unit;
 }
 
@@ -1102,6 +1173,13 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       reply_set_failed(client: client, which: refused, reason: &text_cannot_change[0_u64..35_u64]);
     }
     return unit;
+  }
+  if maxclients_given {
+    let granted = config_adjust_maxclients(store: store, client: client, wanted: new_maxclients);
+    if granted != new_maxclients {
+      reply_maxclients_unsupported(client: client, granted: granted);
+      return unit;
+    }
   }
   let password_span = Span(start: 0_u64, length: 0_u64);
   if password_given {
