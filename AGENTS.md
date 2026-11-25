@@ -60,7 +60,8 @@ When priorities conflict, first:
   slowest: it downloads the pinned compiler (`make compiler`), builds firn
   and runs the Redis 7.2.16 suite ratchet (`tests/redis-suite/`, without
   `--tolerant`); builds firn and runs its network cases (`tests/`); runs
-  the design lint; and compiles the paired safety witnesses
+  the design lint and the measurement instrument's pure `placement-selftest`;
+  and compiles the paired safety witnesses
   (`research/experiments/safety-witnesses/`). Each faulty program must receive
   its specified source diagnostic and each correction must build with the pin.
   `make gate-sync` fails when the targets `check.yml` runs

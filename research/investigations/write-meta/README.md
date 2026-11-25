@@ -401,7 +401,7 @@ copies cover them. **Rejected as the fix.**
   build (e1) to avoid them.
 
 **Comparison for step 1.** Same source, interleaved, on the 14900K under
-the measurement-session rules (`design/firn/measurement-sessions.md`):
+the measurement-session rules (`design/decisions/testing/benchmarks.md`):
 builds base, base twin and (a). Server on 2, 4 and 8 P-cores (1 core and 16
 hyperthreads recorded, not judged), clients on the E-cores, 50 connections,
 `-r 100000`, depth 16 and depth 1, AOF off. Tests: SET, MSET, INCR, LPUSH,

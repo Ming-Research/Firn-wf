@@ -5,6 +5,14 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-14 Measure the four competitors by the baseline rules
+
+Nodes: decisions/testing/benchmarks (written there as nine decisions; the older node firn/measurement-sessions is gone)
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-instrument-tree, which asked to approve PR #109's nine new design decisions at head 8019e34 (the tree is unchanged at the current head): competitors run in compare mode with the firn images' server CPUs, alternating passes and durability settings; strict version and provenance checks with installer receipts binding version, URL, archive SHA-256 and executable path and hash; Garnet's net8.0 apphost with a compatible .NET 8 runtime; Dragonfly refused in AOF cells; Garnet's AOF results labelled durability-not-equal until disk synchronization is established; exactly 50 client connections; multi-process quantiles labelled upper bounds; and one extra single-process threaded pass whose exact merged p99 alone decides the latency verdict.
+
+Summary: All nine are additions written from the six comparison rules of PR #108 (card firn-q-rebase-rules); none changes or removes an earlier decision. If those rules change, especially the p99 and durability ones, the matching decisions are rewritten. The PR merges only after review, the gate, the readiness check and the competitor-install card pass, and the merge is the owner's.
+
 ## 2026-10-24 Date the file-descriptor limit decision's ground
 
 Nodes: firn/startup

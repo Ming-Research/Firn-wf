@@ -17,7 +17,7 @@ medians and the twin spelled out as the firn investigation's
   (`SUBSCRIBE`) and, as a second workload, the same subscribers on one pattern
   that matches the channel (`PSUBSCRIBE`), 64-byte payloads, RESP2, over
   loopback. The server has 2 CPUs and the client the rest of the
-  [placement](../../../design/firn/measurement-sessions.md): on the 14900K,
+  [placement](../../../design/decisions/testing/benchmarks.md): on the 14900K,
   the servers on CPUs 2 and 4 (P-cores) and the clients on CPUs 16-31
   (E-cores), for every line and for the noise floor alike (AGENTS.md). The
   publisher keeps 16 `PUBLISH` commands unanswered (depth 16) or 1 (depth 1).

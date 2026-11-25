@@ -44,11 +44,11 @@ FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' 
 # The Redis suite runs as this many run.sh shards side by side.
 SUITE_SHARDS ?= 2
 
-.PHONY: check firn firn-test test list-ceiling redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync safety-witnesses
+.PHONY: check firn firn-test test list-ceiling redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync placement-selftest safety-witnesses
 
 # The gate's targets: check.yml runs each in a job of its own, which
 # gate-sync requires.
-CHECK_TARGETS := compiler firn test redis-suite design-lint gate-sync safety-witnesses
+CHECK_TARGETS := compiler firn test redis-suite design-lint gate-sync placement-selftest safety-witnesses
 
 check: $(CHECK_TARGETS)
 
@@ -150,6 +150,10 @@ firn-lto: $(BUILD)/firn-lto
 
 $(BUILD)/firn-lto: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --full-lto --graph $(FIRN_GRAPH) --entry firn -o $@
+
+# Pure measurement-instrument checks: fake topology/proc/CSV only; no servers.
+placement-selftest:
+	sh $(ROOT)/research/experiments/redis-bench/redis-bench.sh placement-selftest
 
 # Design-skill's own tests, then the lint of every live tree in the older
 # form. With none left (see DESIGN_TREES), both targets print that there is

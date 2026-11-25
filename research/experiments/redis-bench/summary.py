@@ -72,6 +72,10 @@ def verdict(low, high):
 def ratios(args):
     by_pass = defaultdict(dict)
     for r in rows(args.compare):
+        # A competitor comparison's pass=exact rows decide the p99 verdict
+        # only; they stay out of the throughput ratios.
+        if r["pass"] == "exact":
+            continue
         key = (int(r["cpus"]), r["test"], int(r["depth"]))
         by_pass[key].setdefault(r["line"], {})[int(r["pass"])] = float(r["rps"])
     print("cpus,test,depth,passes,head/base median,head/base 95% interval,verdict,"
