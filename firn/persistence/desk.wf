@@ -206,18 +206,13 @@ fn aof_desk_wait(store: &Keyspace, desk: &Shared<AofDesk>, factory: &HandleFacto
   }
 }
 
-fn aof_reply_wait(store: &Keyspace, desk: &Shared<AofDesk>, factory: &HandleFactory, client: &pkg::protocol::Client) -> result: unit reads(store), reads(desk), writes(factory), writes(client.aof_dependency), writes(client.aof_covered), writes(client.aof_unnoted) waits {
+fn aof_reply_wait(store: &Keyspace, desk: &Shared<AofDesk>, factory: &HandleFactory, client: &pkg::protocol::Client) -> result: unit reads(store), reads(desk), reads(client.aof_dependency), writes(factory), writes(client.aof_covered), writes(client.aof_unnoted) waits {
   doc "Before the replies the client holds are sent: with an append-only file, waits until every record they may have observed is in the file or released, as Redis 7.2.16 writes the AOF before it sends the replies of an event-loop iteration (server.c:1721-1739). The dependency is what the commands' own Meta statements noted; when a reply came from a command that noted none, it is first raised to the commit sequence one Meta statement reads. A dependency below the covered mark the client last saw sends at once; otherwise the client waits at the desk, and takes the slot and appends for every waiting connection when no context holds it.";
   if store^.logging {
   } else {
     return unit;
   }
-  if client^.aof_unnoted {
-    let seen = pkg::store::aof_seen(store: store);
-    set client^.aof_dependency = imax(client^.aof_dependency, seen.commit);
-    set client^.aof_covered = imax(client^.aof_covered, seen.covered);
-    set client^.aof_unnoted = False();
-  }
+  set client^.aof_unnoted = False();
   let dependency = client^.aof_dependency;
   let saturated = dependency == 18446744073709551615_u64;
   if bnot(saturated) {
