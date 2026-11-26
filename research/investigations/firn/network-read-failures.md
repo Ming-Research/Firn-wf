@@ -526,3 +526,51 @@ observation that tells the fixed state from the unfixed one. Every pass also
 runs `leased_port_refuses_connections_while_a_concurrent_spawn_runs`, which
 connects to 10000 leased ports and fails if one is not refused: 320000
 connections in the 32 passes, none accepted.
+
+### The loop on the change
+
+The looped commit is 0187922, whose `tests/`, `firn/`, `deps/`,
+`whitefoot-kit`, `Makefile` and `whitefoot.pin` are those of the change
+(d56c7a4). Each job ran on a commit that is on no branch, a child of 0187922
+whose Makefile gives `aof-sync-fault` the recipe `run.sh environment`, the
+three tests of `support::tests` timed alone, and `run.sh suite 20`, through
+`fast.yml`'s job on GitHub's ubuntu-24.04. For the comparison, three jobs ran
+`run.sh environment` and `run.sh suite 20` the same way on children of
+8783591, whose harness is main's. Measured on 2026-11-26:
+
+| Commit | Kernel | Runs | Passes | Failed | SIGCHLD dequeued in a test process |
+| --- | --- | --- | --- | --- | --- |
+| 0187922 | 7.0.0-1014-aws | 45729678279 (7 passes), 45729681165 (1), 45732633387, 45732636593, 45732638915, 45732642364, 45732655107, 45736032382, 45736036546 (7 each) | 57 | 0 | 0 |
+| 0187922 | 7.0.0-1018-aws | 45729685384 (2), 45732647221, 45732650262, 45736027338 (7 each) | 23 | 0 | 0 |
+| 0187922 | 7.0.0-1017-azure | 45729683058 (2), 45729687234 (1), 45732644472 (7), 45732652746 (6), 45732656813 (6), 45736029518 (7) | 29 | 0 | 0 |
+| 8783591 | 7.0.0-1017-azure | 45736030894 (6), 45736034728 (7), 45736038522 (6) | 19 | 0 | 44, in 16 of the 19 passes |
+
+109 passes of the change passed, every job on kernel 7.0, and in none of them
+did a thread of a test process dequeue a SIGCHLD: the trace counted 2 queued
+for the two test processes of each pass and 4803 to 4933 found already
+pending, which the block keeps pending. The four jobs with one or two passes were
+cancelled after ten minutes, because `fast.yml`'s 14900K job had no runner and
+the engine stops a run whose job has not started by then; one more pass of
+45729681165 ended but was cancelled before its trace was read, and is not
+counted. Without the change, on the same kind of runner, threads of the test
+process dequeued a SIGCHLD in 16 of 19 passes, 0 to 5 in a pass: what queued
+them in every pass is what interrupted the reads of October, and the change
+leaves no thread for it. No pass of either side had a read fail; at the rate
+above, about 3 in 400, 19 passes without the change hold one only about one
+time in seven, which is why the loop's measure is the dequeued signal.
+
+A pass took the same time with the change as without it:
+
+| Runner | Change: passes, seconds (median) | Main's harness: passes, seconds (median) |
+| --- | --- | --- |
+| 7.0.0-1014-aws and -1018-aws | 80, 139 to 144 (141) | 7, 140 to 142 (run 45611579505, above) |
+| 7.0.0-1017-azure | 29, 146 to 158 (153) | 19, 146 to 154 (153) |
+
+The three tests, each run alone with `cargo test --exact` five times a job,
+against a run that selects no test (cargo and the test program starting): the
+witness took 540 to 590 ms (median 568, 65 runs) on the AWS machines and 692
+to 957 ms (median 760, 30 runs) on Azure, against a baseline of 12 and 18 ms;
+`a_child_starts_with_the_mask_the_test_process_started_with` 18 and 23 ms,
+and `every_child_is_started_through_support_command` 17 and 24.5 ms at the
+median. In the suite they run beside the other cases, whose longest sets the
+pass's time.
