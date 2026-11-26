@@ -51,10 +51,10 @@ such as `CLIENT` once even where only some subcommands exist; 7.2.16 has 376 cal
 subcommands, 7.0.15 has 372, per the [Redis command tables](#redis-7015-to-7216)).
 
 - Keys, expiry, `SCAN` and `KEYS`, strings, lists, sets, hashes and sorted sets: nearly all of the single-key
-  commands and the store variants for sets. Sorted sets lack `ZUNIONSTORE`, `ZINTERSTORE`, `ZUNION`, `ZINTER`,
-  `ZINTERCARD`, `ZDIFF`, `ZDIFFSTORE`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP`, `ZSCAN` and every blocking
-  `BZ*` (checked against the `sorted_set` group of Redis 7.2.16's `src/commands/*.json`). Lists lack `LMPOP`
-  and every blocking `B*`.
+  commands and the store variants for sets. Sorted sets lack every blocking `BZ*` (checked against the
+  `sorted_set` group of Redis 7.2.16's `src/commands/*.json`); `ZUNIONSTORE`, `ZINTERSTORE`, `ZUNION`, `ZINTER`,
+  `ZINTERCARD`, `ZDIFF`, `ZDIFFSTORE`, `ZRANGESTORE`, `ZRANDMEMBER` and `ZMPOP` were added by item 171, and `ZSCAN`
+  since. Lists lack `LMPOP` and every blocking `B*`.
 - Scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD|EXISTS|FLUSH|KILL` (`SCRIPT DEBUG` and `SCRIPT HELP` are unknown subcommands) on Halo, which has `cjson`, `cmsgpack`,
   `struct` and `bit` libraries (file names in Halo-wf `lib/halo/vm/library-*.wf`, read 2026-10-12). Scripts
   with a `#!` line are refused. `EVALSHA_RO`, `EVAL_RO`, `FUNCTION` (except `FLUSH`) and `FCALL` are unknown.
@@ -405,7 +405,7 @@ what firn already has, items 10, 11 and 14 left to their own cards and item 15 f
 | 9 | **Scripts as clients use them**: `EVALSHA` after `SCRIPT LOAD` with the exact `NOSCRIPT` error text, `EVAL_RO`/`EVALSHA_RO` (Redisson, go-redis `RunRO`, rueidis), `cjson`, `cmsgpack`, `redis.pcall`, `redis.error_reply`, `redis.replicate_commands`, commands named from `ARGV`, undeclared keys, `unpack` of long argument lists | BullMQ, redis_rate, node-redlock, Redisson, Dramatiq, Laravel | mostly; `*_RO` and the library items to check |
 | 10 | **`SELECT n`** for databases 0 through 15 (`CONFIG GET databases` is 16 in Redis) | Symfony sends it on every connect; URLs of Rails, Celery, Sidekiq, Resque, Spring Session take a database; Garnet's most-wanted feature | `SELECT 0` only; **decision needed** (see below) |
 | 11 | **Minimal Streams**: `XADD` (with `MAXLEN ~`), `XREAD` with `BLOCK`, `XRANGE`, `XREVRANGE`, `XLEN`, `XTRIM`, `XDEL`, ids and trimming exactly as Redis | BullMQ events, RQ job results, Socket.IO streams adapter. No surveyed queue uses consumer groups | missing; **decision needed on release or after** |
-| 12 | **`ZUNIONSTORE`, `ZINTERSTORE`** (and `ZUNION`, `ZINTER`, `ZDIFF`, `ZDIFFSTORE`, `ZINTERCARD`, `ZRANGESTORE`, `ZMPOP`, `ZRANDMEMBER` as one family) | agoragames/leaderboard and Redisson's sorted set; the Redis suite tests that left the ratchet when these went missing come back | missing |
+| 12 | **`ZUNIONSTORE`, `ZINTERSTORE`** (and `ZUNION`, `ZINTER`, `ZDIFF`, `ZDIFFSTORE`, `ZINTERCARD`, `ZRANGESTORE`, `ZMPOP`, `ZRANDMEMBER` as one family) | agoragames/leaderboard and Redisson's sorted set; the Redis suite tests that left the ratchet when these went missing come back | have (item 171) |
 | 13 | **Redis 7.2.16 behavior**: for the commands firn has, `ZRANK WITHSCORE`, `HELLO` failing without side effects, time frozen per command and `CLIENT NO-TOUCH`; and the 7.2 command `WAITAOF numlocal numreplicas timeout` as a standalone server answers it: the error `WAITAOF cannot be used when numlocal is set but appendonly is disabled.` when `numlocal` is 1 and the append-only file is off, otherwise `[acklocal, 0]`, once the file's fsync covers the client's last write (immediately inside `MULTI` or a script), and with `numreplicas` above 0 it waits for the timeout (0 means without limit) and then answers `[acklocal, 0]`; the replica-instance error never applies (Redis 7.2.16 `src/replication.c:3571-3604`, `src/blocked.c:229-245`, read 2026-10-12) | the reference move | in progress |
 | 14 | **`BITFIELD`/`BITFIELD_RO`** | Sidekiq 8 metrics at each heartbeat. Whether Sidekiq tolerates an error reply is not known; settle by running it | conditional on the Sidekiq run |
 | 15 | **Operations basics**: `SLOWLOG GET|LEN|RESET`, `LATENCY` as an empty answer, `MEMORY USAGE` | redis_exporter reads them; managed services block them, so no application depends on them | later |
@@ -507,7 +507,7 @@ exists in `research/`; the board is the record (read 2026-10-12). Disposition, b
 | - pub/sub (same) | unknown | 15 applications | **Reopen** |
 | - `SSCAN`, `HSCAN`, `ZSCAN` (same) | unknown | 6 applications | **Reopen** |
 | - `BZPOPMIN`, `BZPOPMAX` (same) | unknown | BullMQ, Huey, channels_redis | **Reopen** |
-| - `ZUNIONSTORE`, `ZINTERSTORE` and the other sorted-set algebra, `ZMPOP`, `ZRANDMEMBER` (same) | unknown; also the reason 13 Redis-suite tests left the ratchet | 1 coded application plus Redisson | **Reopen** as a family (low frequency, cheap, and returns the 13 suite tests) |
+| - `ZUNIONSTORE`, `ZINTERSTORE` and the other sorted-set algebra, `ZMPOP`, `ZRANDMEMBER` (same) | unknown; also the reason 13 Redis-suite tests left the ratchet | 1 coded application plus Redisson | **Reopen** as a family (low frequency, cheap, and returns the 13 suite tests); done by item 171 |
 | - `LMPOP`, `SORT`, `LCS`, `DUMP`/`RESTORE`, `MOVE`, `MIGRATE`, `WAIT` (same) | unknown | 0 applications (Redisson probes `WAIT` only in non-single modes) | Keep cancelled; make `WAIT 0 0` answer 0 if it comes up |
 | - `CLIENT` subcommands, `COMMAND` subcommands (same) | partial | `CLIENT SETINFO` sent by most mainstream clients (not Redisson, phpredis, redigo, hiredis); `CLIENT LIST` by BullMQ, RQ, Bull, redis_exporter; `CLIENT INFO` `addr` missing for want of Whitefoot socket addresses (a separate request) | **Reopen** `SETINFO` and `LIST`; keep the rest cancelled |
 | - `SELECT` only 0 (same) | partial | indirect: Symfony sends it on connect; common in URLs; Garnet's top issue | **Decision card** (below) |
