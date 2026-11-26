@@ -521,7 +521,7 @@ fn zrandmember_of_a_whole_small_set_answers_in_the_order_redis_does() {
     for version in [2_u8, 3] {
         let hello = format!("HELLO {version}");
         run("protocol", &mut firn, &mut oracle, &steps(0, &[hello.as_str(), "FLUSHALL"]));
-        for (key, size) in [("four", 4_usize), ("twenty", 20), ("hundred", 100)] {
+        for (key, size) in [("four", 4_usize), ("twenty", 20), ("hundred", 100), ("threehundred", 300)] {
             let mut add = format!("ZADD {key}");
             for member in 0..size {
                 // Pairs of equal scores, so that the order of ties is seen too.
@@ -542,6 +542,81 @@ fn zrandmember_of_a_whole_small_set_answers_in_the_order_redis_does() {
         }
     }
     assert!(stable > 0, "Redis answered no whole-set draw the same way five times");
+    stop(firn);
+    stop(oracle);
+}
+
+/// Commands that name a few sets over and over, in any order, among keys that
+/// are absent, empty, plain sets or sorted sets: the result of each is Redis's,
+/// the same command twice gives the same answer (nothing is left marked by the
+/// first), and a store's destination is one of the named sets now and then.
+#[test]
+fn zset_algebra_naming_sets_again_and_again_answers_as_redis_does() {
+    let directory = fixture_directory();
+    let program = CompiledProgram::from_environment();
+    let mut oracle = spawn_redis(directory.path(), 1);
+    let mut firn = spawn_firn(&program, 1);
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = move |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % bound as u64) as usize
+    };
+    let mut all = steps(0, &["FLUSHALL", "SET str v", "ZADD empty 1 x", "ZREM empty x"]);
+    let names = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "p0", "p1", "absent", "empty", "str"];
+    for index in 0..7 {
+        let size = [1, 3, 9, 9, 17, 40, 130][index];
+        let mut add = format!("ZADD s{index}");
+        for member in 0..size {
+            add.push_str(&format!(" {} m{}", (member * 7 + index) % 11, (member * 3 + index) % 60));
+        }
+        all.push((0, add));
+    }
+    all.extend(steps(0, &["SADD p0 m1 m2 m3 m4 m5", "SADD p1 m3 m4 m50 m51"]));
+    let weights = ["1", "2", "0.5", "-1", "3", "0.1"];
+    let mut sent = 0;
+    for round in 0..160 {
+        let length = 1 + next(if round % 10 == 0 { 400 } else { 12 });
+        // Mostly sorted sets and plain sets; the odd absent, empty or wrong-type key.
+        let mut picked = Vec::new();
+        for _ in 0..length {
+            let choice = if next(8) == 0 { next(names.len()) } else { next(9) };
+            let name = names[choice];
+            picked.push(if name == "str" && next(6) != 0 { "s2" } else { name });
+        }
+        let operation = ["ZUNION", "ZINTER", "ZDIFF", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE", "ZINTERCARD"][next(7)];
+        let mut command = vec![operation.to_owned()];
+        if operation.ends_with("STORE") {
+            command.push(["out", "s2", "s5"][next(3)].to_owned());
+        }
+        command.push(picked.len().to_string());
+        command.extend(picked.iter().map(|name| (*name).to_owned()));
+        if operation != "ZDIFF" && operation != "ZDIFFSTORE" && operation != "ZINTERCARD" {
+            if next(2) == 0 {
+                command.push("WEIGHTS".to_owned());
+                command.extend((0..picked.len()).map(|_| weights[next(weights.len())].to_owned()));
+            }
+            if next(3) == 0 {
+                command.push("AGGREGATE".to_owned());
+                command.push(["SUM", "MIN", "MAX"][next(3)].to_owned());
+            }
+        }
+        if matches!(operation, "ZUNION" | "ZINTER" | "ZDIFF") {
+            command.push("WITHSCORES".to_owned());
+        }
+        let line = command.join(" ");
+        // Twice, so that a mark the first left behind would change the second.
+        all.push((0, line.clone()));
+        all.push((0, line));
+        if operation.ends_with("STORE") {
+            all.extend(steps(0, &["ZRANGE out 0 -1 WITHSCORES", "ZCARD s2", "ZCARD s5"]));
+            all.extend(steps(0, &["ZADD s2 1 m1 2 m2 3 m3 4 m4", "ZADD s5 5 m5 6 m6 7 m7"]));
+        }
+        sent += 1;
+    }
+    let replies = run("naming sets again and again", &mut firn, &mut oracle, &all);
+    assert!(sent == 160 && replies.len() > 400, "{} replies compared", replies.len());
     stop(firn);
     stop(oracle);
 }
