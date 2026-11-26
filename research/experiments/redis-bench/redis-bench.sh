@@ -233,6 +233,28 @@
 #                                 --value-size (default 64) and --window, and the
 #                                 default lines are Redis and firn.
 #                                 summary.py reads these files.
+#                                 Opt-in scan-set, scan-hash and scan-zset
+#                                 measure SSCAN, HSCAN and ZSCAN: the client
+#                                 fills one collection of 10000 members (a set,
+#                                 a hash, a sorted set) and each of
+#                                 WORKLOAD_CONNECTIONS connections (default 50)
+#                                 keeps each depth of WORKLOAD_DEPTHS (default
+#                                 16 1) cursor chains in flight, every chain
+#                                 following COUNT 100 from cursor 0 to cursor 0
+#                                 and starting again. Every chain must receive
+#                                 each member exactly once or the run fails; a
+#                                 server that answers with an unknown-command
+#                                 error is skipped, except firn. scan.csv has
+#                                 line,pass,cpus,workload,connections,pipeline,
+#                                 calls,members,seconds,rate,p50_ms,p99_ms
+#                                 where rate is the members the replies carried
+#                                 a second and the latencies are one cursor
+#                                 call's; its client_work_fraction and
+#                                 client_limited are in pubsub-limited.csv
+#                                 under the same pipeline column. Redis 7.2.16
+#                                 is required, WORKLOAD_OPTIONS accepts
+#                                 --warmup-seconds (default 5), and the default
+#                                 lines are Redis and firn.
 #                                 Where /proc/stat exists, workload-limited.csv has
 #                                 line,pass,cpus,workload,connections,
 #                                 client_busy_mean,client_work_fraction,
@@ -2093,16 +2115,18 @@ if [ "$MODE" = workloads ]; then
     memory_workloads=
     connection_workloads=
     pubsub_workloads=
+    scan_workloads=
     for workload in $workloads; do
         case $workload in
             limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
             evict-zipf|session-set-limits|session-get-limits) memory_workloads=1 ;;
             handshake|client-list) connection_workloads=1 ;;
             pubsub-channel|pubsub-pattern) pubsub_workloads=1 ;;
+            scan-set|scan-hash|scan-zset) scan_workloads=1 ;;
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
-    if [ -n "$memory_workloads$connection_workloads$pubsub_workloads" ]; then
+    if [ -n "$memory_workloads$connection_workloads$pubsub_workloads$scan_workloads" ]; then
         reference_version=$(redis-server --version)
         case " $reference_version " in
             *" v=7.2.16 "*) ;;
@@ -2111,6 +2135,8 @@ if [ "$MODE" = workloads ]; then
                     echo "handshake/client-list workloads require Redis 7.2.16: $reference_version" >&2
                 elif [ -n "$pubsub_workloads" ]; then
                     echo "pub/sub workloads require Redis 7.2.16: $reference_version" >&2
+                elif [ -n "$scan_workloads" ]; then
+                    echo "scan workloads require Redis 7.2.16: $reference_version" >&2
                 else
                     echo "memory workloads require Redis 7.2.16: $reference_version" >&2
                 fi
@@ -2139,6 +2165,7 @@ if [ "$MODE" = workloads ]; then
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
     echo 'line,pass,cpus,workload,connections,pipeline,published,delivered,seconds,rate,p50_ms,p99_ms' >"$OUT/pubsub.csv"
+    echo 'line,pass,cpus,workload,connections,pipeline,calls,members,seconds,rate,p50_ms,p99_ms' >"$OUT/scan.csv"
     workload_cpu=
     if [ -r /proc/stat ]; then
         workload_cpu="$OUT/workload-cpu.csv"
@@ -2202,6 +2229,18 @@ if [ "$MODE" = workloads ]; then
             case $1 in
                 --warmup-seconds|--sample-ms) ;;
                 *) echo "handshake/client-list do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
+            esac
+            [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
+            shift 2
+        done
+    fi
+    if [ -n "$scan_workloads" ]; then
+        set -f
+        set -- ${WORKLOAD_OPTIONS:-}
+        while [ "$#" -gt 0 ]; do
+            case $1 in
+                --warmup-seconds) ;;
+                *) echo "scan workloads do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
             esac
             [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
             shift 2
@@ -2286,7 +2325,11 @@ if [ "$MODE" = workloads ]; then
             for workload in $workloads; do
                 workload_order=$order
                 case $workload in
-                    pubsub-channel|pubsub-pattern)
+                    pubsub-channel|pubsub-pattern|scan-set|scan-hash|scan-zset)
+                        case $workload in
+                            scan-*) depth_csv=scan.csv; depth_label=scan ;;
+                            *) depth_csv=pubsub.csv; depth_label=pub/sub ;;
+                        esac
                         # The AOF lines add nothing to a command that is never
                         # written to the file.
                         if [ -z "${WORKLOAD_SERVERS:-}${WORKLOAD_IMAGES:-}" ]; then
@@ -2323,11 +2366,11 @@ if [ "$MODE" = workloads ]; then
                                         continue
                                     fi
                                     if [ "$status" -ne 0 ]; then
-                                        echo "pub/sub workload failed: line=$line pass=$pass cpus=$n workload=$workload connections=$conns pipeline=$depth (exit $status)" >&2
+                                        echo "$depth_label workload failed: line=$line pass=$pass cpus=$n workload=$workload connections=$conns pipeline=$depth (exit $status)" >&2
                                         exit "$status"
                                     fi
                                     workload_end "$line" "$conns" "$depth"
-                                    echo "$line,$pass,$n,$result" | tee -a "$OUT/pubsub.csv"
+                                    echo "$line,$pass,$n,$result" | tee -a "$OUT/$depth_csv"
                                 done
                             done
                             # Profile only after every measured run on this
