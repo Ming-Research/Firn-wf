@@ -165,8 +165,10 @@ fn random_ranked(env: &Client, value: &Entry, bounds: &[u8]) -> kind: u64 reads(
         if env^.high == 2_i64 {
           set act = 1_u64;
         }
-        let walk = walk_new(reverse: True(), kind: 0_u64, act: act, input: bounds);
-        let walked = walk_from(order: &sorted^.order, walk: &walk, client: env, offset: 0_u64, limit: 0_u64, unlimited: True(), act: act);
+        let backward = True();
+        let walk = walk_new(reverse: backward, kind: 0_u64, act: act, input: bounds);
+        let everything = True();
+        let walked = walk_from(order: &sorted^.order, walk: &walk, client: env, offset: 0_u64, limit: 0_u64, unlimited: everything, act: act);
         return 5_u64;
       }
       let tripled = magnitude *wrap 3_u64;
