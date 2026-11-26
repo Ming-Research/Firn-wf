@@ -117,7 +117,7 @@ fn check_output(block: &Block, output: &Output) {
 }
 
 fn shell(block: &Block, directory: &Path, path: &std::ffi::OsStr) -> Command {
-    let mut command = Command::new("/bin/sh");
+    let mut command = support::command("/bin/sh");
     command.args(["-eu", "-c", &block.body]).current_dir(directory)
         .env("PATH", path).env_remove("REDISCLI_AUTH")
         .env_remove("WF_REQUIRE_WINDOWS_IOCP")
@@ -202,19 +202,19 @@ fn operator_guide_examples_run_literally() {
 fn guide_checker_rejects_wrong_exit_reply_and_missing_marker() {
     let mut examples = blocks("```sh firn-check exit=0 stdout=PONG\nprintf PONG\n```\n");
     let block = examples.pop().unwrap();
-    let actual = support::run_command(Command::new("/bin/sh").args(["-c", "printf PONG"]));
+    let actual = support::run_command(support::command("/bin/sh").args(["-c", "printf PONG"]));
     assert!(matches_output(&block, &actual), "matching witness must pass");
-    let wrong = support::run_command(Command::new("/bin/sh").args(["-c", "printf WRONG"]));
+    let wrong = support::run_command(support::command("/bin/sh").args(["-c", "printf WRONG"]));
     assert!(!matches_output(&block, &wrong), "wrong reply must fail even with exit 0");
-    let wrong = support::run_command(Command::new("/bin/sh").args(["-c", "printf PONG; exit 7"]));
+    let wrong = support::run_command(support::command("/bin/sh").args(["-c", "printf PONG; exit 7"]));
     assert!(!matches_output(&block, &wrong), "wrong exit must fail even with the correct reply");
-    let wrong = support::run_command(Command::new("/bin/sh")
+    let wrong = support::run_command(support::command("/bin/sh")
         .args(["-c", "printf PONG; printf UNEXPECTED >&2"]));
     assert!(!matches_output(&block, &wrong), "unexpected diagnostics must fail");
     let expected_error = blocks("```sh firn-check exit=0 stderr=FATAL CONFIG FILE ERROR\ntrue\n```\n").pop().unwrap();
-    let no_error = support::run_command(Command::new("/bin/sh").args(["-c", "true"]));
+    let no_error = support::run_command(support::command("/bin/sh").args(["-c", "true"]));
     assert!(!matches_output(&expected_error, &no_error), "missing expected refusal diagnostic must fail");
-    let shortened_error = support::run_command(Command::new("/bin/sh")
+    let shortened_error = support::run_command(support::command("/bin/sh")
         .args(["-c", "printf FATAL >&2"]));
     assert!(!matches_output(&expected_error, &shortened_error), "shortened refusal frame must fail");
     let both = blocks("```text untested-example\nnot run\n```\n```sh firn-check exit=0\ntrue\n```\n");
@@ -260,7 +260,7 @@ fn redis_aof_directory_replays_in_firn() {
     let source = fixture_directory();
     let source_lease = support::lease_port();
     let source_port = source_lease.port().to_string();
-    let mut command = Command::new(support::redis_oracle());
+    let mut command = support::command(support::redis_oracle());
     command.current_dir(source.path())
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .args(["--port", &source_port, "--bind", "127.0.0.1", "--save", "", "--appendonly", "yes",

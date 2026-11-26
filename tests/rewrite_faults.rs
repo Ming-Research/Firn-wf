@@ -10,7 +10,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const SEEDS: usize = 4000;
 const MANIFEST: &str = "appendonly.aof.manifest";
@@ -31,12 +31,12 @@ fn start(server: Server, oracle: &Path, directory: &Path, traced: bool) -> (Prog
         Server::Firn(_) => PathBuf::from(std::env::var_os("FIRN").expect("FIRN")),
     };
     let mut command = if traced {
-        let mut command = Command::new("strace");
+        let mut command = support::command("strace");
         command.args(["-f", "-qq", "-o"]).arg(directory.join("rename.trace"))
             .args(["-e", "trace=rename,renameat,renameat2", "-e",
                 "inject=rename,renameat,renameat2:delay_exit=1s", "--"]).arg(&binary);
         command
-    } else { Command::new(&binary) };
+    } else { support::command(&binary) };
     command.current_dir(directory).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     match server {
         Server::Redis => {
@@ -490,7 +490,7 @@ fn rewrite_rotates_when_retained_bytes_drain_after_the_cut() {
     let trace = root.join("drain.trace");
     let lease = support::lease_port();
     let port = lease.port().to_string();
-    let mut command = Command::new("strace");
+    let mut command = support::command("strace");
     command.args(["-ff", "-qq", "-yy", "-s", "80", "-o"]).arg(&trace)
         .args(["-e", "trace=write,writev,pwrite64,pwritev,pwritev2,fsync,fdatasync",
             "-e", "inject=fsync,fdatasync:delay_enter=2s", "-P"]).arg(&base)
