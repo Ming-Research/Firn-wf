@@ -44,11 +44,11 @@ FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' 
 # The Redis suite runs as this many run.sh shards side by side.
 SUITE_SHARDS ?= 2
 
-.PHONY: check firn firn-test test list-ceiling redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync safety-witnesses
+.PHONY: check firn firn-test test list-ceiling redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync safety-witnesses network-case bench-client-case redis-suite-unit
 
 # The gate's targets: check.yml runs each in a job of its own, which
 # gate-sync requires.
-CHECK_TARGETS := compiler firn test redis-suite design-lint gate-sync safety-witnesses
+CHECK_TARGETS := compiler firn test list-ceiling redis-suite design-lint gate-sync safety-witnesses
 
 check: $(CHECK_TARGETS)
 
@@ -56,6 +56,22 @@ check: $(CHECK_TARGETS)
 # target of check.yml's aof-sync-fault job; and the two checks of
 # design-readiness.yml.
 TESTS := $(filter-out compiler,$(CHECK_TARGETS)) aof-sync-fault design-ready pin-ready
+
+# A single test inside a whole one, named on its own (whitefoot-kit's
+# tests.mk, TEST_FAMILIES): for a name that matches PATTERN, a word
+# PATTERN=TARGET runs `make TARGET TEST_NAME=<name>`, and the results name it
+# exactly as given. The whole names above stay what the full check runs.
+#   network::<case>        a case of the cargo test `network` (tests/), by its
+#                          path, such as network::rewrite_faults::<name>
+#   bench-client::<case>   a test of the benchmark client
+#                          (research/experiments/redis-bench/workload)
+#   redis-suite/<unit>     a unit of the Redis suite, such as
+#                          redis-suite/unit/type/hash
+TEST_FAMILIES := network::*=network-case bench-client::*=bench-client-case redis-suite/*=redis-suite-unit
+
+# How many times run.sh runs a unit of the Redis suite again past a test that
+# timed out. The full check keeps run.sh's 5; the fast workflow sets 1.
+SUITE_RETRIES ?= 5
 
 # Real server bug patterns: each faulty transcription must receive its named
 # source diagnostic and each corrected program must build with this pin.
@@ -84,7 +100,8 @@ $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 # Both selections are required; the serial selection must run all four cases.
 # The tests of the benchmark client (research/experiments/redis-bench/workload)
 # run last: the benchmark's numbers are claims of the research records.
-test: firn-test list-ceiling
+# list-ceiling is a test of its own, which the gate runs beside this one.
+test: firn-test
 	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) && \
 	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
 	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output
@@ -97,14 +114,41 @@ test: firn-test list-ceiling
 	cargo test --manifest-path $(ROOT)/research/experiments/redis-bench/workload/Cargo.toml --locked \
 	  --target-dir $(BUILD)/workload-target
 
+# One network case, named network::<its path in the cargo test `network`>.
+# It runs alone, on one test thread, as the serial rewrite_faults:: cases
+# need; a name no case has, or an ignored case, runs nothing and fails.
+network-case: firn-test
+	@case=$${TEST_NAME#network::}; \
+	[ -n "$$case" ] && [ "$$case" != "$$TEST_NAME" ] || { echo "network-case: name a case as network::<path>" >&2; exit 2; }; \
+	redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) || exit $$?; \
+	log=$$(mktemp) || exit $$?; trap 'rm -f "$$log"' EXIT; \
+	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
+	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked --test network -- \
+	  --exact "$$case" --test-threads=1 --nocapture >"$$log" 2>&1; status=$$?; cat "$$log"; \
+	[ $$status -eq 0 ] || exit $$status; \
+	grep -q '^test result: ok\. 1 passed' "$$log" \
+	  || { echo "network-case: the cargo test network ran no case named $$case" >&2; exit 1; }
+
+# One test of the benchmark client, named bench-client::<its path>.
+bench-client-case:
+	@case=$${TEST_NAME#bench-client::}; \
+	[ -n "$$case" ] && [ "$$case" != "$$TEST_NAME" ] || { echo "bench-client-case: name a test as bench-client::<path>" >&2; exit 2; }; \
+	log=$$(mktemp) || exit $$?; trap 'rm -f "$$log"' EXIT; \
+	cargo test --manifest-path $(ROOT)/research/experiments/redis-bench/workload/Cargo.toml --locked \
+	  --target-dir $(BUILD)/workload-target -- --exact "$$case" >"$$log" 2>&1; status=$$?; cat "$$log"; \
+	[ $$status -eq 0 ] || exit $$status; \
+	grep -q '^test result: ok\. 1 passed' "$$log" \
+	  || { echo "bench-client-case: the benchmark client ran no test named $$case" >&2; exit 1; }
+
 # Direct Whitefoot fixtures exercise the real private list command bodies at
 # an eight-element ceiling, without a production test hook or a giant network
-# dataset. The assembler copies sources only into this disposable build tree.
+# dataset. The assembler copies sources only into this disposable build tree;
+# the cache beside it lets a rebuild compile only what an edit changed.
 LIST_CEILING_SOURCES := $(ROOT)/tests/list_ceiling.py $(ROOT)/tests/list_ceiling.wf
 
 $(BUILD)/list-ceiling/check: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES) $(LIST_CEILING_SOURCES)
 	$(PY) -B $(ROOT)/tests/list_ceiling.py --out $(BUILD)/list-ceiling
-	$(WHITEFOOTC) --graph $(BUILD)/list-ceiling/firn/modules.wfg --entry list_ceiling -o $@
+	$(WHITEFOOTC) --graph $(BUILD)/list-ceiling/firn/modules.wfg --entry list_ceiling --cache $(BUILD)/list-ceiling-cache -o $@
 
 list-ceiling: $(BUILD)/list-ceiling/check
 	$(BUILD)/list-ceiling/check
@@ -114,8 +158,22 @@ list-ceiling: $(BUILD)/list-ceiling/check
 # still pass; new passes are candidates to add in the same PR.
 redis-suite: $(BUILD)/firn
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py --self-test
-	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run-shards.sh --shards $(SUITE_SHARDS) --out "$(BUILD)/redis-suite" --known-hangs $(ROOT)/tests/redis-suite/hung.tsv firn "$(BUILD)/firn"
+	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run-shards.sh --shards $(SUITE_SHARDS) --out "$(BUILD)/redis-suite" --retries $(SUITE_RETRIES) --known-hangs $(ROOT)/tests/redis-suite/hung.tsv firn "$(BUILD)/firn"
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$(BUILD)/redis-suite/tests.tsv" --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
+
+# One unit of the suite, named redis-suite/<unit> as the suite lists it, such
+# as redis-suite/unit/type/hash: run by itself, and checked against the
+# ratchet's tests of that unit alone.
+redis-suite-unit: $(BUILD)/firn
+	@unit=$${TEST_NAME#redis-suite/}; \
+	[ -n "$$unit" ] && [ "$$unit" != "$$TEST_NAME" ] || { echo "redis-suite-unit: name a unit as redis-suite/<unit>" >&2; exit 2; }; \
+	case "$$unit" in *[!A-Za-z0-9_/.-]*|*..*) echo "redis-suite-unit: $$unit is not a unit's name" >&2; exit 2 ;; esac; \
+	out="$(BUILD)/redis-suite-units/$$unit"; rm -rf "$$out"; \
+	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run.sh --out "$$out" --units "$$unit" \
+	  --retries $(SUITE_RETRIES) --known-hangs $(ROOT)/tests/redis-suite/hung.tsv firn "$(BUILD)/firn" || exit $$?; \
+	grep -qxF "$$unit" "$$out/suite-units.txt" || { echo "redis-suite-unit: the suite has no unit $$unit" >&2; exit 1; }; \
+	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$$out/tests.tsv" --unit "$$unit" \
+	  --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
 
 # The append-only file's sync failing on a real device, firn against Redis
 # 7.2.16: the sync and rewrite fault cases of tests/aof_sync_fault.rs. Not part of `make check`:
