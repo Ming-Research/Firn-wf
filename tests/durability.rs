@@ -1,16 +1,29 @@
 //! Concurrent histories checked against a serial order (board item
-//! firn-concurrent-check-gate).
+//! firn-concurrent-check-gate) and process-crash recovery.
 //!
 //! Redis 7.2.16 src/t_string.c:697-727 defines APPEND's byte-length reply.
 //! Eight clients interleave APPENDs on shared keys, and the checker below
 //! finds a serial order that explains every reply and the final values, which
 //! the append-only file must then reproduce on reload.
+//!
+//! src/server.c:1719-1739 calls the AOF flush before pending client replies;
+//! src/aof.c:1591-1626 cuts an incomplete final record with aof-load-truncated
+//! yes. These cases concern SIGKILL, which preserves the kernel page cache,
+//! rather than power loss. Firn currently has only the everysec sync policy
+//! (design/decisions/persistence/append-only-file.md); there is no always
+//! variant to invoke.
+//! The no-lost-ack assertion holds because firn, like Redis, sends a write's
+//! reply only after its record and every earlier one are in the file. Even
+//! Redis everysec can postpone an append during a background fsync
+//! (src/aof.c:1096-1123); page-cache retention protects appended bytes only.
 
 #![cfg(target_os = "linux")]
 
 use super::*;
 use std::collections::HashSet;
-use std::sync::Barrier;
+use std::os::unix::process::ExitStatusExt;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Barrier, Mutex};
 
 const CLIENTS: usize = 8;
 const SHARED_KEYS: usize = 4;
@@ -18,6 +31,11 @@ const TOKEN_BYTES: usize = 16;
 const CONCURRENT_DURATION: Duration = Duration::from_secs(2);
 const WRITE_PAUSE: Duration = Duration::from_millis(2);
 const IO_LIMIT: Duration = Duration::from_secs(3);
+const ACK_WAIT_LIMIT: Duration = Duration::from_secs(3);
+const KILL_ROUNDS: usize = 5;
+const KILL_MIN_MS: u64 = 150;
+const KILL_JITTER_MS: u64 = 150;
+const RELOAD_BATCH: usize = 64;
 const AOF_NAME: &str = "durability.aof";
 
 fn peer(port: u16, monitor: &support::ProgramMonitor) -> TcpStream {
@@ -211,4 +229,379 @@ fn append_checker_rejects_lost_updates_duplicate_replies_and_impossible_orders()
     impossible[0].invoked = history[1].completed + Duration::from_millis(1);
     impossible[0].completed = impossible[0].invoked;
     assert!(check_appends(&impossible, &values).unwrap_err().contains("real-time"));
+}
+
+struct Acknowledged {
+    key: String,
+    value: String,
+}
+
+/// The crash workload uses only simple SET replies and bulk GET replies.
+/// Unlike network.rs's assertion reader, an incomplete frame returns its
+/// I/O error: a partially received +OK is never an acknowledgment.
+fn read_crash_reply(reader: &mut impl Read) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n") {
+        if bytes.len() == 128 {
+            return Err(Error::new(ErrorKind::InvalidData, "crash reply header too long"));
+        }
+        let mut byte = [0_u8; 1];
+        reader.read_exact(&mut byte)?;
+        bytes.push(byte[0]);
+    }
+    if bytes.starts_with(b"$") {
+        let length = std::str::from_utf8(&bytes[1..bytes.len() - 2])
+            .ok().and_then(|digits| digits.parse::<i64>().ok())
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid crash bulk length"))?;
+        if !(-1..=1024).contains(&length) {
+            return Err(Error::new(ErrorKind::InvalidData, "unexpected crash bulk length"));
+        }
+        if length >= 0 {
+            // All crash values are short ASCII strings; bound a corrupt
+            // length before allocating, and require the complete terminator.
+            let mut body = vec![0_u8; length as usize + 2];
+            reader.read_exact(&mut body)?;
+            if !body.ends_with(b"\r\n") {
+                return Err(Error::new(ErrorKind::InvalidData, "invalid crash bulk terminator"));
+            }
+            bytes.extend(body);
+        }
+    } else if !bytes.starts_with(b"+") && !bytes.starts_with(b"-") {
+        return Err(Error::new(ErrorKind::InvalidData, "unexpected crash reply type"));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| Error::new(ErrorKind::InvalidData, error))
+}
+
+fn interrupted_by_kill(error: &std::io::Error, killed: bool) -> bool {
+    use std::io::ErrorKind;
+    killed && matches!(error.kind(),
+        ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof | ErrorKind::BrokenPipe)
+}
+
+#[test]
+fn crash_reader_requires_complete_replies_and_transport_errors_require_a_kill() {
+    use std::io::{Cursor, Error, ErrorKind};
+    struct InterruptedReader<'a> {
+        prefix: &'a [u8],
+        kind: ErrorKind,
+    }
+    impl Read for InterruptedReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.prefix.is_empty() {
+                Err(Error::from(self.kind))
+            } else {
+                self.prefix.read(buffer)
+            }
+        }
+    }
+    let ack = b"+OK\r\n";
+    assert_eq!(read_crash_reply(&mut Cursor::new(ack)).unwrap(), "+OK\r\n");
+    for length in 0..ack.len() {
+        let error = read_crash_reply(&mut Cursor::new(&ack[..length])).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof, "prefix length {length}");
+        assert!(!interrupted_by_kill(&error, false));
+        assert!(interrupted_by_kill(&error, true));
+    }
+    for kind in [ErrorKind::ConnectionReset, ErrorKind::BrokenPipe] {
+        let error = read_crash_reply(&mut InterruptedReader { prefix: &ack[..3], kind })
+            .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert!(!interrupted_by_kill(&error, false));
+        assert!(interrupted_by_kill(&error, true));
+    }
+    for kind in [ErrorKind::TimedOut, ErrorKind::WouldBlock, ErrorKind::InvalidData] {
+        assert!(!interrupted_by_kill(&Error::from(kind), true));
+    }
+    assert_eq!(read_crash_reply(&mut Cursor::new(b"$-1\r\n")).unwrap(), "$-1\r\n");
+    assert_eq!(read_crash_reply(&mut Cursor::new(b"$1\r\nv\r\n")).unwrap(), "$1\r\nv\r\n");
+    assert_eq!(read_crash_reply(&mut Cursor::new(b"$1\r\nv\r")).unwrap_err().kind(),
+        ErrorKind::UnexpectedEof);
+}
+
+fn kill_during_writes(child: ProgramChild, peers: Vec<TcpStream>, round: usize, delay: Duration)
+    -> Vec<Acknowledged>
+{
+    let killed = AtomicBool::new(false);
+    // Error handling and signal publication share a gate: a reader reset
+    // caused by kill cannot race ahead of the successful kill's flag store.
+    let kill_gate = Mutex::new(());
+    let acknowledgment_count = AtomicUsize::new(0);
+    let barrier = Barrier::new(CLIENTS + 1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = peers.into_iter().enumerate().map(|(client, mut stream)| {
+            let killed = &killed;
+            let kill_gate = &kill_gate;
+            let acknowledgment_count = &acknowledgment_count;
+            let barrier = &barrier;
+            scope.spawn(move || {
+                barrier.wait();
+                let mut acknowledged = Vec::new();
+                let mut sequence = 0_u64;
+                let deadline = Instant::now() + ACK_WAIT_LIMIT + delay + IO_LIMIT;
+                while !killed.load(Ordering::Acquire) {
+                    assert!(Instant::now() < deadline, "round {round} writer exceeded deadline");
+                    // Never reuse a key, even across restarts. A completed
+                    // unacknowledged SET cannot overwrite an acknowledged one.
+                    let key = format!("kill:{round}:{client}:{sequence}");
+                    let value = format!("value:{round}:{client}:{sequence}:acknowledged");
+                    let outcome = stream.write_all(&resp(&["SET", &key, &value]))
+                        .and_then(|()| read_crash_reply(&mut stream));
+                    match outcome {
+                        Ok(reply) => {
+                            assert_eq!(reply, "+OK\r\n", "unexpected SET reply for {key}");
+                            // Record success even if SIGKILL raced with reading
+                            // the buffered reply; all threads join before checking.
+                            acknowledged.push(Acknowledged { key, value });
+                            acknowledgment_count.fetch_add(1, Ordering::Release);
+                        }
+                        Err(error) => {
+                            let _gate = kill_gate.lock().expect("lock crash signal gate");
+                            assert!(interrupted_by_kill(&error, killed.load(Ordering::Acquire)),
+                                "client {client} unexpected transport error in round {round}: {error}");
+                            break;
+                        }
+                    }
+                    sequence += 1;
+                    std::thread::sleep(WRITE_PAUSE);
+                }
+                acknowledged
+            })
+        }).collect();
+        barrier.wait();
+        let ack_deadline = Instant::now() + ACK_WAIT_LIMIT;
+        while acknowledgment_count.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < ack_deadline,
+                "round {round} received no acknowledgments before the kill deadline");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::thread::sleep(delay);
+        assert!(acknowledgment_count.load(Ordering::Acquire) > 0,
+            "round {round} must acknowledge writes before SIGKILL");
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        {
+            let _gate = kill_gate.lock().expect("lock crash signal gate");
+            assert_eq!(unsafe { kill(child.id() as i32, 9) }, 0,
+                "SIGKILL firn: {}", std::io::Error::last_os_error());
+            killed.store(true, Ordering::Release);
+        }
+        let output = child.wait_with_output().expect("reap SIGKILLed firn");
+        assert_eq!(output.status.signal(), Some(9), "firn must exit from SIGKILL: {output:?}");
+        let acknowledged: Vec<_> = handles.into_iter()
+            .flat_map(|handle| handle.join().expect("crash writer panicked")).collect();
+        assert!(!acknowledged.is_empty(), "round {round} must check acknowledged writes");
+        assert_eq!(acknowledged.len(), acknowledgment_count.load(Ordering::Acquire),
+            "every complete acknowledgment must be retained for reload checks");
+        acknowledged
+    })
+}
+
+#[derive(Default)]
+struct ReloadFailures {
+    observations: usize,
+    examples: Vec<String>,
+}
+
+/// Pipeline bounded GET batches, but compare each reply with that client's
+/// recorded acknowledgment, never with an AOF-derived or pre-kill snapshot.
+fn check_acknowledged(control: &mut TcpStream, acknowledged: &[Acknowledged],
+    context: &str, failures: &mut ReloadFailures)
+{
+    for batch in acknowledged.chunks(RELOAD_BATCH) {
+        let requests: Vec<_> = batch.iter().flat_map(|ack| resp(&["GET", &ack.key])).collect();
+        control.write_all(&requests).expect("send acknowledgment reload checks");
+        for ack in batch {
+            let actual = read_crash_reply(control).unwrap_or_else(|error| {
+                panic!("{context}: reload GET {} failed: {error}; acknowledgment must still be checked",
+                    ack.key)
+            });
+            let expected = format!("${}\r\n{}\r\n", ack.value.len(), ack.value);
+            if actual != expected {
+                failures.observations += 1;
+                if failures.examples.len() < 8 {
+                    failures.examples.push(format!("{context}: {} expected {:?}, got {actual:?}",
+                        ack.key, ack.value));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn sigkill_restarts_preserve_every_acknowledged_write_and_repair_a_truncated_tail() {
+    let program = CompiledProgram::from_environment();
+    let lease = support::lease_port();
+    let (mut child, mut control) = start(&program, &lease, true);
+    let mut random = std::fs::File::open("/dev/urandom").expect("open kill timing randomness");
+    let mut acknowledged = Vec::new();
+    let mut failures = ReloadFailures::default();
+    for round in 0..KILL_ROUNDS {
+        let peers = (0..CLIENTS).map(|_| peer(lease.port(), &child)).collect();
+        let mut bytes = [0_u8; 8];
+        random.read_exact(&mut bytes).expect("randomize SIGKILL moment");
+        let delay = Duration::from_millis(KILL_MIN_MS + u64::from_ne_bytes(bytes) % KILL_JITTER_MS);
+        drop(control);
+        acknowledged.extend(kill_during_writes(child, peers, round, delay));
+        (child, control) = start(&program, &lease, true);
+        // Do not wait for INFO/aof_buffer_length or request a flush before
+        // killing: either would hide acknowledgment-before-append loss.
+        // Retain failures until the end so all five crash/restart rounds run.
+        check_acknowledged(&mut control, &acknowledged, &format!("round {round}, kill after {delay:?}"),
+            &mut failures);
+    }
+    stop(child, &mut control);
+
+    // A small SET may reach the file in one write, so random kills need not
+    // produce a partial record. Separately guarantee that recovery path on
+    // the same accumulated AOF, after checking each unmodified crash file.
+    let path = aof_incremental_path(program.working_directory(), AOF_NAME);
+    let whole_length = std::fs::metadata(&path).unwrap().len();
+    let tail = resp(&["SET", "kill:partial-tail", "unacknowledged"]);
+    std::fs::OpenOptions::new().append(true).open(&path).unwrap()
+        .write_all(&tail[..tail.len() - 3]).expect("write incomplete last AOF record");
+    let (child, mut control) = start(&program, &lease, true);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), whole_length,
+        "startup cuts only the incomplete tail, as Redis aof-load-truncated yes does");
+    assert_eq!(memory_request(&mut control, &["GET", "kill:partial-tail"]), "$-1\r\n",
+        "incomplete SET must not be applied");
+    check_acknowledged(&mut control, &acknowledged, "truncated-tail reload", &mut failures);
+    let after = Acknowledged { key: "kill:after-tail".into(), value: "new-record".into() };
+    assert_eq!(memory_request(&mut control, &["SET", &after.key, &after.value]), "+OK\r\n");
+    acknowledged.push(after);
+    stop(child, &mut control);
+    let (child, mut control) = start(&program, &lease, true);
+    check_acknowledged(&mut control, &acknowledged, "reload after appending beyond repaired tail",
+        &mut failures);
+    stop(child, &mut control);
+    assert_eq!(failures.observations, 0,
+        "acknowledged writes missing or changed after restart (including repeated observations): {}",
+        failures.examples.join("\n"));
+}
+
+const VISIBILITY_ROUNDS: usize = 10;
+
+fn increment_bytes(program: &CompiledProgram) -> Vec<u8> {
+    std::fs::read(aof_incremental_path(program.working_directory(), AOF_NAME))
+        .expect("read the active incremental file")
+}
+
+fn occurrences(file: &[u8], record: &[u8]) -> usize {
+    file.windows(record.len()).filter(|window| *window == record).count()
+}
+
+/// Redis 7.2.16 writes the AOF buffer in beforeSleep, before it sends any
+/// pending reply (src/server.c:1719-1739), so a client that receives a reply
+/// finds in the file every record the reply may show: its own write, another
+/// client's write that a read reveals, and a write made before a message it
+/// is delivered. The file is read the moment each reply arrives; with ten
+/// rounds of each, a writer that appends on a timer cannot win them all.
+#[test]
+fn every_reply_finds_the_records_it_shows_in_the_file() {
+    let program = CompiledProgram::from_environment();
+    let lease = support::lease_port();
+    let (child, mut control) = start(&program, &lease, true);
+    let mut writer = peer(lease.port(), &child);
+    let mut reader = peer(lease.port(), &child);
+    let mut publisher = peer(lease.port(), &child);
+    let mut subscriber = peer(lease.port(), &child);
+    subscriber.write_all(&resp(&["SUBSCRIBE", "durability:visible"])).unwrap();
+    expect_replies(&mut subscriber, b"*3\r\n$9\r\nsubscribe\r\n$18\r\ndurability:visible\r\n:1\r\n",
+        "subscription");
+    let mut missing = Vec::new();
+    for round in 0..VISIBILITY_ROUNDS {
+        let own = resp(&["SET", &format!("visible:own:{round}"), "acknowledged"]);
+        writer.write_all(&own).unwrap();
+        expect_replies(&mut writer, b"+OK\r\n", "acknowledged SET");
+        if occurrences(&increment_bytes(&program), &own) != 1 {
+            missing.push(format!("round {round}: the acknowledged SET"));
+        }
+
+        let key = format!("visible:read:{round}");
+        let revealed = resp(&["SET", &key, "revealed"]);
+        writer.write_all(&revealed).unwrap();
+        let deadline = Instant::now() + IO_LIMIT;
+        loop {
+            reader.write_all(&resp(&["GET", &key])).unwrap();
+            let reply = read_crash_reply(&mut reader).expect("GET reply");
+            if reply == "$8\r\nrevealed\r\n" {
+                break;
+            }
+            assert_eq!(reply, "$-1\r\n", "GET before the SET it waits for");
+            assert!(Instant::now() < deadline, "round {round}: the unread SET never became visible");
+        }
+        if occurrences(&increment_bytes(&program), &revealed) != 1 {
+            missing.push(format!("round {round}: the SET another connection's GET revealed"));
+        }
+        expect_replies(&mut writer, b"+OK\r\n", "revealed SET");
+
+        // The publisher pipelines its SET before the PUBLISH and reads
+        // neither reply, so the message reaches the subscriber's connection
+        // while the SET's record may still be only in memory: only the wait
+        // before the subscriber's frame can put it in the file first.
+        let published = resp(&["SET", &format!("visible:publish:{round}"), "published"]);
+        let payload = round.to_string();
+        let mut batch = published.clone();
+        batch.extend(resp(&["PUBLISH", "durability:visible", &payload]));
+        publisher.write_all(&batch).unwrap();
+        let message = format!("*3\r\n$7\r\nmessage\r\n$18\r\ndurability:visible\r\n${}\r\n{payload}\r\n",
+            payload.len());
+        expect_replies(&mut subscriber, message.as_bytes(), "delivered message");
+        if occurrences(&increment_bytes(&program), &published) != 1 {
+            missing.push(format!("round {round}: the SET made before a delivered message"));
+        }
+        expect_replies(&mut publisher, b"+OK\r\n:1\r\n", "SET and PUBLISH");
+    }
+    drop((writer, reader, publisher, subscriber));
+    stop(child, &mut control);
+    assert!(missing.is_empty(), "replies arrived before the records they show were in the file:\n{}",
+        missing.join("\n"));
+}
+
+/// One pipeline of writes, reads, commands that change nothing, a
+/// transaction and scripts, whose replies are Redis 7.2.16's for these
+/// commands (t_string.c, db.c, multi.c, eval.c), written out here rather
+/// than taken from firn. Waiting for the file must leave the stream exactly
+/// as it is without an append-only file, and when the last reply arrives
+/// the file holds the pipeline's last write, so every earlier one too.
+#[test]
+fn a_mixed_pipeline_answers_alike_with_and_without_an_append_only_file() {
+    let requests: &[&[&str]] = &[
+        &["SET", "pipe:a", "1"],
+        &["GET", "pipe:a"],
+        &["INCR", "pipe:a"],
+        &["GET", "pipe:missing"],
+        &["DEL", "pipe:missing"],
+        &["SETNX", "pipe:a", "x"],
+        &["STRLEN", "pipe:a"],
+        &["MULTI"],
+        &["SET", "pipe:b", "2"],
+        &["GET", "pipe:b"],
+        &["EXEC"],
+        &["EVAL", "return redis.call('INCR', KEYS[1])", "1", "pipe:a"],
+        &["EVAL", "return redis.call('GET', KEYS[1])", "1", "pipe:b"],
+        &["PING"],
+        &["ECHO", "hi"],
+        &["MGET", "pipe:a", "pipe:b", "pipe:missing"],
+    ];
+    let expected: &[u8] = b"+OK\r\n$1\r\n1\r\n:2\r\n$-1\r\n:0\r\n:0\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n\
+*2\r\n+OK\r\n$1\r\n2\r\n:3\r\n$1\r\n2\r\n+PONG\r\n$2\r\nhi\r\n*3\r\n$1\r\n3\r\n$1\r\n2\r\n$-1\r\n";
+    let batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
+    let last_write = resp(&["INCR", "pipe:a"]);
+    for aof in [true, false] {
+        let program = CompiledProgram::from_environment();
+        let lease = support::lease_port();
+        let (child, mut control) = start(&program, &lease, aof);
+        let mut client = peer(lease.port(), &child);
+        client.write_all(&batch).unwrap();
+        expect_replies(&mut client, expected, &format!("mixed pipeline, appendonly {aof}"));
+        if aof {
+            assert_eq!(occurrences(&increment_bytes(&program), &last_write), 2,
+                "both INCR records must be in the file when the pipeline's replies arrive");
+        }
+        drop(client);
+        stop(child, &mut control);
+    }
 }
