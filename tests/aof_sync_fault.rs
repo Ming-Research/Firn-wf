@@ -54,7 +54,7 @@ use super::*;
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const POLL_LIMIT: Duration = Duration::from_secs(10);
 /// Two of firn's and Redis's once-a-second syncs and a margin, so the seed is
@@ -110,7 +110,7 @@ impl Device {
     }
 
     fn run(&self, action: &str) {
-        let output = support::run_command(Command::new("sudo").arg("-n").arg(&self.script).arg(action));
+        let output = support::run_command(support::command("sudo").arg("-n").arg(&self.script).arg(action));
         assert!(output.status.success(), "device {action}: {output:?}");
     }
 }
@@ -122,7 +122,7 @@ struct HealOnPanic<'a>(&'a Device);
 impl Drop for HealOnPanic<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            let _ = Command::new("sudo").arg("-n").arg(&self.0.script).arg("heal").status();
+            let _ = support::command("sudo").arg("-n").arg(&self.0.script).arg("heal").status();
         }
     }
 }
@@ -257,7 +257,7 @@ fn fail(device: &Device, client: &mut TcpStream) -> Failure {
 fn spawn_redis(binary: &Path, directory: &Path, log: &Path) -> (ProgramChild, u16) {
     let port_lease = support::lease_port();
     let port = port_lease.port().to_string();
-    let mut command = Command::new(binary);
+    let mut command = support::command(binary);
     command.current_dir(directory)
         .args(["--port", port.as_str(), "--bind", "127.0.0.1", "--save", "", "--appendonly", "yes",
             "--appendfilename", "sync.aof", "--appendfsync", "everysec", "--dir"])
@@ -530,9 +530,9 @@ fn padding(size: u64) -> String {
 /// page: then a page end is also a block end, and a write starting there
 /// dirties neither the page nor the block before it.
 fn check_page_layout(device: &Device) {
-    let page = support::run_command(Command::new("getconf").arg("PAGESIZE"));
+    let page = support::run_command(support::command("getconf").arg("PAGESIZE"));
     let page = String::from_utf8_lossy(&page.stdout).trim().to_string();
-    let block = support::run_command(Command::new("stat").args(["-f", "-c", "%S"]).arg(&device.mount));
+    let block = support::run_command(support::command("stat").args(["-f", "-c", "%S"]).arg(&device.mount));
     let block = String::from_utf8_lossy(&block.stdout).trim().to_string();
     eprintln!("page size {page}, filesystem block size {block}");
     assert_eq!(page, PAGE.to_string(), "the case assumes {PAGE}-byte pages");
@@ -702,7 +702,7 @@ fn restart_readiness_keeps_one_connection_while_loading() {
             stream.write_all(reply).expect("restart PING reply");
         }
     });
-    let child = ProgramChild::spawn(Command::new("/bin/sh").args(["-c", "exec sleep 30"])
+    let child = ProgramChild::spawn(support::command("/bin/sh").args(["-c", "exec sleep 30"])
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))
         .expect("spawn loading witness");
     let (child, client) = answering(child, port, "loading witness").expect("PONG after LOADING");
@@ -867,7 +867,7 @@ impl<'a> IsolatedIncrement<'a> {
         // base creation and opens this exact inode on both servers.
         std::fs::write(directory.join("sync.aof.manifest"), "file sync.aof.1.incr.aof seq 1 type i\n").unwrap();
         let fixture = Self { device, old, source, child: None, bound: true };
-        let result = support::run_command(Command::new("sudo").arg("-n").arg(&device.script)
+        let result = support::run_command(support::command("sudo").arg("-n").arg(&device.script)
             .arg("bind").arg(&fixture.source).arg(&fixture.old));
         assert!(result.status.success(), "bind isolated old increment: {result:?}");
         let old = std::fs::metadata(&fixture.old).unwrap();
@@ -905,7 +905,7 @@ impl<'a> IsolatedIncrement<'a> {
     fn finish(&mut self, client: &mut TcpStream) {
         self.device.run("heal");
         stop(client, self.child.take().unwrap());
-        let result = support::run_command(Command::new("sudo").arg("-n").arg(&self.device.script)
+        let result = support::run_command(support::command("sudo").arg("-n").arg(&self.device.script)
             .arg("unbind").arg(&self.old));
         assert!(result.status.success(), "unbind isolated old increment: {result:?}");
         self.bound = false;
@@ -920,9 +920,9 @@ impl Drop for IsolatedIncrement<'_> {
         }
         // Avoid another panic during cleanup; failures remain in the root
         // registry so the workflow teardown can release the binding.
-        let healed = Command::new("sudo").arg("-n").arg(&self.device.script).arg("heal").status();
+        let healed = support::command("sudo").arg("-n").arg(&self.device.script).arg("heal").status();
         drop(self.child.take());
-        let result = Command::new("sudo").arg("-n").arg(&self.device.script)
+        let result = support::command("sudo").arg("-n").arg(&self.device.script)
             .arg("unbind").arg(&self.old).status();
         let unbound = result.is_ok_and(|status| status.success());
         if !unbound {
@@ -1157,7 +1157,7 @@ impl RewriteServer {
     fn start(&self) -> (ProgramChild, TcpStream) {
         if let Some(binary) = &self.redis {
             let lease = support::lease_port();
-            let mut command = Command::new(binary);
+            let mut command = support::command(binary);
             command.current_dir(self.directory())
                 .args(["--port", &lease.port().to_string(), "--bind", "127.0.0.1",
                     "--save", "", "--appendonly", "yes", "--appendfilename", "sync.aof",
@@ -1176,7 +1176,7 @@ impl RewriteServer {
 }
 
 fn rewrite_signal(pid: u32, signal: &str) {
-    let output = support::run_command(Command::new("/bin/kill")
+    let output = support::run_command(support::command("/bin/kill")
         .arg(signal).arg(pid.to_string()));
     assert!(output.status.success(), "{signal} {pid}: {output:?}");
 }
@@ -1202,7 +1202,7 @@ impl PausedRewrite {
 
 impl Drop for PausedRewrite {
     fn drop(&mut self) {
-        let _ = Command::new("/bin/kill").arg("-CONT").arg(self.0.to_string()).status();
+        let _ = support::command("/bin/kill").arg("-CONT").arg(self.0.to_string()).status();
     }
 }
 
@@ -1210,7 +1210,7 @@ struct FullRewriteDisk<'a>(&'a Device);
 
 impl Drop for FullRewriteDisk<'_> {
     fn drop(&mut self) {
-        let _ = Command::new("sudo").arg("-n").arg(&self.0.script).arg("unfill").status();
+        let _ = support::command("sudo").arg("-n").arg(&self.0.script).arg("unfill").status();
     }
 }
 
@@ -1232,7 +1232,7 @@ impl RewriteTrace {
     fn attach_fault(pid: u32, target: &Path, syscalls: &str, errno: Option<&str>, label: &str) -> Self {
         let log = std::env::temp_dir().join(format!(
             "firn-rewrite-fault-{label}-{pid}-{}.trace", std::process::id()));
-        let mut command = Command::new("sudo");
+        let mut command = support::command("sudo");
         // The root-owned watchdog also bounds a tracer if cleanup itself
         // loses sudo access; --foreground preserves our separate group.
         command.args(["-n", "timeout", "--foreground", "--signal=KILL", "40s",
@@ -1282,7 +1282,7 @@ impl RewriteTrace {
             if child.try_wait().ok().flatten().is_none() {
                 // sudo, timeout and strace own this separate group, never
                 // the server's. An unprivileged Child::kill is insufficient.
-                let _ = support::output_within(Command::new("sudo")
+                let _ = support::output_within(support::command("sudo")
                     .args(["-n", "/bin/kill", signal, "--"])
                     .arg(format!("-{}", child.id())), Duration::from_secs(2));
             }

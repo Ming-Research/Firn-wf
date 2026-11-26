@@ -12,7 +12,7 @@
 
 use super::*;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const STREAM_AOF: &str = "appendonly.aof";
 
@@ -24,7 +24,7 @@ struct Server {
 fn redis(directory: &Path, aof: bool) -> Server {
     let lease = support::lease_port();
     let port = lease.port().to_string();
-    let mut command = Command::new(support::redis_oracle());
+    let mut command = support::command(support::redis_oracle());
     command.current_dir(directory)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .args(["--port", &port, "--bind", "127.0.0.1", "--save", "",
