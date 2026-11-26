@@ -46,3 +46,11 @@ Admission reads maxclients and counts the new client in one atomic statement, an
 At startup and on CONFIG SET maxclients, firn raises the soft open-files limit to maxclients plus 32 as Redis does, lowers maxclients if refused, and refuses a CONFIG SET it cannot support.
 - replaced: leaving the operating system's file-descriptor limit unchanged was on main; the owner changed it, because Whitefoot now reads and raises the soft limit, and an operator had to set ulimit -n before every start.
 - rejected: an agent proposed adjusting the limit only at startup and letting CONFIG SET maxclients accept any value; the owner rejected it, because a limit raised while firn runs could then exceed the descriptors, where Redis refuses it.
+
+### decision config-set-maxclients-at-the-descriptor-floor-serves-on
+At an open-files limit of 32 or less, CONFIG SET maxclients answers Redis's error ending try with 0, keeps the old value, logs no Exiting line and serves on, where Redis exits with status 1.
+- rejected: an agent proposed doing as Redis does, logging Exiting and stopping in order with status 1; the owner rejected it, because one CONFIG SET would then end the whole service, and a stop with a status from the command path is about half a day more.
+
+### decision config-get-dir-reads-back-the-written-path
+CONFIG GET dir returns the absolute directory the configuration last wrote, a relative dir joined to the one before it and cleaned by name, and returns nothing while no absolute dir was written.
+- rejected: an agent proposed leaving CONFIG GET dir unsupported until Whitefoot can query the current directory's path; the owner rejected it, because a configuration with dir would then not read back as it does in Redis until a Whitefoot release.
