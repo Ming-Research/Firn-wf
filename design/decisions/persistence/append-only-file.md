@@ -18,4 +18,4 @@ When the append-only file does not load, firn logs Fatal error loading the DB, c
 
 ### decision aof-replay-leaves-out-two-redis-lines
 Replaying the append-only file, firn does not log Redis's Revert incomplete MULTI/EXEC transaction line or its Error truncating the AOF file line, and the manual lists both as differences from Redis.
-- rejected: an agent proposed writing both lines, with a replay-result field that tells an incomplete block from a clean one and a line where cutting the tail fails; the owner rejected it, because it changes persistence's public structure and callers and needs two tests against Redis, half a day more.
+- rejected: an agent proposed writing both, with a replay-result field that tells an incomplete block from a clean one and a line where cutting the tail fails; the owner rejected it, because it changes persistence's public structure and callers, needs two tests against Redis and takes half a day.
