@@ -354,7 +354,7 @@ fn reply_read_failures_include_child_exit_or_forced_stop_in_the_message() {
     }
     for naturally_exited in [true, false] {
         let lease = support::lease_port();
-        let mut command = std::process::Command::new("/bin/sh");
+        let mut command = support::command("/bin/sh");
         let script = if naturally_exited {
             "echo OUT-MARK; echo ERR-MARK >&2; exit 7"
         } else {
@@ -412,7 +412,7 @@ fn reply_read_failures_include_child_exit_or_forced_stop_in_the_message() {
 #[should_panic(expected = "already exited: no; killed by harness")]
 fn reply_read_failure_carries_child_diagnostics_in_the_panic_payload() {
     let lease = support::lease_port();
-    let mut command = std::process::Command::new("/bin/sh");
+    let mut command = support::command("/bin/sh");
     command.args(["-c", "sleep 30"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
