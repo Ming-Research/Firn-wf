@@ -854,12 +854,14 @@ struct Segment {
   number: u64;
   state: u64;
   path: Box<Slots<u8>>;
+  line: Box<Slots<u8>>;
 }
 
 fn segment_make(start: u64, number: u64, state: u64) -> made: Segment pure {
-  doc "A segment that holds no path: state 0 says the text ended, 2 that a failure was reported.";
+  doc "A segment that holds no path and no line: state 0 says the text ended, 2 that a failure was reported.";
   let none = box_slots_new::<u8>(capacity: 0_u64);
-  return Segment(start: start, number: number, state: state, path: move none);
+  let blank = box_slots_new::<u8>(capacity: 0_u64);
+  return Segment(start: start, number: number, state: state, path: move none, line: move blank);
 }
 
 fn config_halt(options: &Options, factory: &HandleFactory, output: &OutputStream, line: &[u8], number: u64, reason: &[u8]) -> result: unit reads(line), reads(reason), writes(options), writes(factory), writes(output) waits {
@@ -1007,7 +1009,7 @@ fn config_check_logfile(options: &Options, factory: &HandleFactory, paths: &Host
 }
 
 fn config_lines(options: &Options, source: &[u8], first: u64, line_number: u64, invalid_line: u64, factory: &HandleFactory, paths: &HostPaths, cwd: &DirectoryRead, cwd_write: &DirectoryWrite, output: &OutputStream) -> segment: Segment reads(source), reads(paths), writes(options), writes(factory), writes(cwd), writes(cwd_write), writes(output) waits {
-  doc "Processes the lines of one configuration text from the byte first, numbered line_number, until the text ends, a line includes another file, which returns the path and where to go on, or a line fails after its frame is written. Source NUL terminates the text as Redis's strlen does. Fatal errors quote the untouched line after Redis's four-byte trim, with physical line numbers starting at one.";
+  doc "Processes the lines of one configuration text from the byte first, numbered line_number, until the text ends, a line includes another file, which returns the path, the line itself and its number, and where to go on, or a line fails after its frame is written. Source NUL terminates the text as Redis's strlen does. Fatal errors quote the untouched line after Redis's four-byte trim, with physical line numbers starting at one.";
   let length = source^.len;
   let start = imin(first, length);
   let number = line_number;
@@ -1120,8 +1122,8 @@ fn config_lines(options: &Options, source: &[u8], first: u64, line_number: u64, 
                 set resume = end + 1_u64;
               }
             }
-            let next_number = number +wrap 1_u64;
-            return Segment(start: resume, number: next_number, state: 1_u64, path: move path);
+            let quoted = pkg::bytes::copy_bytes(input: &decoded.inner[0_u64..size], start: 0_u64, length: size);
+            return Segment(start: resume, number: number, state: 1_u64, path: move path, line: move quoted);
           }
           if kind == 11_u64 {
             if count != 2_u64 {
@@ -1188,17 +1190,14 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
         set options^.valid = False();
         return unit;
       }
-      let parent = ConfigFrame(bytes: move current, start: segment.start, number: segment.number);
+      let resume_number = segment.number +wrap 1_u64;
+      let parent = ConfigFrame(bytes: move current, start: segment.start, number: resume_number);
       if frames.inner.len < frames.inner.cap {
         place_back(window: &frames.inner, value: move parent);
       } else {
         let dropped = move parent;
-        let message = config_buffer();
-        config_append(buffer: &message, source: &config_title[0_u64..48_u64]);
-        config_append(buffer: &message, source: &config_nesting[0_u64..30_u64]);
-        config_byte(buffer: &message, byte: 10_u8);
-        config_emit(factory: factory, output: output, text: &message);
-        set options^.valid = False();
+        let quoted_length = segment.line.inner.len;
+        config_halt(options: options, factory: factory, output: output, line: &segment.line.inner[0_u64..quoted_length], number: segment.number, reason: &config_nesting[0_u64..30_u64]);
         return unit;
       }
       set current = move text.bytes;

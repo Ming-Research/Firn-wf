@@ -77,8 +77,9 @@ adds no line, as in Redis. These differences from Redis remain:
   the working directory.
 - A configuration file given by a relative path is named as given in the
   line that reports it cannot be opened; Redis names its absolute path.
-- An `include` nested more than 32 deep is refused in the fatal frame with
-  `firn: includes nest too deeply`; Redis sets no limit.
+- An `include` nested more than 32 deep is refused in the fatal frame, which
+  names the line of that `include` and the reason `firn: includes nest too
+  deeply`; Redis sets no limit.
 - A `logfile` whose last component is a symbolic link is refused where Redis
   follows the link.
 
