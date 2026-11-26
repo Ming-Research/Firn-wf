@@ -5,7 +5,7 @@
 use super::*;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn servers() -> Vec<(&'static str, PathBuf)> {
     let mut servers = vec![("firn", PathBuf::from(std::env::var_os("FIRN").expect("FIRN")))];
@@ -32,7 +32,7 @@ fn holds_cap_sys_resource(process: &str) -> bool {
 /// that it took effect. One worker and one driver keep the descriptors the runtime itself needs well below
 /// a limit of 32, as in the accept-error cases; Redis ignores the settings.
 fn start_limited(binary: &PathBuf, directory: &std::path::Path, hard: u32, soft: u32, arguments: &[&str]) -> ProgramChild {
-    let mut command = Command::new("/bin/sh");
+    let mut command = support::command("/bin/sh");
     command.current_dir(directory)
         .args(["-c", "ulimit -Sn \"$2\" && ulimit -Hn \"$1\" && shift 2 && exec \"$@\"", "sh"])
         .arg(hard.to_string()).arg(soft.to_string());
@@ -194,7 +194,7 @@ fn config_set_maxclients_with_no_room_left_answers_the_error_and_does_not_claim_
     let pid = child.id();
     assert_without_capability("firn", pid);
     let mut client = connect_when_ready(lease.port(), &child);
-    let status = Command::new("prlimit").arg("--nofile=24:24").arg("--pid").arg(pid.to_string())
+    let status = support::command("prlimit").arg("--nofile=24:24").arg("--pid").arg(pid.to_string())
         .status().expect("run prlimit");
     assert!(status.success(), "prlimit: {status:?}");
     client.write_all(&resp(&["CONFIG", "SET", "maxclients", "100"])).expect("set maxclients");

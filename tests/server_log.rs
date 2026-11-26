@@ -4,7 +4,7 @@
 use super::*;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Whether a line has Redis's log form: `pid:role dd Mon yyyy hh:mm:ss.mmm mark message`.
 pub fn is_log_line(line: &str) -> bool {
@@ -43,7 +43,7 @@ fn servers() -> Vec<(&'static str, PathBuf)> {
 /// Starts the subject with two drivers: none of these cases depends on how many the host has, and a
 /// server that starts one ring per core fails to start when the host has no rings left for it.
 fn start(binary: &Path, directory: &Path, arguments: &[&str]) -> ProgramChild {
-    let mut command = Command::new(binary);
+    let mut command = support::command(binary);
     command.current_dir(directory).args(arguments.iter().map(OsString::from))
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .env("TZ", "Asia/Kolkata").env("WF_DRIVERS", "2").env_remove("WF_REQUIRE_WINDOWS_IOCP");
@@ -60,7 +60,7 @@ fn stop(port: u16, child: ProgramChild) -> std::process::Output {
 
 /// The local minute as `dd Mon yyyy hh:mm` in the zone the subjects run in.
 fn minute() -> String {
-    let output = Command::new("date").env("TZ", "Asia/Kolkata").env("LC_ALL", "C").arg("+%d %b %Y %H:%M").output().expect("date");
+    let output = support::run_command(support::command("date").env("TZ", "Asia/Kolkata").env("LC_ALL", "C").arg("+%d %b %Y %H:%M"));
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 

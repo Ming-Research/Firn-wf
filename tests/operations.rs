@@ -226,11 +226,11 @@ fn guide_checker_rejects_wrong_exit_reply_and_missing_marker() {
     assert!(!matches_output(&expected_error, &shortened_error), "shortened refusal frame must fail");
     let logged = blocks("```sh firn-check exit=0 stdout-contains=bye bye...\ntrue\n```\n").pop().unwrap();
     let line = "1234:M 25 Nov 2026 12:58:40.123 # firn is now ready to exit, bye bye...\n";
-    let good = support::run_command(Command::new("/bin/sh").args(["-c", &format!("printf '{line}'")]));
+    let good = support::run_command(support::command("/bin/sh").args(["-c", &format!("printf '{line}'")]));
     assert!(matches_output(&logged, &good), "a log line holding the text must pass");
-    let absent = support::run_command(Command::new("/bin/sh").args(["-c", "printf ''"]));
+    let absent = support::run_command(support::command("/bin/sh").args(["-c", "printf ''"]));
     assert!(!matches_output(&logged, &absent), "missing log text must fail");
-    let foreign = support::run_command(Command::new("/bin/sh")
+    let foreign = support::run_command(support::command("/bin/sh")
         .args(["-c", &format!("printf '{line}stray bye bye...\\n'")]));
     assert!(!matches_output(&logged, &foreign), "a stdout line that is no log line must fail");
     let both = blocks("```text untested-example\nnot run\n```\n```sh firn-check exit=0\ntrue\n```\n");
