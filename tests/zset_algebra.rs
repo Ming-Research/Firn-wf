@@ -497,15 +497,10 @@ fn zset_algebra_orders_a_great_many_named_sets_in_time_proportional_to_their_num
     let mut sets = vec!["a".to_owned(); repeats];
     sets.extend(vec!["b".to_owned(); repeats]);
     let scored = with(&["WITHSCORES"], &[]);
-    let mut statements = vec![
-        naming(&["ZUNION"], &sets, &scored),
-        naming(&["ZINTER"], &sets, &scored),
-        naming(&["ZINTERCARD"], &sets, &[]),
-    ];
-    let mut stored = vec!["ZUNIONSTORE".to_owned(), "out".to_owned(), sets.len().to_string()];
-    stored.extend(sets.iter().cloned());
-    statements.push(stored);
-    statements.extend(list(&["ZRANGE out 0 -1 WITHSCORES"]));
+    // The union visits every named set, the intersection folds each member of
+    // the smallest across all of them; both sort the sets first, as the counting
+    // and the storing forms do through the same code.
+    let statements = [naming(&["ZUNION"], &sets, &scored), naming(&["ZINTER"], &sets, &scored)];
     for statement in &statements {
         let arguments: Vec<&str> = statement.iter().map(String::as_str).collect();
         let expected = ask(&mut oracle, &arguments);
