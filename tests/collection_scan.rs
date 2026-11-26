@@ -1126,16 +1126,19 @@ fn stepped_replies_carry_binary_and_large_elements_unchanged() {
 /// (Redis 7.2.16 scanCallback: ld2string(..., LD_STR_AUTO) of the dictionary's
 /// double, and "inf" or "-inf" for the infinities), so the text has 17
 /// significant digits with trailing zeros dropped, an exponent form from 1e17
-/// up and below 1e-4, and a sign on zero. Each expected text is the %.17g of
-/// the double the decimal rounds to, worked out digit by digit.
+/// up and below 1e-4. Each expected text is the %.17g of the double the decimal
+/// rounds to, worked out digit by digit. Negative zero is not offered: a sorted
+/// set of firn keeps it as zero whatever its size (kept_score), which Redis does
+/// only for a listpack, so a stored score is never -0, whichever command reads
+/// it (research/investigations/firn/DESIGN.md).
 #[test]
 fn stepped_zscan_writes_17_significant_digit_scores() {
     for protocol in [2, 3] {
         let (child, mut client) = start(protocol);
-        let special: [(&str, &str, &str); 12] = [
+        let special: [(&str, &str, &str); 11] = [
             ("tenth", "0.1", "0.10000000000000001"), ("e16", "1e16", "10000000000000000"), ("e17", "1e17", "1e+17"),
             ("tiny", "1e-5", "1.0000000000000001e-05"), ("normalmin", "2.2250738585072014e-308", "2.2250738585072014e-308"), ("huge", "1e308", "1e+308"),
-            ("pinf", "inf", "inf"), ("ninf", "-inf", "-inf"), ("negzero", "-0", "-0"),
+            ("pinf", "inf", "inf"), ("ninf", "-inf", "-inf"),
             ("whole", "100", "100"), ("negative", "-1.5", "-1.5"), ("wide", "123456789012345678", "1.2345678901234568e+17"),
         ];
         for index in 0..200 {
@@ -1145,9 +1148,9 @@ fn stepped_zscan_writes_17_significant_digit_scores() {
             assert_eq!(request(&mut client, &["ZADD", "scores", score, member]), b":1\r\n");
         }
         let (all, sizes) = scan_all(&mut client, "ZSCAN", "scores", &["COUNT", "7"]);
-        assert!(sizes.len() > 10, "a sorted set of 212 members steps at COUNT 7");
+        assert!(sizes.len() > 10, "a sorted set of 211 members steps at COUNT 7");
         let found: std::collections::HashMap<Vec<u8>, Vec<u8>> = all.chunks(2).map(|pair| (pair[0].clone(), pair[1].clone())).collect();
-        assert_eq!(found.len(), 212);
+        assert_eq!(found.len(), 211);
         for (member, _, shown) in special {
             assert_eq!(String::from_utf8_lossy(&found[member.as_bytes()]), shown, "score of {member}");
         }
