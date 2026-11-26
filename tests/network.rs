@@ -18,6 +18,8 @@ mod collection_scan;
 mod pubsub;
 mod durability;
 mod streams;
+mod zset_algebra;
+mod zset_algebra_adversarial;
 mod accept_errors;
 
 use std::io::{Read, Write};

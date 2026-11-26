@@ -134,6 +134,22 @@ fn rewrite_sequence_transfers_stores_and_expiry_metadata() {
         (&["SDIFFSTORE", "out", "s2", "s1"], ":2\r\n", 1),
         (&["SINTERSTORE", "out", "s1", "s2"], ":0\r\n", 1),
         (&["SINTERSTORE", "out", "s1", "s2"], ":0\r\n", 0),
+        (&["ZADD", "zs1", "1", "a", "2", "b", "3", "c"], ":3\r\n", 1),
+        (&["ZADD", "zs2", "1", "a"], ":1\r\n", 1),
+        (&["ZUNIONSTORE", "zout", "2", "zs1", "zs2"], ":3\r\n", 1),
+        (&["ZUNIONSTORE", "zout", "2", "zs1", "zs2"], ":3\r\n", 1),
+        (&["ZINTERSTORE", "zout", "2", "zs1", "zs2"], ":1\r\n", 1),
+        (&["ZDIFFSTORE", "zout", "2", "zs1", "zs2"], ":2\r\n", 1),
+        (&["ZRANGESTORE", "zout", "zs1", "0", "0"], ":1\r\n", 1),
+        (&["ZRANGESTORE", "zout", "zs1", "5", "9"], ":0\r\n", 1),
+        (&["ZRANGESTORE", "zout", "zs1", "5", "9"], ":0\r\n", 0),
+        (&["ZINTERSTORE", "zout", "2", "zs1", "missing"], ":0\r\n", 0),
+        (&["ZINTERCARD", "2", "zs1", "zs2"], ":1\r\n", 0),
+        (&["ZDIFF", "2", "zs1", "zs2"], "*2\r\n$1\r\nb\r\n$1\r\nc\r\n", 0),
+        (&["ZRANDMEMBER", "zs1", "0"], "*0\r\n", 0),
+        (&["ZMPOP", "1", "zs1", "MAX", "COUNT", "0"], "-ERR count should be greater than 0\r\n", 0),
+        (&["ZMPOP", "2", "missing", "zs2", "MIN"], "*2\r\n$3\r\nzs2\r\n*1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n", 1),
+        (&["ZMPOP", "2", "missing", "zs2", "MIN"], "*-1\r\n", 0),
     ];
     for (args, reply, delta) in cases { expect(&mut client, args, reply, *delta); }
     drop(client);
