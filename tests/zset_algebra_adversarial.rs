@@ -506,3 +506,42 @@ fn zunion_naming_one_set_a_great_many_times_holds_memory_for_the_result_only() {
     stop(firn);
     stop(oracle);
 }
+
+/// A count at least the size of a sorted set draws every member. Redis then
+/// walks the set rather than drawing, so for a set it keeps as a listpack the
+/// order of the reply is the same on every call: where Redis answers one set
+/// the same way five times in a row, firn must answer as it does.
+#[test]
+fn zrandmember_of_a_whole_small_set_answers_in_the_order_redis_does() {
+    let directory = fixture_directory();
+    let program = CompiledProgram::from_environment();
+    let mut oracle = spawn_redis(directory.path(), 1);
+    let mut firn = spawn_firn(&program, 1);
+    let mut stable = 0;
+    for version in [2_u8, 3] {
+        let hello = format!("HELLO {version}");
+        run("protocol", &mut firn, &mut oracle, &steps(0, &[hello.as_str(), "FLUSHALL"]));
+        for (key, size) in [("four", 4_usize), ("twenty", 20), ("hundred", 100)] {
+            let mut add = format!("ZADD {key}");
+            for member in 0..size {
+                // Pairs of equal scores, so that the order of ties is seen too.
+                add.push_str(&format!(" {} member{member}", member / 2));
+            }
+            run("fill", &mut firn, &mut oracle, &steps(0, &[add.as_str()]));
+            for count in [size, size + 1, 1000] {
+                for scores in ["", " WITHSCORES"] {
+                    let command = format!("ZRANDMEMBER {key} {count}{scores}");
+                    let first = oracle.say(0, &command);
+                    if (0..4).all(|_| oracle.say(0, &command) == first) {
+                        stable += 1;
+                        let got = firn.say(0, &command);
+                        assert_eq!(text(&got), text(&first), "RESP{version}: {command:?} draws the whole set in the order Redis walks it");
+                    }
+                }
+            }
+        }
+    }
+    assert!(stable > 0, "Redis answered no whole-set draw the same way five times");
+    stop(firn);
+    stop(oracle);
+}
