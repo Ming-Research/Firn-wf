@@ -172,7 +172,7 @@ fn zset_negative_zero_scores_answer_as_redis_does() {
             "ZRANDMEMBER zn 5 WITHSCORES", "ZMPOP 1 zn MIN", "ZADD zn -0 m", "ZMPOP 1 zn MAX COUNT 3", "ZMPOP 1 o1 MIN",
             "ZMPOP 1 two MAX COUNT 2", "ZMPOP 1 two MIN COUNT 5", "ZRANGE o3 0 -1 WITHSCORES", "ZRANGE o6 0 -1 WITHSCORES",
             "FLUSHALL", "ZADD z0 0 m", "ZADD big 0 m 1 q 2 r", "ZADD big2 0 m 1 q 2 r 3 s 4 t",
-            "ZADD tx 0 m 1 q", "ZADD ty 0 m 2 q", "ZADD tc 5 q",
+            "ZADD tx 0 m 1 q", "ZADD ty 0 m 2 q", "ZADD tc 5 q", "ZADD pz 0 m", "ZADD pp 5 m", "ZADD pn -5 m",
         ]));
         // A zero score under a negative weight, joined with a zero of the other sign by each aggregate,
         // visiting the sets in each order (the sizes of z0, big and big2 are 1, 3 and 4).
@@ -183,6 +183,15 @@ fn zset_negative_zero_scores_answer_as_redis_does() {
                     let count = sets.split(' ').count();
                     all.push((0, format!("{operation} neg {count} {sets} WEIGHTS {weights} AGGREGATE {aggregate}")));
                     all.extend(steps(0, &["ZSCORE neg m", "ZRANGE neg 0 -1 WITHSCORES"]));
+                }
+                // A zero under a negative weight against a score that is not zero: MIN keeps the zero
+                // of Redis's own sign when it is the lesser or the equal, SUM and MAX do not.
+                for (sets, weights) in [("pz pp", "-1 1"), ("pp pz", "1 -1"), ("pz pp", "-1 2"), ("pp pz", "2 -1"), ("pz pn", "-1 1"),
+                    ("pn pz", "1 -1"), ("pn pz", "-1 -1"), ("pz pp", "1 1"), ("pz pp pn", "-1 1 1"), ("pp pn pz", "1 -1 -1")] {
+                    let count = sets.split(' ').count();
+                    all.push((0, format!("{operation} neg {count} {sets} WEIGHTS {weights} AGGREGATE {aggregate}")));
+                    all.extend(steps(0, &["ZSCORE neg m", "ZRANGE neg 0 -1 WITHSCORES"]));
+                    all.push((0, format!("{} {count} {sets} WEIGHTS {weights} AGGREGATE {aggregate} WITHSCORES", operation.trim_end_matches("STORE"))));
                 }
                 // Sets of the same size are visited in the order they are named; a zero of either sign
                 // meets the other under every aggregate.
