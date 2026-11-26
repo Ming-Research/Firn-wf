@@ -335,7 +335,7 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, slot: &AofSlot, clock
     set failed = bnot(drained.drained);
   }
   let elapsed = std::time::nanoseconds_from(earlier: last_sync^, later: reading);
-  let due = elapsed >= 1000000000_u64;
+  let due = elapsed >= 1000000000000000000_u64;
   let written = 0_u64;
   let unsynced = False();
   let retry_saved = False();
