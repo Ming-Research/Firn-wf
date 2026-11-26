@@ -1,0 +1,213 @@
+diff --git a/tests/pubsub.rs b/tests/pubsub.rs
+index 139a6aa..ca4e96c 100644
+--- a/tests/pubsub.rs
++++ b/tests/pubsub.rs
+@@ -29,6 +29,112 @@ fn start_for(connections: usize, drivers: &str, limit: Duration) -> (ProgramChil
+     (child, stream, port)
+ }
+ 
++/// Experiment only (research/experiments/network-read-failures): reads a
++/// large bulk body with one-second receive bounds, prints how long the read
++/// took and its longest wait for a byte, and for every second without a byte
++/// prints the state of the server's sockets, rings and threads.
++pub(super) mod stall {
++    use std::io::Read;
++    use std::net::TcpStream;
++    use std::sync::Mutex;
++    use std::time::{Duration, Instant};
++
++    /// The server's process id and port, set by the case that is watched.
++    pub static SERVER: Mutex<Option<(u32, u16)>> = Mutex::new(None);
++
++    pub fn read_watched(stream: &mut TcpStream, body: &mut [u8]) {
++        let start = Instant::now();
++        stream.set_read_timeout(Some(Duration::from_secs(1))).expect("bound the watched read");
++        let mut read = 0;
++        let mut longest = Duration::ZERO;
++        let mut waited = 0_u32;
++        let mut last = Instant::now();
++        while read < body.len() {
++            match stream.read(&mut body[read..]) {
++                Ok(0) => panic!("pub/sub bulk body: closed after {read} bytes"),
++                Ok(count) => {
++                    let now = Instant::now();
++                    longest = longest.max(now - last);
++                    last = now;
++                    read += count;
++                    waited = 0;
++                }
++                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
++                Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
++                    waited += 1;
++                    eprintln!(
++                        "STALL second={waited} read={read} of={} since_read_start_ms={}",
++                        body.len(),
++                        start.elapsed().as_millis()
++                    );
++                    dump(waited == 1 || waited == 10);
++                    assert!(waited < 25, "pub/sub bulk body: no byte for 25 s after {read} bytes");
++                }
++                Err(error) => panic!("pub/sub bulk body: {error}"),
++            }
++        }
++        stream.set_read_timeout(Some(Duration::from_secs(10))).expect("restore the read bound");
++        eprintln!(
++            "BODY bytes={} ms={} longest_wait_ms={}",
++            body.len(),
++            start.elapsed().as_millis(),
++            longest.as_millis()
++        );
++    }
++
++    fn show(title: &str, text: &str, lines: usize) {
++        eprintln!("DUMP {title}");
++        for line in text.lines().take(lines) {
++            eprintln!("DUMP   {line}");
++        }
++    }
++
++    /// The server's TCP sockets as the kernel reports them, each thread's
++    /// state and system call, and each io_uring's queues.
++    pub fn dump(counters: bool) {
++        let Some((pid, port)) = *SERVER.lock().expect("server") else {
++            eprintln!("DUMP no server named");
++            return;
++        };
++        let port_text = format!(":{port}");
++        match std::process::Command::new("ss")
++            .args(["-tinm", "sport", "=", &port_text, "or", "dport", "=", &port_text])
++            .output()
++        {
++            Ok(output) => show("ss", &String::from_utf8_lossy(&output.stdout), 40),
++            Err(error) => eprintln!("DUMP ss failed: {error}"),
++        }
++        if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
++            for task in tasks.flatten() {
++                let path = task.path();
++                let read = |name: &str| std::fs::read_to_string(path.join(name)).unwrap_or_else(|error| format!("unreadable: {error}"));
++                let stat = read("stat");
++                let state = stat.rsplit(") ").next().and_then(|rest| rest.split(' ').next()).unwrap_or("?").to_owned();
++                eprintln!(
++                    "DUMP thread {} comm={} state={state} syscall={} wchan={}",
++                    task.file_name().to_string_lossy(),
++                    read("comm").trim(),
++                    read("syscall").trim(),
++                    read("wchan").trim()
++                );
++            }
++        }
++        if let Ok(descriptors) = std::fs::read_dir(format!("/proc/{pid}/fdinfo")) {
++            for descriptor in descriptors.flatten() {
++                let text = std::fs::read_to_string(descriptor.path()).unwrap_or_default();
++                if text.contains("SqHead") || text.contains("SqMask") {
++                    show(&format!("io_uring fd {}", descriptor.file_name().to_string_lossy()), &text, 80);
++                }
++            }
++        }
++        if counters {
++            for file in ["/proc/net/sockstat", "/proc/net/netstat"] {
++                show(file, &std::fs::read_to_string(file).unwrap_or_default(), 6);
++            }
++        }
++    }
++}
++
+ fn send(stream: &mut TcpStream, commands: &[&[&str]]) {
+     let bytes: Vec<u8> = commands.iter().flat_map(|command| resp(command)).collect();
+     stream.write_all(&bytes).expect("send pub/sub command batch");
+@@ -66,7 +172,11 @@ pub(super) fn frame(stream: &mut TcpStream) -> Vec<u8> {
+     match bytes[0] {
+         b'$' | b'=' | b'!' if count >= 0 => {
+             let mut body = vec![0; count as usize + 2];
+-            stream.read_exact(&mut body).expect("pub/sub bulk body");
++            if body.len() > 1 << 20 {
++                stall::read_watched(stream, &mut body);
++            } else {
++                stream.read_exact(&mut body).expect("pub/sub bulk body");
++            }
+             assert!(body.ends_with(b"\r\n"), "unterminated bulk body");
+             bytes.extend(body);
+         }
+@@ -1010,6 +1120,7 @@ fn soft_output_limit_closes_a_subscriber_whose_backlog_stays_over_8_mib_for_60_s
+ #[test]
+ fn soft_output_limit_interval_restarts_after_the_backlog_drains() {
+     let (child, mut publisher, port) = start_for(2, "1", SOFT_CASE_LIMIT);
++    *stall::SERVER.lock().expect("server") = Some((child.id(), port));
+     let mut subscriber = connect_when_ready(port, &child);
+     assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "soft"]), acknowledgment(2, "subscribe", Some("soft"), 1));
+     let payload = "x".repeat(14 * 1024 * 1024);
+@@ -1017,12 +1128,20 @@ fn soft_output_limit_interval_restarts_after_the_backlog_drains() {
+     assert_eq!(request(&mut publisher, &["PUBLISH", "soft", &payload]), b":1\r\n");
+     let first = Instant::now();
+     std::thread::sleep(Duration::from_secs(35));
++    eprintln!("STEP first frame read starts at_ms={}", first.elapsed().as_millis());
+     assert_eq!(frame(&mut subscriber), expected, "the first frame arrives whole after the wait");
+     // The sender releases the frame's charge after its last byte is accepted;
+     // wait that out so the second publication starts a new interval.
+     std::thread::sleep(Duration::from_secs(2));
+     assert_eq!(request(&mut publisher, &["PUBLISH", "soft", &payload]), b":1\r\n");
++    if std::env::var_os("FIRN_STALL_SAMPLE").is_some() {
++        // What a send that waits for its reader looks like, for comparison.
++        std::thread::sleep(Duration::from_secs(5));
++        eprintln!("SAMPLE of a waiting send at_ms={}", first.elapsed().as_millis());
++        stall::dump(true);
++    }
+     std::thread::sleep((first + Duration::from_secs(70)).saturating_duration_since(Instant::now()));
++    eprintln!("STEP second frame read follows at_ms={}", first.elapsed().as_millis());
+     assert_eq!(
+         request(&mut publisher, &["PUBSUB", "NUMSUB", "soft"]),
+         b"*2\r\n$4\r\nsoft\r\n:1\r\n",
+@@ -1035,6 +1154,53 @@ fn soft_output_limit_interval_restarts_after_the_backlog_drains() {
+     assert_eq!(finished(child).0, 0);
+ }
+ 
++/// Experiment only (research/experiments/network-read-failures): the step in
++/// which the soft-limit case stalled, repeated without its long waits. Each
++/// round publishes 14 MiB to a subscriber that is not reading, waits one of
++/// the given times while the server's send waits for room, on every other
++/// cycle of the times asks the server a question on the publisher's
++/// connection, and then reads the frame with `stall::read_watched`. It runs
++/// only when FIRN_STALL_SECONDS says for how long.
++#[test]
++fn stall_loop() {
++    let Some(seconds) = std::env::var("FIRN_STALL_SECONDS").ok().and_then(|text| text.parse::<u64>().ok()) else {
++        return;
++    };
++    let waits: Vec<u64> = std::env::var("FIRN_STALL_WAITS_MS")
++        .unwrap_or_else(|_| "300".to_owned())
++        .split(',')
++        .map(|text| text.parse().expect("a wait in milliseconds"))
++        .collect();
++    let (child, mut publisher, port) = start_for(2, "1", Duration::from_secs(seconds + 120));
++    *stall::SERVER.lock().expect("server") = Some((child.id(), port));
++    let mut subscriber = connect_when_ready(port, &child);
++    assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "soft"]), acknowledgment(2, "subscribe", Some("soft"), 1));
++    let payload = "x".repeat(14 * 1024 * 1024);
++    let expected = message(2, "message", "soft", &payload).len();
++    let publish = resp(&["PUBLISH", "soft", &payload]);
++    let begun = Instant::now();
++    let mut round = 0_usize;
++    while begun.elapsed() < Duration::from_secs(seconds) {
++        let wait = waits[round % waits.len()];
++        let asked = (round / waits.len()) % 2 == 0;
++        publisher.write_all(&publish).expect("publish");
++        assert_eq!(frame(&mut publisher), b":1\r\n");
++        std::thread::sleep(Duration::from_millis(wait));
++        if asked {
++            assert_eq!(request(&mut publisher, &["PUBSUB", "NUMSUB", "soft"]), b"*2\r\n$4\r\nsoft\r\n:1\r\n");
++        }
++        eprintln!("LOOP round={round} wait_ms={wait} asked={asked}");
++        assert_eq!(frame(&mut subscriber).len(), expected, "the frame arrives whole");
++        // The sender releases the frame's charge once its last byte is
++        // accepted, which is before this side has read it; the pause keeps
++        // the next publication after that release.
++        std::thread::sleep(Duration::from_millis(20));
++        round += 1;
++    }
++    drop((publisher, subscriber));
++    assert_eq!(finished(child).0, 0);
++}
++
+ /// A subscribed RESP3 connection writes the append-only file as any other
+ /// connection does: the lazy-expiry DELs a command makes before its own
+ /// effect, and a command with more than one effect, are wrapped in MULTI and

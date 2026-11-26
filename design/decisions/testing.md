@@ -1,6 +1,6 @@
 # Testing
 
-How firn is checked against the reference Redis: the reference server every check uses, and below it the Redis suite and the benchmarks.
+How firn is checked against the reference Redis: the reference server every check uses, and below it the Redis suite, the network cases and the benchmarks.
 
 ### decision reference-server-is-redis-7-2-16-from-its-pinned-archive
 Every reference run uses Redis 7.2.16 built from its release archive, whose SHA-256 `tests/redis-suite/reference.sh` pins and checks.

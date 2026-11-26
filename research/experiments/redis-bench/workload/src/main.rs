@@ -5,6 +5,7 @@ mod eviction;
 mod handoff;
 mod handshake;
 mod pubsub;
+mod scan;
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -19,7 +20,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
     "evict-zipf", "handshake", "client-list", "pubsub-channel", "pubsub-pattern",
-    "blocking-handoff",
+    "blocking-handoff", "scan-set", "scan-hash", "scan-zset",
 ];
 
 #[derive(Clone)]
@@ -58,8 +59,7 @@ impl Options {
             sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None,
             pipeline: 1, window: 1024,
         };
-        let (mut keys_given, mut value_given) = (false, false);
-        let (mut pipeline_given, mut window_given) = (false, false);
+        let (mut keys_given, mut value_given, mut pipeline_given, mut window_given) = (false, false, false, false);
         let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
             let value = args.next().ok_or("each option needs a value")?;
@@ -99,11 +99,17 @@ impl Options {
         let pubsub = pubsub::is_pubsub(&opts.workload);
         let handoff = handoff::is_handoff(&opts.workload);
         if (pubsub || handoff) && !value_given { opts.value = vec![b'x'; 64]; }
-        if pipeline_given && !(pubsub || handoff) {
-            return Err("--pipeline only applies to the pub/sub and blocking-handoff workloads".into());
+        let scanning = scan::is_scan(&opts.workload);
+        if (pipeline_given && !pubsub && !handoff && !scanning) || (window_given && !pubsub) {
+            return Err("--pipeline applies to the pub/sub, blocking-handoff and scan workloads, --window to the pub/sub workloads".into());
         }
-        if window_given && !pubsub {
-            return Err("--window only applies to the pub/sub workloads".into());
+        if scanning {
+            if opts.requests.is_some() || opts.seconds.is_none() {
+                return Err("the scan workloads take --seconds, not --requests".into());
+            }
+            if opts.pipeline == 0 {
+                return Err("--pipeline must be positive".into());
+            }
         }
         if pubsub || handoff {
             if opts.requests.is_some() || opts.seconds.is_none() {
@@ -626,6 +632,7 @@ fn run(opts: Options) -> Result<()> {
     if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
     if pubsub::is_pubsub(&opts.workload) { return pubsub::run(&opts); }
     if handoff::is_handoff(&opts.workload) { return handoff::run(&opts); }
+    if scan::is_scan(&opts.workload) { return scan::run(&opts); }
     if matches!(opts.workload.as_str(), "handshake" | "client-list") && !opts.warmup.is_zero() {
         let mut warm = opts.clone();
         warm.seconds = Some(opts.warmup);
@@ -646,7 +653,9 @@ fn main() {
         // Exit status 3 says that the server lacks the workload's commands and
         // 4 that it stopped handing out the elements, so that the harness can
         // record a skip for a competitor; every other failure is 1.
-        let status = if e.downcast_ref::<pubsub::Unsupported>().is_some() {
+        let unsupported = e.downcast_ref::<pubsub::Unsupported>().is_some()
+            || e.downcast_ref::<scan::Unsupported>().is_some();
+        let status = if unsupported {
             3
         } else if e.downcast_ref::<handoff::Stalled>().is_some() {
             4
@@ -690,9 +699,10 @@ mod tests {
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
-            // Cache-aside, connection, pub/sub and hand-off workloads have separate checked cases.
+            // Cache-aside, connection, pub/sub, hand-off and scan workloads have separate checked cases.
             if matches!(workload, "evict-zipf" | "handshake" | "client-list"
-                | "pubsub-channel" | "pubsub-pattern" | "blocking-handoff") { continue; }
+                | "pubsub-channel" | "pubsub-pattern" | "blocking-handoff"
+                | "scan-set" | "scan-hash" | "scan-zset") { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {
