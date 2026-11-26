@@ -84,9 +84,12 @@ fn run(label: &str, firn: &mut Side, oracle: &mut Side, steps: &[(usize, String)
     let mut replies = Vec::new();
     let mut previous = String::new();
     for (who, command) in steps {
-        let want = oracle.say(*who, command);
-        let got = firn.say(*who, command);
-        if command.starts_with("HELLO") {
+        // A command marked with `~` is sent to both servers and its reply, which is in hash
+        // order whatever the count, is not compared.
+        let sent = command.trim_start_matches('~');
+        let want = oracle.say(*who, sent);
+        let got = firn.say(*who, sent);
+        if command.starts_with("HELLO") || command.starts_with('~') {
             continue;
         }
         if text(&got) != text(&want) {
@@ -124,7 +127,7 @@ fn zset_stores_and_pops_treat_expiry_as_redis_does() {
         ("a", "ZDIFFSTORE a 1 a"), ("a", "ZUNIONSTORE a 1 nosuch"), ("a", "ZRANGESTORE a a 7 9"),
         ("b", "ZUNIONSTORE b 2 a b"), ("dst", "ZUNIONSTORE dst 1 a"), ("dst", "ZINTERSTORE dst 2 a nosuch"),
         ("dst", "ZRANGESTORE dst a 0 1"), ("a", "ZUNION 2 a b"), ("a", "ZINTER 2 a b"), ("a", "ZDIFF 2 a b"),
-        ("a", "ZINTERCARD 2 a b"), ("a", "ZRANDMEMBER a 10"), ("a", "ZUNIONSTORE copy 1 a"), ("a", "ZMPOP 2 nosuch a MIN"),
+        ("a", "ZINTERCARD 2 a b"), ("a", "~ZRANDMEMBER a 10"), ("a", "ZUNIONSTORE copy 1 a"), ("a", "ZMPOP 2 nosuch a MIN"),
     ] {
         all.extend(steps(0, &base));
         all.push((0, format!("PEXPIREAT {setup} {far}")));
@@ -169,6 +172,7 @@ fn zset_negative_zero_scores_answer_as_redis_does() {
             "ZRANDMEMBER zn 5 WITHSCORES", "ZMPOP 1 zn MIN", "ZADD zn -0 m", "ZMPOP 1 zn MAX COUNT 3", "ZMPOP 1 o1 MIN",
             "ZMPOP 1 two MAX COUNT 2", "ZMPOP 1 two MIN COUNT 5", "ZRANGE o3 0 -1 WITHSCORES", "ZRANGE o6 0 -1 WITHSCORES",
             "FLUSHALL", "ZADD z0 0 m", "ZADD big 0 m 1 q 2 r", "ZADD big2 0 m 1 q 2 r 3 s 4 t",
+            "ZADD tx 0 m 1 q", "ZADD ty 0 m 2 q", "ZADD tc 5 q",
         ]));
         // A zero score under a negative weight, joined with a zero of the other sign by each aggregate,
         // visiting the sets in each order (the sizes of z0, big and big2 are 1, 3 and 4).
@@ -176,6 +180,14 @@ fn zset_negative_zero_scores_answer_as_redis_does() {
             for aggregate in ["SUM", "MIN", "MAX"] {
                 for (sets, weights) in [("z0 big", "-1 1"), ("z0 big", "1 -1"), ("z0 big", "-1 -1"), ("big z0", "-1 1"),
                     ("big z0", "1 -1"), ("big big2", "-1 1"), ("big2 big", "-1 1"), ("big2 big", "1 -1"), ("big big2", "-1 -1")] {
+                    let count = sets.split(' ').count();
+                    all.push((0, format!("{operation} neg {count} {sets} WEIGHTS {weights} AGGREGATE {aggregate}")));
+                    all.extend(steps(0, &["ZSCORE neg m", "ZRANGE neg 0 -1 WITHSCORES"]));
+                }
+                // Sets of the same size are visited in the order they are named; a zero of either sign
+                // meets the other under every aggregate.
+                for (sets, weights) in [("tx ty", "-1 3"), ("ty tx", "-1 3"), ("tx ty", "3 -1"), ("tx ty", "-1 -1"), ("tc tx ty", "0.5 -1 3"),
+                    ("tx tc ty", "-1 0.5 3"), ("tx ty tc", "-1 3 0.5")] {
                     let count = sets.split(' ').count();
                     all.push((0, format!("{operation} neg {count} {sets} WEIGHTS {weights} AGGREGATE {aggregate}")));
                     all.extend(steps(0, &["ZSCORE neg m", "ZRANGE neg 0 -1 WITHSCORES"]));
