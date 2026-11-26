@@ -94,6 +94,12 @@ fn scored_emit(env: &Client, member: &Key, score: f64) -> result: unit reads(mem
   return unit;
 }
 
+fn rank_emit(env: &Client, key: &Rank, value: &unit) -> result: unit reads(key), writes(env) {
+  doc "Writes a rank of a sorted set's order as scored_emit writes a member.";
+  scored_emit(env: env, member: &key^.member, score: key^.score);
+  return unit;
+}
+
 fn score_emit(env: &Client, key: &Key, value: &f64) -> result: unit reads(key.bytes), reads(value), writes(env) {
   doc "Writes a member of a sorted set's scores as scored_emit writes it.";
   scored_emit(env: env, member: key, score: value^);
