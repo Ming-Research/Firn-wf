@@ -142,7 +142,7 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
-      pkg::store::aof_note(meta: m, client: client);
+      pkg::store::aof_note(meta: m, client: client, taken: sequence.taken);
     }
   }
   return unit;
