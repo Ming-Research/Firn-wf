@@ -1444,8 +1444,9 @@ workloads' own settings say for the others, load clients on CPUs 16-31, depth
 - Run B1, mode `workloads`, firn only: `limiter-tx` (`MULTI`, `INCRBY`,
   `PTTL`, `EXEC`) and `setmany-tx` (`MULTI`, one `MSET` of three keys, three
   `EXPIRE`, `EXEC`), 50 connections, 10 seconds, 18 passes.
-- Run B2, mode `workloads`, images `head` and `head-twin` and the newest
-  stable Redis, Valkey, Dragonfly and Garnet at the dispatch: `handshake` and
+- Run B2, mode `workloads`, images `head` and `head-twin`, Redis 7.2.16 (the
+  reference the workloads require, `redis-bench.sh` stops otherwise) and the
+  newest stable Valkey, Dragonfly and Garnet at the dispatch: `handshake` and
   `client-list`, 50 connections, 10 seconds, 12 passes.
 
 The criteria. A cell is a test and a server CPU count, or a workload.
@@ -1477,14 +1478,16 @@ the server, client and profiler CPUs averaged busier than its threshold and
 runs it again (decision benchmark-voids-passes-run-beside-other-jobs), and
 `summary.py` leaves a voided attempt out. The passes above are clean passes: a
 run whose clean passes fall short of the number asked for, for lack of time
-before the deadline, judges its cells on the passes it has and says how many,
-and a cell with fewer than 6 clean passes is reported as not decided, not as
-met.
+before the deadline, judges its cells on the passes it has and says how many.
+A cell with fewer than 6 clean passes, or one that no rule above decides for
+any other reason, is undecided; an undecided cell is measured again or
+brought to the owner, and is never counted as met.
 
-A cell that is not met is reported as not met with its size and is brought to
-the owner; the rules are not changed after the results are seen. Rejecting
-the change needs a cell not met; accepting it needs none, the two accepted
-cells excepted.
+The change is accepted only when every cell is met, the two accepted cells
+(`mset`, `setmany-tx`) and the reported-only cell (`client-list` against
+Garnet) excepted. A cell that is not met is reported as not met with its size
+and is brought to the owner; the rules are not changed after the results are
+seen.
 
 Expected time on the 14900K from the earlier measurements: about 99 minutes
 for Run A, 25 for Run B1 and 45 for Run B2.
