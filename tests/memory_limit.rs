@@ -59,8 +59,19 @@ fn noeviction_refuses_denyoom_but_allows_reads_and_deletes() {
         vec!["SADD", "set", &value], vec!["SINTERSTORE", "out", "a", "b"],
         vec!["SUNIONSTORE", "out", "a", "b"], vec!["SDIFFSTORE", "out", "a", "b"],
         vec!["ZADD", "sorted", "1", &value], vec!["ZINCRBY", "sorted", "1", &value],
+        vec!["ZUNIONSTORE", "out", "2", "a", "b"], vec!["ZINTERSTORE", "out", "2", "a", "b"],
+        vec!["ZDIFFSTORE", "out", "2", "a", "b"], vec!["ZRANGESTORE", "out", "a", "0", "-1"],
     ] {
         assert_eq!(memory_request(&mut client, &command), OOM, "{} DENYOOM", command[0]);
+    }
+    // ZMPOP writes but frees memory, and the other sorted-set reads allocate
+    // nothing that is kept, so none is DENYOOM.
+    for (command, reply) in [
+        (vec!["ZMPOP", "1", "absent", "MIN"], "*-1\r\n"), (vec!["ZUNION", "1", "absent"], "*0\r\n"),
+        (vec!["ZINTER", "1", "absent"], "*0\r\n"), (vec!["ZDIFF", "1", "absent"], "*0\r\n"),
+        (vec!["ZINTERCARD", "1", "absent"], ":0\r\n"), (vec!["ZRANDMEMBER", "absent"], "$-1\r\n"),
+    ] {
+        assert_eq!(memory_request(&mut client, &command), reply, "{} is not DENYOOM", command[0]);
     }
     assert_eq!(memory_request(&mut client, &["SET", "short"]), "-ERR wrong number of arguments for 'set' command\r\n");
     assert!(memory_request(&mut client, &["NO-SUCH-COMMAND"]).starts_with("-ERR unknown command"));
@@ -588,6 +599,28 @@ fn multi_oom_refusal_exec_flags_and_control_exemptions() {
     assert_eq!(memory_request(&mut client, &["GET", "queued"]), "+QUEUED\r\n");
     configure(&mut other, &["maxmemory", "1"]);
     assert_eq!(memory_request(&mut client, &["EXEC"]), "*1\r\n$-1\r\n");
+    // The sorted-set stores are DENYOOM in the queue's flag union; ZMPOP and
+    // the reads are not.
+    for command in [
+        vec!["ZUNIONSTORE", "queued", "1", "absent"], vec!["ZINTERSTORE", "queued", "1", "absent"],
+        vec!["ZDIFFSTORE", "queued", "1", "absent"], vec!["ZRANGESTORE", "queued", "absent", "0", "-1"],
+    ] {
+        configure(&mut other, &["maxmemory", "0"]);
+        assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &command), "+QUEUED\r\n");
+        configure(&mut other, &["maxmemory", "1"]);
+        assert_eq!(memory_request(&mut client, &["EXEC"]), OOM_ABORT, "{} queued", command[0]);
+    }
+    for (command, reply) in [
+        (vec!["ZMPOP", "1", "absent", "MIN"], "*-1\r\n"), (vec!["ZUNION", "1", "absent"], "*0\r\n"),
+        (vec!["ZINTERCARD", "1", "absent"], ":0\r\n"),
+    ] {
+        configure(&mut other, &["maxmemory", "0"]);
+        assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &command), "+QUEUED\r\n");
+        configure(&mut other, &["maxmemory", "1"]);
+        assert_eq!(memory_request(&mut client, &["EXEC"]), format!("*1\r\n{reply}"), "{} queued", command[0]);
+    }
     assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
     assert_eq!(memory_request(&mut client, &["GET", "queued"]), OOM);
     assert_eq!(memory_request(&mut client, &["QUIT"]), "+OK\r\n");

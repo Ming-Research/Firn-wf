@@ -634,7 +634,9 @@ fn case_eval(clock: &std::time::Clock, wall: &std::time::WallClock, input: &[u8]
   let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
   let no = False();
   let store_wall = std::time::wall_clock_share(clock: wall);
-  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall);
+  let case_wall = std::time::wall_clock_share(clock: wall);
+  let case_log = pkg::serverlog::serverlog_new(clock: move case_wall, pid: 1_u64, level: 3_u64);
+  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall, server_log: move case_log);
   let store_key = &case_key[0_u64..1_u64];
   atomic slot = &store.keys[store_key] {
     set slot^ = case_entry(length: 8_u64, capacity: 8_u64);
@@ -671,7 +673,9 @@ fn case_blocking_move(wall: &std::time::WallClock, full: Bool) -> passed: Bool r
   let no = False();
   let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
   let store_wall = std::time::wall_clock_share(clock: wall);
-  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall);
+  let case_wall = std::time::wall_clock_share(clock: wall);
+  let case_log = pkg::serverlog::serverlog_new(clock: move case_wall, pid: 1_u64, level: 3_u64);
+  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall, server_log: move case_log);
   let source_key = &case_source[0_u64..1_u64];
   let destination_key = &case_destination[0_u64..1_u64];
   let destination_length = 7_u64;
@@ -907,7 +911,9 @@ fn case_narrow_creation(wall: &std::time::WallClock, moving: Bool, stale: Bool) 
   let yes = True();
   let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
   let store_wall = std::time::wall_clock_share(clock: wall);
-  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall);
+  let case_wall = std::time::wall_clock_share(clock: wall);
+  let case_log = pkg::serverlog::serverlog_new(clock: move case_wall, pid: 1_u64, level: 3_u64);
+  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64, wall: move store_wall, server_log: move case_log);
   let args = box_slots_new::<Span>(capacity: 8_u64);
   let client = pkg::protocol::client_new(capacity: 256_u64);
   let time = pkg::store::Time(unix_ms: 1_u64, check: 1_u64, loading: no);

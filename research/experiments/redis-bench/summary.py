@@ -2,11 +2,13 @@
 """Tables from the CSV files of a redis-bench run, for the records and the
 acceptance rows.
 
-  summary.py pubsub DIR [--firn LINE] [--twin LINE] [--floor PERCENT] [--csv FILE]
+  summary.py pubsub|zset DIR [--firn LINE] [--twin LINE] [--floor PERCENT] [--csv FILE]
       pubsub.csv and pubsub-limited.csv of a workloads run with the pub/sub
       workloads or blocking-handoff, which write the same columns, or with
       --csv scan.csv the scan.csv of a run with the scan workloads (its rate is
-      members a second, and its limited rows are in pubsub-limited.csv too):
+      members a second, and its limited rows are in pubsub-limited.csv too), or
+      zset.csv and zset-limited.csv of one with the sorted-set workloads (their
+      workload names carry the source layout, and their rate is of commands):
       per workload and pipeline depth, each line's median rate and
       p99 over the passes, firn's multiple of the fastest competitor, whether
       the cell's criteria hold, and the twin's ratio to firn per pass with its
@@ -131,30 +133,32 @@ def median_or_nan(values):
 
 def pubsub(args):
     directory = Path(args.dir)
+    table = getattr(args, "table", "pubsub")
+    unit, party = ("msg/s", "subscribers") if table == "pubsub" else ("commands/s", "connections")
     rates = defaultdict(lambda: defaultdict(dict))
     p99s = defaultdict(lambda: defaultdict(list))
     work = defaultdict(lambda: defaultdict(list))
-    for r in rows(directory / args.csv):
+    for r in rows(directory / (getattr(args, "csv", None) or f"{table}.csv")):
         key = (int(r["cpus"]), r["workload"], int(r["connections"]), int(r["pipeline"]))
         rates[key][r["line"]][int(r["pass"])] = float(r["rate"])
         p99s[key][r["line"]].append(float(r["p99_ms"]))
-    for r in rows(directory / "pubsub-limited.csv"):
+    for r in rows(directory / f"{table}-limited.csv"):
         key = (int(r["cpus"]), r["workload"], int(r["connections"]), int(r["pipeline"]))
         work[key][r["line"]].append(float(r["client_work_fraction"]))
     failures = 0
     above = 0
     widths = []
     for key in sorted(rates):
-        cpus, workload, subscribers, depth = key
+        cpus, workload, connections, depth = key
         lines = rates[key]
         median = {line: statistics.median(v.values()) for line, v in lines.items()}
         firn = args.firn or next((l for l in sorted(lines)
                                   if is_firn(l) and not l.endswith("-twin")), None)
         competitors = [l for l in lines if not is_firn(l)]
-        who = "consumers" if workload == "blocking-handoff" else "subscribers"
-        print(f"== {cpus} server CPUs, {workload}, {subscribers} {who}, "
+        who = "consumers" if workload == "blocking-handoff" else party
+        print(f"== {cpus} server CPUs, {workload}, {connections} {who}, "
               f"pipeline {depth}, passes {max(len(v) for v in lines.values())}")
-        print(f"{'line':<22}{'rate (msg/s)':>14}{'p99 (ms)':>10}{'client work':>13}")
+        print(f"{'line':<22}{'rate (' + unit + ')':>14}{'p99 (ms)':>10}{'client work':>13}")
         for line in sorted(lines):
             print(f"{line:<22}{median[line]:>14.0f}{statistics.median(p99s[key][line]):>10.3f}"
                   f"{median_or_nan(work[key][line]):>13.3f}")
@@ -359,18 +363,40 @@ def selftest():
         with redirect_stdout(out):
             pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, csv="scan.csv"))
         assert "scan-set" in out.getvalue() and "\n1 criteria not met\n" in out.getvalue(), out.getvalue()
+    # The sorted-set tables are judged by the same criteria: 1.4 at depth 16,
+    # 1.0 at depth 1, and the fastest competitor's p99.
+    with tempfile.TemporaryDirectory() as tmp:
+        data = ["line,pass,cpus,workload,connections,pipeline,requests,seconds,rate,p50_ms,p99_ms"]
+        limited = ["line,pass,cpus,workload,connections,pipeline,client_busy_mean,client_work_fraction,client_limited"]
+        for p in (1, 2, 3):
+            for depth, rivals, ours, p99 in ((16, (100, 90), 150, 2.0), (1, (100, 90), 95, 0.2)):
+                for line, rate, tail in (("reference", rivals[0], 2.5), ("valkey", rivals[1], 2.5), ("firn-2", ours, p99)):
+                    data.append(f"{line},{p},2,zunionstore-shared,50,{depth},1000,5,{rate},1.0,{tail}")
+                    limited.append(f"{line},{p},2,zunionstore-shared,50,{depth},0.5,0.5,0")
+        (Path(tmp) / "zset.csv").write_text("\n".join(data) + "\n")
+        (Path(tmp) / "zset-limited.csv").write_text("\n".join(limited) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, table="zset"))
+        text = out.getvalue()
+        assert "zunionstore-shared, 50 connections, pipeline 16" in text and "commands/s" in text, text
+        assert "firn-2 / reference (the fastest competitor): 1.500, needs at least 1.4: ok" in text, text
+        assert "firn-2 / reference (the fastest competitor): 0.950, needs at least 1.0: BELOW" in text, text
+        assert "\n1 criteria not met\n" in text, text
     print("summary selftest: passed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("pubsub")
-    p.add_argument("dir")
-    p.add_argument("--firn")
-    p.add_argument("--twin")
-    p.add_argument("--floor", type=float)
-    p.add_argument("--csv", default="pubsub.csv")
+    for table in ("pubsub", "zset"):
+        p = sub.add_parser(table)
+        p.add_argument("dir")
+        p.add_argument("--firn")
+        p.add_argument("--twin")
+        p.add_argument("--floor", type=float)
+        p.add_argument("--csv")
+        p.set_defaults(table=table)
     p = sub.add_parser("ratios")
     p.add_argument("compare")
     p.add_argument("--base", required=True)
@@ -378,7 +404,7 @@ def main():
     p.add_argument("--twin")
     sub.add_parser("selftest")
     args = parser.parse_args()
-    {"pubsub": pubsub, "ratios": ratios}.get(args.command, lambda _: selftest())(args)
+    {"pubsub": pubsub, "zset": pubsub, "ratios": ratios}.get(args.command, lambda _: selftest())(args)
 
 
 if __name__ == "__main__":

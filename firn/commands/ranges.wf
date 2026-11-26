@@ -494,6 +494,7 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
       set env^.state = state_done;
       let act = walk^.act;
       let scored = act == 1_u64;
+      let writing = act != 3_u64;
       if walk^.kind == 0_u64 {
         let size = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
         let length = cvt.wrap::<u64, i64>(size);
@@ -512,7 +513,9 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
         let past = start >= length;
         let empty = bor(crossed, past);
         if empty {
-          reply_array(client: env, count: 0_u64);
+          if writing {
+            reply_array(client: env, count: 0_u64);
+          }
           return 5_u64;
         }
         if stop >= length {
@@ -524,7 +527,7 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
         let count = span +wrap 1_u64;
         if scored {
           reply_pairs(client: env, pairs: count);
-        } else {
+        } else if writing {
           reply_array(client: env, count: count);
         }
         let bounded = False();
@@ -546,7 +549,7 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
       }
       if scored {
         reply_pairs(client: env, pairs: found);
-      } else {
+      } else if writing {
         reply_array(client: env, count: found);
       }
       if found > 0_u64 {
@@ -578,15 +581,17 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
   }
 }
 
-fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64, direction: u64, plan: &Walk) -> valid: Bool reads(input), reads(args), writes(client), writes(plan) {
-  doc "Prepares ZRANGE's arguments and refusals before either path looks up its key.";
+fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64, direction: u64, plan: &Walk, base: u64, storing: Bool) -> valid: Bool reads(input), reads(args), writes(client), writes(plan) {
+  doc "Prepares ZRANGE's arguments and refusals before either path looks up its key. ZRANGESTORE passes storing and a base of 1, which moves the range and the options one argument on past its destination; it refuses WITHSCORES as an unknown option and has the walk collect each rank it takes among the client's prepared keys and scores.";
   let count = args^.inner.len;
   let withscores = False();
   let offset = 0_i64;
   let limit = -1_i64;
   let rangetype = kind;
   let order = direction;
-  let index = 4_u64;
+  let range_start = 2_u64 +wrap base;
+  let range_stop = 3_u64 +wrap base;
+  let index = 4_u64 +wrap base;
   loop @options {
     if index >= count {
       break @options;
@@ -600,13 +605,15 @@ fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u6
     let is_bylex = option_matches(input: input, span: option, word: &word_bylex[0_u64..5_u64]);
     let is_byscore = option_matches(input: input, span: option, word: &word_byscore[0_u64..7_u64]);
     let room = left >= 2_u64;
+    let unstored = bnot(storing);
+    let scoring = band(is_withscores, unstored);
     let limited = band(is_limit, room);
     let open_order = order == 0_u64;
     let open_type = rangetype == 0_u64;
     let rev = band(open_order, is_rev);
     let bylex = band(open_type, is_bylex);
     let byscore = band(open_type, is_byscore);
-    if is_withscores {
+    if scoring {
       set withscores = True();
     } else if limited {
       let first_span = arg(args: args, index: after);
@@ -661,6 +668,9 @@ fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u6
   if withscores {
     set act = 1_u64;
   }
+  if storing {
+    set act = 3_u64;
+  }
   let walk_kind = rangetype -wrap 1_u64;
   set plan^.reverse = reverse;
   set plan^.kind = walk_kind;
@@ -668,13 +678,13 @@ fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u6
   set client^.low = 0_i64;
   set client^.high = 0_i64;
   if by_rank {
-    let first_span = arg(args: args, index: 2_u64);
+    let first_span = arg(args: args, index: range_start);
     let first = read_integer(input: input, start: first_span.start, length: first_span.length);
     if first.state != 1_u64 {
       reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
       return False();
     }
-    let last_span = arg(args: args, index: 3_u64);
+    let last_span = arg(args: args, index: range_stop);
     let last = read_integer(input: input, start: last_span.start, length: last_span.length);
     if last.state != 1_u64 {
       reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
@@ -683,11 +693,11 @@ fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u6
     set client^.low = first.value;
     set client^.high = last.value;
   } else {
-    let low_index = 2_u64;
-    let high_index = 3_u64;
+    let low_index = range_start;
+    let high_index = range_stop;
     if reverse {
-      set low_index = 3_u64;
-      set high_index = 2_u64;
+      set low_index = range_stop;
+      set high_index = range_start;
     }
     let valid = read_range(input: input, args: args, low_index: low_index, high_index: high_index, walk: plan);
     if valid {
@@ -747,7 +757,8 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let journal = None<pkg::store::AccessJournal>();
   let forward = False();
   let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
-  let valid = zrange_parse(input: input, args: args, client: client, kind: kind, direction: direction, plan: &walk);
+  let not_storing = False();
+  let valid = zrange_parse(input: input, args: args, client: client, kind: kind, direction: direction, plan: &walk, base: 0_u64, storing: not_storing);
   if bnot(valid) {
     return unit;
   }

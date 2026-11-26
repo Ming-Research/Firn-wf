@@ -5,7 +5,19 @@ alias Client = pkg::protocol::Client;
 alias Clock = std::time::Clock;
 alias ExitStatus = std::process::ExitStatus;
 alias HandleFactory = std::io::HandleFactory;
+alias DirectoryRead = std::fs::DirectoryRead;
+alias DirectoryWrite = std::fs::DirectoryWrite;
 alias Inputs = std::process::Inputs;
+alias LogSink = pkg::serverlog::LogSink;
+alias MemoryMeter = std::process::MemoryMeter;
+alias ServerLog = pkg::serverlog::ServerLog;
+alias StopSignals = std::process::StopSignals;
+alias fdlimit_adjust = pkg::fdlimit::fdlimit_adjust;
+alias logfile_open = pkg::serverlog::logfile_open;
+alias serverlog_close = pkg::serverlog::serverlog_close;
+alias serverlog_new = pkg::serverlog::serverlog_new;
+alias serverlog_run = pkg::serverlog::serverlog_run;
+alias serverlog_share = pkg::serverlog::serverlog_share;
 alias Instant = std::time::Instant;
 alias IoError = std::io::IoError;
 alias KeyEnv = pkg::bytes::KeyEnv;
@@ -516,6 +528,8 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
   set client.meter = Some<std::process::MemoryMeter>(value: move meter);
+  let command_factory = factory_share(factory: &factory);
+  set client.factory = Some<HandleFactory>(value: move command_factory);
   atomic m = &store.meta {
     set client.random = m^.random;
     let stepped = m^.random *wrap 6364136223846793005_u64;
@@ -747,6 +761,50 @@ fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock, cancel: CancelWat
   return unit;
 }
 
+const log_starting: Array<u8, 44> = "oO0OoO0OoO0Oo firn is starting oO0OoO0OoO0Oo";
+
+const log_configured: Array<u8, 20> = "Configuration loaded";
+
+const log_unconfigured: Array<u8, 123> = "Warning: no config file specified, using the default config. In order to specify a config file use firn /path/to/redis.conf";
+
+const log_running_head: Array<u8, 30> = "Running mode=standalone, port=";
+
+const log_period: Array<u8, 1> = ".";
+
+const log_initialized: Array<u8, 18> = "Server initialized";
+
+const log_ready: Array<u8, 31> = "Ready to accept connections tcp";
+
+const log_requested: Array<u8, 26> = "User requested shutdown...";
+
+const log_fsync: Array<u8, 32> = "Calling fsync() on the AOF file.";
+
+const log_bye: Array<u8, 37> = "firn is now ready to exit, bye bye...";
+
+const log_sigterm: Array<u8, 39> = "Received SIGTERM scheduling shutdown...";
+
+const log_fatal_load: Array<u8, 55> = "Fatal error loading the DB, check server logs. Exiting.";
+
+const log_sigint: Array<u8, 38> = "Received SIGINT scheduling shutdown...";
+
+fn log_line(log: &ServerLog, role: u8, level: u64, word: &[u8]) -> result: unit reads(log), reads(word) waits {
+  doc "Queues a log line whose whole message is word, from the server's context role: C before the server is initialized, M after.";
+  let message = pkg::serverlog::log_message_new();
+  pkg::serverlog::log_message_append(message: &message, source: word);
+  pkg::serverlog::serverlog_write(log: log, role: role, level: level, message: &message);
+  return unit;
+}
+
+fn log_running(log: &ServerLog, port: u64) -> result: unit reads(log) waits {
+  doc "Queues Redis's line for the mode and port the server runs with.";
+  let message = pkg::serverlog::log_message_new();
+  pkg::serverlog::log_message_append(message: &message, source: &log_running_head[0_u64..30_u64]);
+  pkg::serverlog::log_message_number(message: &message, number: port);
+  pkg::serverlog::log_message_append(message: &message, source: &log_period[0_u64..1_u64]);
+  pkg::serverlog::serverlog_write(log: log, role: 77_u8, level: 2_u64, message: &message);
+  return unit;
+}
+
 fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, shutdown: CancelSource) -> result: unit pure waits {
   doc "Waits in a context of its own, from before the append-only file's replay, for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either; during the replay the request is what the replay reads to end early. The listener is closed before the request is recorded, the receive generation fired and the separate shutdown source fired, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops, during the replay too. The wait has no deadline: shutdown by another context cancels it, including main stopping after the client limit or after a replay that did not load or that a request ended. Cancellation or another wait failure closes the listener without making a new request.";
   let heard = False();
@@ -755,6 +813,14 @@ fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspac
   match stop_next(factory: &factory, listener: &listener, deadline: limit, cancel: &cancel) {
     Ok(value: kind) => {
       set heard = True();
+      match kind {
+        Interrupt() => {
+          log_line(log: &store.log, role: 77_u8, level: 3_u64, word: &log_sigint[0_u64..38_u64]);
+        }
+        Terminate() => {
+          log_line(log: &store.log, role: 77_u8, level: 3_u64, word: &log_sigterm[0_u64..39_u64]);
+        }
+      }
     }
     Err(error: problem) => {
     }
@@ -819,6 +885,11 @@ struct Options {
   rewrite_percentage: u64;
   rewrite_min_size: u64;
   memory: Array<u64, 6>;
+  pid: u64;
+  dir: Box<Slots<u8>>;
+  loglevel: u64;
+  logfile: Box<Slots<u8>>;
+  configured: Bool;
   valid: Bool;
 }
 
@@ -1009,16 +1080,13 @@ const option_rewrite_percentage: Array<u8, 27> = "AUTO-AOF-REWRITE-PERCENTAGE";
 
 const option_rewrite_min_size: Array<u8, 25> = "AUTO-AOF-REWRITE-MIN-SIZE";
 
-fn main(inputs: Inputs) -> status: ExitStatus pure waits {
-  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation reads an optional Redis configuration file or stdin -, followed by --directive values, with the later directives overriding the file. Maxclients defaults to 10000 and refuses excess connected clients with Redis's error; --firn-clients limits served clients for tests. Invalid invocation or configuration prints its reason and exits 1; include and directory changes beyond dir . or ./ are refused explicitly pending firn-req-host-paths. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from before the append-only file's replay, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; a request the replay sees, at most 1024 commands after it is made, ends firn with status 0, leaving appendonlydir as the replay found it, as Redis 7.2.16 exits while it loads. firn stops with status 3 when the host refuses it those signals, before it replays anything, or when it cannot listen on its address.";
-  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: stderr, handles: handles, stdin: stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter, host_paths: unused_host_paths, process_id: unused_process_id) = move inputs;
-  let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
-  let options = read_options(args: &args, factory: &handles, root: &cwd, input: &stdin, output: &stderr);
-  if options.valid {
+fn run(options: Options, handles: HandleFactory, stderr: OutputStream, clock: Clock, wall_clock: WallClock, stops: StopSignals, memory_meter: MemoryMeter, cwd: DirectoryRead, cwd_write: DirectoryWrite, log: &ServerLog) -> status: ExitStatus reads(log) waits {
+  doc "Starts the server once the invocation is read: raises the open-files limit, replays the append-only file, listens and serves until the stop, and returns the status firn ends with. Everything it logs is queued on log, which the caller closes after run returns.";
+  log_line(log: log, role: 67_u8, level: 2_u64, word: &log_starting[0_u64..44_u64]);
+  if options.configured {
+    log_line(log: log, role: 67_u8, level: 2_u64, word: &log_configured[0_u64..20_u64]);
   } else {
-    close_directory_write(factory: &handles, directory: move cwd_write);
-    close_directory(factory: &handles, directory: move cwd);
-    return exit_status(code: 1_u8);
+    log_line(log: log, role: 67_u8, level: 3_u64, word: &log_unconfigured[0_u64..123_u64]);
   }
   let no_port = options.port == 0_u64;
   let no_bind = options.bind.inner.len == 0_u64;
@@ -1041,16 +1109,30 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let password_length = options.password.inner.len;
   let password_window = &options.password.inner[0_u64..password_length];
   let password_text = bytes_new(input: password_window, start: 0_u64, length: password_length);
-  let settings = Settings(port: options.port, bind: move bind_text, appendfilename: move file_text);
+  let dir_length = options.dir.inner.len;
+  let logfile_length = options.logfile.inner.len;
+  let dir_text = bytes_new(input: &options.dir.inner[0_u64..dir_length], start: 0_u64, length: dir_length);
+  let logfile_text = bytes_new(input: &options.logfile.inner[0_u64..logfile_length], start: 0_u64, length: logfile_length);
+  let settings = Settings(port: options.port, bind: move bind_text, appendfilename: move file_text, dir: move dir_text, logfile: move logfile_text);
   let origin = std::time::now(clock: &clock);
   let calendar = unix_nanoseconds(clock: &wall_clock);
   let seed = cvt.wrap::<i64, u64>(calendar);
   let quiet = False();
   let startup = read_time(wall: &wall_clock);
+  let leaving = True();
+  let adjusted = fdlimit_adjust(factory: &handles, log: log, maxclients: options.maxclients, exiting: leaving);
+  if adjusted.fatal {
+    close_directory_write(factory: &handles, directory: move cwd_write);
+    close_directory(factory: &handles, directory: move cwd);
+    return exit_status(code: 1_u8);
+  }
+  log_running(log: log, port: options.port);
+  log_line(log: log, role: 77_u8, level: 2_u64, word: &log_initialized[0_u64..18_u64]);
+  let keyspace_log = serverlog_share(log: log);
   let store_wall = std::time::wall_clock_share(clock: &wall_clock);
-  let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms, wall: move store_wall);
+  let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms, wall: move store_wall, server_log: move keyspace_log);
   atomic v = &root.server {
-    set v^.maxclients = options.maxclients;
+    set v^.maxclients = adjusted.maxclients;
     set v^.memory.maxmemory = options.memory[0_u64];
     set v^.memory.maxmemory_policy = options.memory[1_u64];
     set v^.memory.maxmemory_samples = options.memory[2_u64];
@@ -1112,6 +1194,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   close_directory_write(factory: &handles, directory: move cwd_write);
   close_directory(factory: &handles, directory: move cwd);
   if failed {
+    log_line(log: log, role: 77_u8, level: 3_u64, word: &log_fatal_load[0_u64..55_u64]);
     std::time::cancel_fire(source: &shutdown);
     return exit_status(code: 4_u8);
   }
@@ -1135,6 +1218,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let listened = True();
   match tcp_listen(factory: &handles, address: &address) {
     Ok(value: listener) => {
+      log_line(log: log, role: 77_u8, level: 2_u64, word: &log_ready[0_u64..31_u64]);
       let accepted = 0_u64;
       let cancel = std::time::cancel_watch(source: &shutdown);
       let next_diagnostic = None<Instant>();
@@ -1236,6 +1320,13 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   atomic m = &keyspace.meta when m^.clients == 0_u64 {
   }
+  let requested = shutdown_requested(store: &keyspace);
+  if requested {
+    log_line(log: log, role: 77_u8, level: 2_u64, word: &log_requested[0_u64..26_u64]);
+    if logging {
+      log_line(log: log, role: 77_u8, level: 2_u64, word: &log_fsync[0_u64..32_u64]);
+    }
+  }
   pkg::connection_events::hub_stop(hub: &keyspace.pubsub);
   let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
@@ -1253,8 +1344,76 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   std::time::cancel_fire(source: &shutdown);
   std::time::close_cancel_source(source: move shutdown);
+  if requested {
+    log_line(log: log, role: 77_u8, level: 3_u64, word: &log_bye[0_u64..37_u64]);
+  }
   if listened {
     return exit_status(code: 0_u8);
   }
   return exit_status(code: 3_u8);
+}
+
+fn main(inputs: Inputs) -> status: ExitStatus pure waits {
+  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation reads an optional Redis configuration file or stdin -, followed by --directive values, with the later directives overriding the file. Maxclients defaults to 10000 and refuses excess connected clients with Redis's error; --firn-clients limits served clients for tests. The configuration file, include and dir paths are host paths, absolute or relative to the working directory that dir changes as it does Redis's, and an include with a wildcard is refused. Invalid invocation or configuration prints its reason and exits 1. firn writes Redis's log lines for its start, the append-only file's load and rewrite, write errors and stop to standard output, or to the file logfile names, which each line opens anew, keeping the lines at or above loglevel. Before it listens firn raises the soft open-files limit to maxclients plus 32 as Redis does, lowering maxclients as Redis does when the host refuses and stopping with status 1 when too few descriptors remain. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from before the append-only file's replay, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; a request the replay sees, at most 1024 commands after it is made, ends firn with status 0, leaving appendonlydir as the replay found it, as Redis 7.2.16 exits while it loads. firn stops with status 3 when the host refuses it those signals, before it replays anything, or when it cannot listen on its address.";
+  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: stdout, stderr: stderr, handles: handles, stdin: stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter, host_paths: host_paths, process_id: process_id) = move inputs;
+  let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
+  let paths = match move host_paths {
+    Some(value: found) => {
+      give move found;
+    }
+    None() => {
+      config_write(factory: &handles, output: &stderr, bytes: &config_no_paths[0_u64..44_u64]);
+      close_directory_write(factory: &handles, directory: move cwd_write);
+      close_directory(factory: &handles, directory: move cwd);
+      return exit_status(code: 1_u8);
+    }
+  }
+  let pid = match process_id {
+    Some(value: known) => {
+      give known;
+    }
+    None() => {
+      give 0_u64;
+    }
+  }
+  let options = read_options(args: &args, factory: &handles, paths: &paths, cwd: &cwd, cwd_write: &cwd_write, input: &stdin, output: &stderr, stdout: &stdout, wall: &wall_clock, pid: pid);
+  if options.valid {
+  } else {
+    close_directory_write(factory: &handles, directory: move cwd_write);
+    close_directory(factory: &handles, directory: move cwd);
+    return exit_status(code: 1_u8);
+  }
+  let log_clock = wall_clock_share(clock: &wall_clock);
+  let log = serverlog_new(clock: move log_clock, pid: pid, level: options.loglevel);
+  let logfile_length = options.logfile.inner.len;
+  if logfile_length == 0_u64 {
+    let writer_log = serverlog_share(log: &log);
+    let writer_factory = factory_share(factory: &handles);
+    let writer_sink = LogSink::Stream(output: move stdout);
+    spawn serverlog_run(log: move writer_log, factory: move writer_factory, sink: move writer_sink);
+  } else {
+    release::<OutputStream>(value: move stdout);
+    match logfile_open(factory: &handles, paths: &paths, base: &cwd, path: &options.logfile.inner[0_u64..logfile_length]) {
+      Ok(value: file) => {
+        let writer_log = serverlog_share(log: &log);
+        let writer_factory = factory_share(factory: &handles);
+        let writer_sink = LogSink::File(file: move file);
+        spawn serverlog_run(log: move writer_log, factory: move writer_factory, sink: move writer_sink);
+      }
+      Err(error: problem) => {
+        let message = config_buffer();
+        config_append(buffer: &message, source: &config_title[0_u64..48_u64]);
+        config_append(buffer: &message, source: &config_logfile_error[0_u64..25_u64]);
+        config_description(buffer: &message, problem: &problem);
+        config_byte(buffer: &message, byte: 10_u8);
+        config_emit(factory: &handles, output: &stderr, text: &message);
+        close_directory_write(factory: &handles, directory: move cwd_write);
+        close_directory(factory: &handles, directory: move cwd);
+        return exit_status(code: 1_u8);
+      }
+    }
+  }
+  let code = run(options: move options, handles: move handles, stderr: move stderr, clock: move clock, wall_clock: move wall_clock, stops: move stops, memory_meter: move memory_meter, cwd: move cwd, cwd_write: move cwd_write, log: &log);
+  serverlog_close(log: &log);
+  return move code;
 }

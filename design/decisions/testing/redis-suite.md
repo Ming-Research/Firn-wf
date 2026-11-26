@@ -15,8 +15,13 @@ The gate skips from the start each test that `tests/redis-suite/hung.tsv` lists 
 Before each run, for every target, a zero-fuzz forward-only patch makes the suite's five argument-free pub/sub removals drain and check their known acknowledgments.
 - rejected: an agent proposed excluding the affected tests, or changing their wire commands or expected recipient counts; the owner rejected it, because the patch keeps every original command and recipient-count assertion, and firn and Redis run the same patched tests.
 
+### decision redis-suite-failed-test-gets-a-fresh-connection
+Before each run, for every target, a zero-fuzz forward-only patch replaces the shared connection after a failed test with a new one in the mode the failed test started in.
+- rejected: an agent proposed waiting for the blocking-pop item and leaving the suite unchanged; the owner rejected it, because about 75 cases of the ten sorted-set commands would stay out of the gate until then, and reply differences could hide among them.
+- rejected: an agent proposed listing the two blocking-pop RESP3 tests in `hung.tsv`; the owner rejected it, because that list is for tests that hang, these two fail at once, and excluding the affected tests was already rejected.
+
 ### decision redis-suite-blocked-client-fixture-patch
-The same patch makes the suite's two BRPOPLPUSH/WATCH fixtures close their deferred clients even when their body raises, and wait until the blocked-client count is back to its start.
+A second zero-fuzz patch makes the suite's two BRPOPLPUSH/WATCH fixtures close their deferred clients even when their body raises, and wait until the blocked-client count is back to its start.
 - rejected: an agent proposed changing server list semantics, weakening the later assertion or making WATCH succeed; the owner rejected it, because the fixtures otherwise leave two infinite list waiters that consume the setup values of a later RPOPLPUSH case.
 
 ### decision redis-suite-recording-skips-hangs-and-reports-them-apart

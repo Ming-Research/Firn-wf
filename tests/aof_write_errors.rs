@@ -126,6 +126,14 @@ fn stop(client: &mut TcpStream, child: ProgramChild) {
     assert_eq!(client.read(&mut [0]).unwrap(), 0);
 }
 
+fn stop_logged(client: &mut TcpStream, child: ProgramChild) -> String {
+    client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+    let (status, stdout) = finished(child);
+    assert_eq!(status, 0);
+    assert_eq!(client.read(&mut [0]).unwrap(), 0);
+    String::from_utf8_lossy(&stdout).into_owned()
+}
+
 fn seed(client: &mut TcpStream, path: &Path) -> Vec<u8> {
     assert_eq!(memory_request(client, &["SET", "readable", "v"]), "+OK\r\n");
     let bytes = resp(&["SET", "readable", "v"]);
@@ -178,7 +186,9 @@ fn aof_failure_refuses_write_flags_and_ping_and_recovers_without_new_writes() {
             &["SADD", "s", "v"], &["SREM", "s", "v"], &["SPOP", "s", "0"], &["SMOVE", "s", "other", "v"],
             &["SINTERSTORE", "out", "s"], &["SUNIONSTORE", "out", "s"], &["SDIFFSTORE", "out", "s"],
             &["ZADD", "z", "1", "v"], &["ZINCRBY", "z", "1", "v"], &["ZREM", "z", "v"],
-            &["ZPOPMIN", "z", "0"], &["ZPOPMAX", "z", "0"],
+            &["ZPOPMIN", "z", "0"], &["ZPOPMAX", "z", "0"], &["ZMPOP", "1", "z", "MIN"],
+            &["ZUNIONSTORE", "out", "1", "z"], &["ZINTERSTORE", "out", "1", "z"], &["ZDIFFSTORE", "out", "1", "z"],
+            &["ZRANGESTORE", "out", "z", "0", "-1"],
             &["ZREMRANGEBYRANK", "z", "0", "-1"], &["ZREMRANGEBYSCORE", "z", "-inf", "+inf"],
             &["ZREMRANGEBYLEX", "z", "-", "+"], &["FUNCTION", "FLUSH"],
             &["PING"], &["PING", "message"],
@@ -205,8 +215,16 @@ fn aof_failure_refuses_write_flags_and_ping_and_recovers_without_new_writes() {
         assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n");
         assert_eq!(memory_request(&mut client, &["SET", "after", "a"]), "+OK\r\n");
         expected.extend(resp(&["SET", "after", "a"]));
-        stop(&mut client, child);
+        let log = stop_logged(&mut client, child);
         assert_eq!(std::fs::read(path).unwrap(), expected);
+        // Redis logs one error line in thirty seconds and one when a write works again.
+        let errors: Vec<&str> = log.lines().filter(|line| line.contains("# Error writing to the AOF file: ")).collect();
+        assert_eq!(errors.len(), 1, "{log}");
+        assert!(errors[0].ends_with("Error writing to the AOF file: File too large"), "{log}");
+        let solved = log.lines().position(|line| line.ends_with("* AOF write error looks solved, Redis can write again."))
+            .unwrap_or_else(|| panic!("no recovery line in {log}"));
+        let failed = log.lines().position(|line| line.contains("# Error writing to the AOF file: ")).unwrap();
+        assert!(failed < solved, "{log}");
     }
 }
 
@@ -337,9 +355,12 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
         ignored_xfsz(&child);
         file_limit(&child, old.soft);
         wait_status(&mut client, "ok");
-        expected.extend(retained);
+        expected.extend(retained.clone());
         wait_bytes(&path, &expected);
-        stop(&mut client, child);
+        let log = stop_logged(&mut client, child);
+        let short = format!("# Short write while writing to the AOF file: (nwritten=7, expected={})", retained.len());
+        assert_eq!(log.lines().filter(|line| line.ends_with(&short)).count(), 1, "{log}");
+        assert!(log.lines().any(|line| line.ends_with("* AOF write error looks solved, Redis can write again.")), "{log}");
         assert_eq!(std::fs::read(&path).unwrap(), expected);
         let (replayed, mut reader, _) = start(&program, native);
         assert_eq!(memory_request(&mut reader, &["LRANGE", "events", "0", "-1"]),

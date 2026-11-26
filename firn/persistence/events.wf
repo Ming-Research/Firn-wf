@@ -1,0 +1,139 @@
+alias Keyspace = pkg::store::Keyspace;
+alias level_notice = pkg::serverlog::level_notice;
+alias level_warning = pkg::serverlog::level_warning;
+alias log_message_append = pkg::serverlog::log_message_append;
+alias log_message_error = pkg::serverlog::log_message_error;
+alias log_message_new = pkg::serverlog::log_message_new;
+alias log_message_number = pkg::serverlog::log_message_number;
+alias serverlog_write = pkg::serverlog::serverlog_write;
+
+const event_loaded_head: Array<u8, 33> = "DB loaded from append only file: ";
+
+const event_loaded_tail: Array<u8, 8> = " seconds";
+
+const event_cut_head: Array<u8, 51> = "!!! Warning: short read while loading the AOF file ";
+
+const event_cut_tail: Array<u8, 3> = "!!!";
+
+const event_truncating_head: Array<u8, 23> = "!!! Truncating the AOF ";
+
+const event_truncating_mid: Array<u8, 11> = " at offset ";
+
+const event_truncating_tail: Array<u8, 4> = " !!!";
+
+const event_anyway_head: Array<u8, 4> = "AOF ";
+
+const event_anyway_tail: Array<u8, 52> = " loaded anyway because aof-load-truncated is enabled";
+
+const event_dot: Array<u8, 1> = ".";
+
+const event_zero: Array<u8, 1> = "0";
+
+const event_rewrite_start: Array<u8, 45> = "Background append only file rewriting started";
+
+const event_rewrite_terminated: Array<u8, 46> = "Background AOF rewrite terminated with success";
+
+const event_rewrite_finished: Array<u8, 44> = "Background AOF rewrite finished successfully";
+
+const event_rewrite_error: Array<u8, 44> = "Background AOF rewrite terminated with error";
+
+const event_write_error: Array<u8, 31> = "Error writing to the AOF file: ";
+
+const event_short_head: Array<u8, 53> = "Short write while writing to the AOF file: (nwritten=";
+
+const event_short_mid: Array<u8, 11> = ", expected=";
+
+const event_short_tail: Array<u8, 1> = ")";
+
+const event_solved: Array<u8, 52> = "AOF write error looks solved, Redis can write again.";
+
+const event_fsync_error: Array<u8, 28> = "Fail to fsync the AOF file: ";
+
+fn event_text(store: &Keyspace, level: u64, word: &[u8]) -> result: unit reads(store), reads(word) waits {
+  doc "Queues a log line for an event of the append-only file's life whose whole message is word, from the server's context M.";
+  let message = log_message_new();
+  log_message_append(message: &message, source: word);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level, message: &message);
+  return unit;
+}
+
+fn event_loaded(store: &Keyspace, nanoseconds: u64) -> result: unit reads(store) waits {
+  doc "Queues Redis's line for a load of the append-only file, its seconds to the millisecond as Redis's %.3f prints them.";
+  let message = log_message_new();
+  let rounded = nanoseconds +sat 500000_u64;
+  let millis = rounded / 1000000_u64;
+  let seconds = millis / 1000_u64;
+  let fraction = millis % 1000_u64;
+  log_message_append(message: &message, source: &event_loaded_head[0_u64..33_u64]);
+  log_message_number(message: &message, number: seconds);
+  log_message_append(message: &message, source: &event_dot[0_u64..1_u64]);
+  if fraction < 100_u64 {
+    log_message_append(message: &message, source: &event_zero[0_u64..1_u64]);
+  }
+  if fraction < 10_u64 {
+    log_message_append(message: &message, source: &event_zero[0_u64..1_u64]);
+  }
+  log_message_number(message: &message, number: fraction);
+  log_message_append(message: &message, source: &event_loaded_tail[0_u64..8_u64]);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_notice, message: &message);
+  return unit;
+}
+
+fn event_cutting(store: &Keyspace, name: &[u8], offset: u64) -> result: unit reads(store), reads(name) waits {
+  doc "Queues Redis's two warnings for an append-only file whose tail is cut after the replay, named as the file is named in the manifest and with the offset it is cut at.";
+  let first = log_message_new();
+  log_message_append(message: &first, source: &event_cut_head[0_u64..51_u64]);
+  log_message_append(message: &first, source: name);
+  log_message_append(message: &first, source: &event_cut_tail[0_u64..3_u64]);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &first);
+  let second = log_message_new();
+  log_message_append(message: &second, source: &event_truncating_head[0_u64..23_u64]);
+  log_message_append(message: &second, source: name);
+  log_message_append(message: &second, source: &event_truncating_mid[0_u64..11_u64]);
+  log_message_number(message: &second, number: offset);
+  log_message_append(message: &second, source: &event_truncating_tail[0_u64..4_u64]);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &second);
+  return unit;
+}
+
+fn event_cut_loaded(store: &Keyspace, name: &[u8]) -> result: unit reads(store), reads(name) waits {
+  doc "Queues Redis's warning that an append-only file was loaded after its tail was cut.";
+  let message = log_message_new();
+  log_message_append(message: &message, source: &event_anyway_head[0_u64..4_u64]);
+  log_message_append(message: &message, source: name);
+  log_message_append(message: &message, source: &event_anyway_tail[0_u64..52_u64]);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &message);
+  return unit;
+}
+
+fn event_write_failed(store: &Keyspace, written: u64, expected: u64, problem: &Option<std::io::IoError>) -> result: unit reads(store), reads(problem) waits {
+  doc "Queues Redis's warning for a failed append: the host's error when nothing was written, otherwise the short write's counts.";
+  let message = log_message_new();
+  if written == 0_u64 {
+    log_message_append(message: &message, source: &event_write_error[0_u64..31_u64]);
+    match problem^ {
+      Some(value: failure) => {
+        log_message_error(message: &message, problem: failure);
+      }
+      None() => {
+      }
+    }
+  } else {
+    log_message_append(message: &message, source: &event_short_head[0_u64..53_u64]);
+    log_message_number(message: &message, number: written);
+    log_message_append(message: &message, source: &event_short_mid[0_u64..11_u64]);
+    log_message_number(message: &message, number: expected);
+    log_message_append(message: &message, source: &event_short_tail[0_u64..1_u64]);
+  }
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &message);
+  return unit;
+}
+
+fn event_sync_failed(store: &Keyspace, problem: &std::io::IoError) -> result: unit reads(store), reads(problem) waits {
+  doc "Queues Redis's warning for the first failed sync of the append-only file.";
+  let message = log_message_new();
+  log_message_append(message: &message, source: &event_fsync_error[0_u64..28_u64]);
+  log_message_error(message: &message, problem: problem);
+  serverlog_write(log: &store^.log, role: 77_u8, level: level_warning, message: &message);
+  return unit;
+}
