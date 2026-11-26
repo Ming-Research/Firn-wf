@@ -1,6 +1,6 @@
 # Benchmarks
 
-How a Redis benchmark runs on the shared self-hosted machine: what it stops when it ends, which CPUs servers and clients take, how each firn image is started, and how the competitor lines, their durability, the client's connections and the p99 verdict are measured.
+How a Redis benchmark runs on the shared self-hosted machine: what it stops when it ends, which CPUs servers, clients and the profiler take, which passes and profiled runs it voids and runs again for other load on the machine, how each firn image is started, and how the competitor lines, their durability, the client's connections and the p99 verdict are measured.
 
 ### decision benchmark-session-stops-only-what-it-registered
 A measurement stops its session whole while the session's leader runs, and after that only the servers it registered, each through a pidfd, TERM and then KILL.
@@ -63,3 +63,8 @@ A competitor comparison runs one more single-process threaded pass for every lin
 ### decision benchmark-unsupported-tests-run-in-a-separate-dispatch
 A test that a competitor line cannot run is measured in a separate dispatch that does not select the line, and a formal run does not skip it automatically.
 - rejected: an agent proposed probing each line with the test's command and skipping the line with a recorded skip row; the owner rejected it, because it needs new code and self-checks, and a failing run keeps a competitor from disappearing silently.
+
+### decision benchmark-voids-passes-run-beside-other-jobs
+A comparison pass or profiled run during which the CPUs outside the server, client and profiler CPUs averaged busier than the threshold its record states is void and is run again.
+- rejected: an agent proposed that the owner keep the 14900K free of other jobs for each measurement; the owner rejected it, because it needs the owner at every measurement, stops other works for about 45 minutes, and protects no later measurement.
+- rejected: an agent proposed a machine lock in Whitefoot-kit that every project's 14900K tests share and a measurement takes alone; the owner rejected it, because it needs a separate kit item this work would wait for, and every agent's tests would queue for up to an hour during a measurement.

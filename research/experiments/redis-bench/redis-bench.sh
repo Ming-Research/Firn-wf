@@ -13,11 +13,13 @@
 #                                 check both recorded argument forms without
 #                                 building or starting any server
 #   sh redis-bench.sh placement-selftest
-#                                 check placement against fake Linux topology
-#                                 and the per-CPU busy reading against a fake
-#                                 /proc/stat, plus compare selection, client
-#                                 allocation/CSV, version and competitor pure
-#                                 logic, without building or starting a server
+#                                 check placement against fake Linux topology,
+#                                 the per-CPU busy reading, the set of other
+#                                 CPUs, the void decision and the control's
+#                                 verdict against a fake /proc/stat, plus compare
+#                                 selection, client allocation/CSV, version and
+#                                 competitor pure logic, without building or
+#                                 starting any server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
 #                                 Redis 7.0's redis-benchmark default suite
 #                                 (SUITE_DEFAULT) on every line
@@ -56,10 +58,14 @@
 #                                 naming a perf executable it then records a
 #                                 flat profile of each image under
 #                                 COMPARE_PROFILE (default mset at depth 16),
-#                                 and with PERF_C2C set a perf c2c report of
-#                                 the cache lines cores contend for;
-#                                 on Linux it records each server and client
-#                                 CPU's busy fraction per sample; each image
+#                                 cycles and retired instructions side by side
+#                                 (profile-*.txt holds one table of each, from
+#                                 perf report), and with PERF_C2C set a perf c2c
+#                                 report of the cache lines cores contend for;
+#                                 every perf command runs on PERF_CPU;
+#                                 it records each server, client and other
+#                                 CPU's busy fraction per sample, from
+#                                 /proc/stat, which it needs; each image
 #                                 runs with as many Whitefoot drivers as server
 #                                 CPUs, or IMAGE_DRIVERS when it is set
 #                                 with COMPARE_MAXMEMORY set to a byte count
@@ -133,6 +139,11 @@
 #                                 It reuses fixed request counts and may run
 #                                 longer than COMPARE_SECONDS near the earlier
 #                                 ~6.7M requests/s threaded-client ceiling.
+#                                 The exact pass is an attempt of the void
+#                                 rule too: one that read busy is run again
+#                                 and its rows are relabelled exact-void-N in
+#                                 compare.csv and the files beside it, so that
+#                                 only a clean attempt is labelled exact.
 #                                 compare-memory.csv records used_memory,
 #                                 RSS (INFO or /proc fallback), and VmHWM
 #                                 after each measured server's pass, in bytes.
@@ -140,10 +151,46 @@
 #                                 timed span and send LRANGE themselves, since
 #                                 redis-benchmark's own fill would be timed;
 #                                 summary.py ratios compares two images' passes
-#                                 in compare.csv, with a twin as the noise
-#                                 control, leaving out the pass=exact rows.
-#                                 The -latest lines of workloads are not
-#                                 compare lines.
+#                                 in compare.csv, with a twin as the noise,
+#                                 leaving out the pass=exact rows and the
+#                                 attempts compare-void.csv lists. The -latest
+#                                 lines of workloads are not compare lines.
+#
+# The void rule of compare mode. Other jobs run on the shared machine, so a
+# comparison reads the CPUs it does not use. PERF_CPU is the lowest online CPU
+# (of /proc/stat) outside SERVER_CPUS and CLIENT_CPUS and takes the profiler;
+# the other CPUs are every online CPU outside those three lists. Each client
+# run's mean busy fraction over the other CPUs is kept in compare-runs.csv
+# (cpus,line,attempt,kind,test,depth,start,end,other_busy; start and end in
+# epoch seconds around the client run, kind pass or profile), decided before
+# any result is read and without looking at results:
+#   threshold  COMPARE_OTHER_BUSY_MAX (default 0.05), a reading above it is busy.
+#   control    before the images start, the other CPUs are read for 2 s, two
+#              busy loops are started on two of them and they are read for 2 s
+#              again (compare-control.csv); the run fails unless the loaded
+#              reading is above the threshold and above the idle one by at
+#              least half of loops/other CPUs, the rise the loops make, or if
+#              there is no other CPU. summary.py selftest also runs first.
+#   passes     a pass attempt is void when any of its runs read above the
+#              threshold; it stays in compare.csv, is listed in
+#              compare-void.csv and is run again. compare.csv's pass column
+#              numbers the attempts; an attempt's image order follows the number
+#              of the clean pass it would become (odd forward, even reversed),
+#              so a replacement runs in the order of the attempt it replaces.
+#              Attempts go on until COMPARE_PASSES are clean or
+#              COMPARE_DEADLINE_MINUTES (default 115) after the session began.
+#   waiting    before each attempt, and before each control, the other CPUs are
+#              read for 2 s; while above the threshold the run waits 10 s and
+#              reads again, at most COMPARE_WAIT_MAX seconds (default 600) for
+#              one wait and COMPARE_WAIT_BUDGET seconds (default 2700) for all
+#              of a session; then it goes on and the void rule decides.
+#   profiles   each profiled run waits the same way, at most
+#              COMPARE_PROFILE_WAIT_MAX seconds (default 120); one that reads
+#              above the threshold is run once more, and one that again reads
+#              above it, or has no time to be repeated, is listed in
+#              profile-void.csv. From COMPARE_PROFILE_DEADLINE_MINUTES (default
+#              140) after the session began a profiled run neither waits nor is
+#              repeated.
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -563,7 +610,8 @@ placement_for_count() {
 # (user and nice) and the kernel share (system, irq and softirq), since a
 # thread spinning through sched_yield shows as kernel time. Prints
 # cpu,role,busy,user,system for each CPU of the two comma-separated lists in
-# turn.
+# turn, and then, for an optional fifth argument, of the other CPUs, as role
+# other; a list may be empty.
 cpu_busy() {
     python3 - "$@" <<'PY'
 import sys
@@ -580,8 +628,9 @@ def ticks(path):
 
 try:
     before, after = ticks(sys.argv[1]), ticks(sys.argv[2])
-    for role, cpus in (("server", sys.argv[3]), ("client", sys.argv[4])):
-        for cpu in map(int, cpus.split(",")):
+    lists = (("server", sys.argv[3]), ("client", sys.argv[4]), ("other", sys.argv[5] if len(sys.argv) > 5 else ""))
+    for role, cpus in lists:
+        for cpu in (int(x) for x in cpus.split(",") if x):
             if cpu not in before or cpu not in after:
                 raise ValueError(f"/proc/stat has no line for cpu{cpu}")
             delta = [a - b for a, b in zip(after[cpu], before[cpu])]
@@ -622,6 +671,94 @@ work_limited() {
     awk 'NR == 1 && NF == 1 && $1 ~ /^[0-9.]+$/ {
             printf "%.4f,%d\n", $1, (sprintf("%.4f", $1) + 0 > 0.9) ? 1 : 0; ok = 1 }
         END { if (!ok) { print "work_limited: no client_work_fraction" > "/dev/stderr"; exit 1 } }' "$1"
+}
+
+# The CPUs a comparison does not use, from the CPU lines of the copy of
+# /proc/stat in <file>, which lists the online CPUs: with <what> perf, the
+# lowest online CPU outside <server CPUs> and <client CPUs>, where the profiler
+# runs; with <what> other, the rest of the CPUs outside them as a comma-
+# separated list, empty when the profiler's CPU is the only one left. Fails
+# when no online CPU is left.
+other_cpus_of() {
+    awk -v servers="$2" -v clients="$3" -v want="$4" '
+        BEGIN {
+            n = split(servers "," clients, used, ",")
+            for (i = 1; i <= n; i++) if (used[i] != "") taken[used[i] + 0] = 1
+        }
+        $1 ~ /^cpu[0-9]+$/ {
+            cpu = substr($1, 4) + 0
+            if (!(cpu in taken)) free[++count] = cpu
+        }
+        END {
+            if (count == 0) {
+                print "other_cpus_of: no online CPU outside the server and client CPUs" > "/dev/stderr"
+                exit 1
+            }
+            for (i = 2; i <= count; i++) {
+                for (j = i; j > 1 && free[j - 1] > free[j]; j--) {
+                    swap = free[j]; free[j] = free[j - 1]; free[j - 1] = swap
+                }
+            }
+            if (want == "perf") { print free[1]; exit 0 }
+            list = ""
+            for (i = 2; i <= count; i++) list = list (i > 2 ? "," : "") free[i]
+            print list
+        }' "$1"
+}
+
+# The mean busy fraction over the other CPUs, to four decimals, from
+# cpu_busy's output in <file>; fails when it holds no other CPU.
+other_busy() {
+    awk -F, '$2 == "other" { sum += $3; count++ }
+        END {
+            if (count == 0) { print "other_busy: no other CPU" > "/dev/stderr"; exit 1 }
+            printf "%.4f\n", sum / count
+        }' "$1"
+}
+
+# Whether the reading <reading> is busy: above <limit>, never at it.
+above_threshold() {
+    awk -v reading="$1" -v limit="$2" 'BEGIN { exit !(reading + 0 > limit + 0) }'
+}
+
+# Whether an attempt is void. Of the rows of <runs file> (compare-runs.csv)
+# with this CPU count, kind and attempt it prints the number of runs, how many
+# read above <limit> and the highest reading; it exits 0 when any run did, 1
+# when none did and 2 when the file has no run of the attempt.
+attempt_void() {
+    awk -F, -v cpus="$2" -v kind="$3" -v attempt="$4" -v limit="$5" '
+        $1 == cpus && $4 == kind && $3 == attempt {
+            runs++
+            if ($9 + 0 > limit + 0) above++
+            if ($9 + 0 > max) max = $9 + 0
+        }
+        END {
+            printf "%d %d %.4f\n", runs, above, max
+            if (runs == 0) exit 2
+            exit !(above > 0)
+        }' "$1"
+}
+
+# Relabels the rows that <file> (a compare CSV whose second column is the pass)
+# gained after its line <from> and that are labelled exact: a void attempt of
+# the exact pass keeps its rows as exact-void-<attempt>, so that only the rows
+# of a clean attempt are labelled exact.
+relabel_exact_void() {
+    awk -F, -v OFS=, -v from="$2" -v label="$3" \
+        'NR > from && $2 == "exact" { $2 = label } { print }' "$1" >"$1.relabel" &&
+        mv "$1.relabel" "$1"
+}
+
+# Whether the control held: with <loops> busy loops on as many of <others>
+# other CPUs, the loaded reading is above <limit> and above the idle one by at
+# least half of loops/others, the rise the loops make. It fails without a
+# loop or without another CPU, which would read nothing.
+control_verdict() {
+    awk -v idle="$1" -v loaded="$2" -v limit="$3" -v loops="$4" -v others="$5" 'BEGIN {
+        if (others + 0 < 1 || loops + 0 < 1) exit 1
+        rise = loops / others
+        exit !(loaded + 0 > limit + 0 && loaded - idle >= rise / 2)
+    }'
 }
 
 placement_selftest() (
@@ -785,6 +922,118 @@ placement_selftest() (
         echo "placement-selftest: cpu_busy accepted a CPU /proc/stat lacks" >&2
         exit 1
     }
+    # The other CPUs, from a 32-CPU /proc/stat: servers 2,4 and clients 16-31
+    # leave CPU 0 to the profiler and 1,3,5-15 as the other CPUs, the server
+    # cores' sibling threads 3 and 5 among them.
+    {
+        printf 'cpu  0 0 0 3200 0 0 0 0 0 0\n'
+        cpu=0
+        while [ "$cpu" -lt 32 ]; do
+            printf 'cpu%s 0 0 0 100 0 0 0 0 0 0\n' "$cpu"
+            cpu=$((cpu + 1))
+        done
+        printf 'intr 0\nctxt 0\n'
+    } >"$fixture/stat32"
+    clients=$(seq -s, 16 31)
+    actual=$(other_cpus_of "$fixture/stat32" 2,4 "$clients" perf)
+    [ "$actual" = 0 ] || {
+        echo "placement-selftest: the profiler's CPU was '$actual', expected 0" >&2
+        exit 1
+    }
+    actual=$(other_cpus_of "$fixture/stat32" 2,4 "$clients" other)
+    [ "$actual" = 1,3,5,6,7,8,9,10,11,12,13,14,15 ] || {
+        echo "placement-selftest: the other CPUs were '$actual'" >&2
+        exit 1
+    }
+    # Only the profiler's CPU left: no other CPU. None left: a failure.
+    actual=$(other_cpus_of "$fixture/stat32" "$(seq -s, 0 6)" "$(seq -s, 8 31)" perf)
+    [ "$actual" = 7 ] || {
+        echo "placement-selftest: the lone remaining CPU was '$actual', expected 7" >&2
+        exit 1
+    }
+    actual=$(other_cpus_of "$fixture/stat32" "$(seq -s, 0 6)" "$(seq -s, 8 31)" other)
+    [ -z "$actual" ] || {
+        echo "placement-selftest: other CPUs '$actual' with only the profiler's left" >&2
+        exit 1
+    }
+    status=0
+    other_cpus_of "$fixture/stat32" "$(seq -s, 0 15)" "$clients" perf >/dev/null 2>"$fixture/stderr" || status=$?
+    [ "$status" = 1 ] && grep -q 'no online CPU outside' "$fixture/stderr" || {
+        echo "placement-selftest: other_cpus_of accepted a machine with no CPU left" >&2
+        exit 1
+    }
+    # The other role of cpu_busy, from the fixtures above: cpu1 idle and cpu2
+    # half busy read 0.2500 together; without the role there is no reading.
+    cpu_busy "$fixture/stat-before" "$fixture/stat-after" 0 '' 1,2 >"$fixture/other-busy"
+    actual=$(other_busy "$fixture/other-busy")
+    [ "$actual" = 0.2500 ] || {
+        echo "placement-selftest: other_busy gave '$actual', expected 0.2500" >&2
+        exit 1
+    }
+    [ "$(grep -c ',other,' "$fixture/other-busy")" = 2 ] && [ "$(grep -c ',server,' "$fixture/other-busy")" = 1 ] || {
+        echo "placement-selftest: cpu_busy did not name the roles of its three lists" >&2
+        exit 1
+    }
+    cpu_busy "$fixture/stat-before" "$fixture/stat-after" 0 1,2 >"$fixture/no-other"
+    status=0
+    other_busy "$fixture/no-other" >/dev/null 2>"$fixture/stderr" || status=$?
+    [ "$status" = 1 ] && grep -q 'no other CPU' "$fixture/stderr" || {
+        echo "placement-selftest: other_busy accepted a reading with no other CPU" >&2
+        exit 1
+    }
+    # A reading is busy above the threshold and not at it.
+    for pair in '0.0501 1' '0.0500 0' '0.0000 0' '0.2000 1'; do
+        set -- $pair
+        status=0
+        above_threshold "$1" 0.05 || status=1
+        [ "$status" = "$((1 - $2))" ] || {
+            echo "placement-selftest: above_threshold read $1 against 0.05 wrongly" >&2
+            exit 1
+        }
+    done
+    # An attempt is void when any run of its kind, in its CPU count, read
+    # above the threshold: attempt 1 has readings 0.0100 and 0.0500 (not void),
+    # attempt 2 has 0.0200 and 0.0501 (void); the profiled run of attempt 1
+    # read 0.2000 and does not make the pass void; four CPUs' attempt 3 read
+    # 0.9000 and two CPUs' has no run.
+    printf '%s\n' cpus,line,attempt,kind,test,depth,start,end,other_busy \
+        2,a,1,pass,hset,16,100,105,0.0100 2,b,1,pass,hset,16,106,111,0.0500 \
+        2,a,2,pass,hset,16,200,205,0.0200 2,b,2,pass,hset,16,206,211,0.0501 \
+        2,a,1,profile,hset,16,300,305,0.2000 4,a,3,pass,hset,16,400,405,0.9000 >"$fixture/runs.csv"
+    expect_void() {
+        status=0
+        actual=$(attempt_void "$fixture/runs.csv" "$2" "$3" "$4" 0.05) || status=$?
+        [ "$status" = "$1" ] && [ "$actual" = "$5" ] || {
+            echo "placement-selftest: attempt_void gave status $status '$actual' for cpus $2 $3 $4, expected $1 '$5'" >&2
+            exit 1
+        }
+    }
+    expect_void 1 2 pass 1 '2 0 0.0500'
+    expect_void 0 2 pass 2 '2 1 0.0501'
+    expect_void 0 2 profile 1 '1 1 0.2000'
+    expect_void 0 4 pass 3 '1 1 0.9000'
+    expect_void 2 2 pass 3 '0 0 0.0000'
+    # The control holds when two loops on two of 13 other CPUs (a rise of
+    # 0.1538) take the reading above the threshold and well above the idle one;
+    # not at the threshold even when the rise of one loop is there, not with a
+    # rise that the loops do not explain, not without a loop or without another
+    # CPU.
+    expect_control() {
+        status=0
+        control_verdict "$2" "$3" 0.05 "$4" "$5" || status=1
+        [ "$status" = "$1" ] || {
+            echo "placement-selftest: control_verdict gave status $status for idle $2 loaded $3 loops $4 others $5, expected $1" >&2
+            exit 1
+        }
+    }
+    expect_control 0 0.0100 0.1700 2 13
+    expect_control 1 0.0100 0.0500 1 13
+    expect_control 0 0.0100 0.0501 1 13
+    expect_control 1 0.0400 0.0450 2 13
+    expect_control 1 0.0600 0.0700 2 13
+    expect_control 1 0.0100 0.1700 0 13
+    expect_control 1 0.0100 0.1700 2 0
+    expect_control 0 0.0100 0.3000 1 2
     echo 'placement-selftest: passed'
 )
 
@@ -935,6 +1184,15 @@ compare_rows_selftest() (
     compare_percentile_rows firn,1,1,set,1 100 procs "$fixture/allocation" "$fixture/latencies" 1000,0.125,4.000,9.000,exact \
         >"$fixture/rows"
     grep -q ',all,50,100,4.000,9.000,exact$' "$fixture/rows" || exit 1
+    # A void exact attempt is relabelled past the lines the file held before
+    # it: earlier exact rows, other passes and the header stay as they are.
+    printf '%s\n' 'line,pass,cpus' 'firn,1,2' 'firn,exact,2' 'firn,exact,2' 'valkey,3,2' 'valkey,exact,2' \
+        >"$fixture/exact-rows"
+    relabel_exact_void "$fixture/exact-rows" 3 exact-void-9 || exit 1
+    printf '%s\n' 'line,pass,cpus' 'firn,1,2' 'firn,exact,2' 'firn,exact-void-9,2' 'valkey,3,2' 'valkey,exact-void-9,2' \
+        >"$fixture/exact-expected"
+    cmp -s "$fixture/exact-rows" "$fixture/exact-expected" ||
+        { echo 'compare-rows-selftest: wrong exact-void relabelling' >&2; exit 1; }
     echo 'compare-rows-selftest: passed'
 )
 
@@ -1645,7 +1903,8 @@ server_ticks() {
 # COMPARE_CLIENT=threads runs one redis-benchmark with CLIENT_THREADS
 # threads instead of one process per client CPU. With cpu_record set, it copies
 # /proc/stat to compare-stat-before and compare-stat-after just outside the
-# timed interval, for cpu_busy.
+# timed interval, for cpu_busy, and keeps the interval's start and end in
+# nanoseconds since the epoch in compare-times, for finish_run.
 compare_client() {
     cmp_test=$1
     cmp_depth=$2
@@ -1738,6 +1997,7 @@ compare_client() {
     fi
     cmp_end=$(date +%s%N)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-after"
+    echo "$cmp_begin $cmp_end" >"$OUT/compare-times"
     cmp_after=$(server_ticks) || return 1
     cmp_ticks=$((cmp_after - cmp_ticks))
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
@@ -1762,15 +2022,148 @@ compare_client() {
     printf '%s\n' "$cmp_sample"
 }
 
+# The mean busy fraction of the other CPUs over <seconds>, read from /proc/stat.
+other_read() {
+    cat /proc/stat >"$OUT/other-stat-before"
+    sleep "$1"
+    cat /proc/stat >"$OUT/other-stat-after"
+    cpu_busy "$OUT/other-stat-before" "$OUT/other-stat-after" '' '' "$OTHER_CPUS" >"$OUT/other-busy" || return 1
+    other_busy "$OUT/other-busy"
+}
+
+# Waits until the other CPUs read at or below the threshold, reading them for 2 s
+# and then, while they are above it, waiting 10 s before the next reading: at
+# most <max> seconds. With <budget> yes the seconds waited also count against
+# the session's COMPARE_WAIT_BUDGET, and a wait that would pass it ends. The
+# last reading stays in wait_reading. Never call it from a pipeline: a failed
+# reading ends the run.
+wait_quiet() {
+    quiet_max=$1 quiet_budget=$2
+    quiet_began=$(date +%s)
+    quiet_waiting=
+    while :; do
+        wait_reading=$(other_read 2) || exit 1
+        above_threshold "$wait_reading" "$OTHER_BUSY_MAX" || break
+        quiet_waiting=yes
+        quiet_waited=$(($(date +%s) - quiet_began))
+        if [ "$quiet_waited" -ge "$quiet_max" ] ||
+            { [ "$quiet_budget" = yes ] && [ $((wait_spent + quiet_waited)) -ge "$WAIT_BUDGET" ]; }; then
+            echo "wait,gave up,other_busy=$wait_reading,waited=${quiet_waited}s"
+            break
+        fi
+        echo "wait,other_busy=$wait_reading,waited=${quiet_waited}s"
+        sleep 10
+    done
+    if [ -n "$quiet_waiting" ] && [ "$quiet_budget" = yes ]; then
+        wait_spent=$((wait_spent + $(date +%s) - quiet_began))
+    fi
+}
+
+# The control: the reading of the other CPUs must answer to a load that is known
+# to be there. After a wait for quiet, the other CPUs are read for 2 s idle,
+# then with a busy loop on each of the first two of them for 2 s again, and the
+# run fails unless control_verdict holds. Each loop ends by its pid, and by its
+# own limit of 30 s should this shell die.
+other_control() {
+    wait_quiet "$WAIT_MAX" yes
+    control_idle=$(other_read 2) || exit 1
+    set -- $(echo "$OTHER_CPUS" | tr ',' ' ')
+    control_others=$#
+    control_loop_cpus=$(echo "$OTHER_CPUS" | tr ',' ' ' | awk '{ print $1 (NF > 1 ? " " $2 : "") }')
+    control_loops=0
+    control_pids=
+    for control_cpu in $control_loop_cpus; do
+        taskset -c "$control_cpu" timeout 30 sh -c 'while :; do :; done' &
+        control_pids="$control_pids $!"
+        control_loops=$((control_loops + 1))
+    done
+    for control_pid in $control_pids; do
+        echo "control,loop $(taskset -cp "$control_pid" 2>&1 | tr '\n' ' ')"
+    done
+    control_loaded=$(other_read 2) || exit 1
+    kill $control_pids 2>/dev/null || true
+    wait $control_pids 2>/dev/null || true
+    control_result=failed
+    if control_verdict "$control_idle" "$control_loaded" "$OTHER_BUSY_MAX" "$control_loops" "$control_others"; then
+        control_result=held
+    fi
+    echo "$n,$control_idle,$control_loaded,$OTHER_BUSY_MAX,$control_loops,$control_others,$control_result" |
+        tee -a "$OUT/compare-control.csv"
+    if [ "$control_result" != held ]; then
+        echo "compare: the control failed: $control_loops busy loops on $control_loop_cpus of $control_others other CPUs read $control_loaded against $control_idle idle, the threshold being $OTHER_BUSY_MAX" >&2
+        exit 1
+    fi
+}
+
+# After a compare_client run: reads the run's per-CPU busy fractions from the
+# two copies of /proc/stat into compare-busy, sets run_other to the other CPUs'
+# mean and adds the run to compare-runs.csv as <kind> (pass or profile) of
+# <line>'s attempt, <test> at <depth>, with its start and end in epoch seconds.
+finish_run() {
+    cpu_busy "$OUT/compare-stat-before" "$OUT/compare-stat-after" "$SERVER_CPUS" "$CLIENT_CPUS" "$OTHER_CPUS" >"$OUT/compare-busy" || exit 1
+    run_other=$(other_busy "$OUT/compare-busy") || exit 1
+    read -r run_begin run_end <"$OUT/compare-times"
+    awk -v row="$n,$2,$3,$1,$4,$5" -v b="$run_begin" -v e="$run_end" -v other="$run_other" \
+        'BEGIN { printf "%s,%.3f,%.3f,%s\n", row, b / 1e9, e / 1e9, other }' >>"$OUT/compare-runs.csv"
+}
+
+# A line of the log with the time, so that the phases of a run can be timed.
+stamp() {
+    echo "time,$1,$(date +%s)"
+}
+
+# A setting of the run, in its output and in host.txt, as the others are.
+record_setting() {
+    echo "setting,$1"
+    if [ -f "$OUT/host.txt" ]; then
+        echo "setting,$1" >>"$OUT/host.txt"
+    fi
+}
+
+# The profiler's run of <name> on <test> at <depth> for <requests>: cycles and
+# retired instructions of the server, on PERF_CPU, as flat tables by symbol.
+profile_image() {
+    name=$1 ptest=$2 pdepth=$3 requests=$4
+    arg=$(compare_arg "$name") || exit 1
+    start "$arg"
+    # With PERF_CALLERS set, each sample carries a DWARF-unwound
+    # stack, since firn keeps no frame pointers.
+    taskset -c "$PERF_CPU" "$PERF" record -e cycles -e instructions ${PERF_CALLERS:+--call-graph dwarf,16384} \
+        -F "${PERF_FREQUENCY:-4999}" -p "$server" -o "$OUT/perf-$name-$n-$ptest.data" >/dev/null 2>&1 &
+    recorder=$!
+    sleep 1
+    echo "profile,$name,$ptest $pdepth,perf $(taskset -cp "$recorder" 2>&1 | tr '\n' ' ')"
+    profile_sample=$(compare_client "$ptest" "$pdepth" "$requests") || exit 1
+    echo "$profile_sample" | sed "s/^/profiled,$name,$n,$ptest,/"
+    compare_affinity_check "$arg" || exit 1
+    kill -INT "$recorder"
+    wait "$recorder" || true
+    stop
+    taskset -c "$PERF_CPU" "$PERF" report -i "$OUT/perf-$name-$n-$ptest.data" --stdio --no-children \
+        --sort dso,symbol --percent-limit 0.01 -g none >"$OUT/profile-$name-$n-$ptest.txt" 2>/dev/null
+    for symbol in $PERF_ANNOTATE; do
+        taskset -c "$PERF_CPU" "$PERF" annotate -i "$OUT/perf-$name-$n-$ptest.data" --stdio -s "$symbol" \
+            >"$OUT/annotate-$name-$n-$ptest-$symbol.txt" 2>/dev/null || true
+    done
+    if [ -n "$PERF_CALLERS" ]; then
+        taskset -c "$PERF_CPU" "$PERF" report -i "$OUT/perf-$name-$n-$ptest.data" --stdio --no-children \
+            --sort dso,symbol --percent-limit 0.3 -g caller,0.5,callee,function,percent \
+            >"$OUT/callers-$name-$n-$ptest.txt" 2>/dev/null
+    fi
+    rm -f "$OUT/perf-$name-$n-$ptest.data"
+}
+
 # The comparison of prebuilt images. A line whose replies fail verify stops
 # the run; every sample is kept as compare.csv's line,pass,cpus,test,depth,
 # requests,rps,server_cpu_us_per_request,p50_ms,p99_ms,quantiles, and each test's
 # request count is sized from the
-# fastest image's pilot so that every image runs the same count. Where
-# /proc/stat exists, each measured sample also gives compare-cpu.csv one
-# line,pass,cpus,test,depth,cpu,role,busy,user,system row per server and
-# client CPU: the fraction of that CPU's time not idle over the client's run,
-# and its user and kernel shares. compare-limited.csv has one
+# fastest image's pilot so that every image runs the same count. The run needs
+# /proc/stat, which the void rule reads, and each measured sample also gives
+# compare-cpu.csv one line,pass,cpus,test,depth,cpu,role,busy,user,system row per
+# server, client and other CPU: the fraction of that CPU's time not idle over the
+# client's run, and its user and kernel shares. The files of the void rule
+# (compare-runs.csv, compare-control.csv, compare-void.csv, profile-void.csv)
+# are described in the header's void rule. compare-limited.csv has one
 # line,pass,cpus,test,depth,client_busy_mean,client_limited row per sample: the
 # mean busy fraction over the client CPUs, and 1 when it is above 0.90, which
 # marks the cell client-limited. Each image's server log, which holds the
@@ -1822,14 +2215,42 @@ if [ "$MODE" = compare ]; then
             *) echo "COMPARE_REFERENCE requires Redis 7.2.16: $reference_version" >&2; exit 1 ;;
         esac
     fi
-    cpu_record=
-    if [ -r /proc/stat ]; then
-        cpu_record="$OUT/compare-cpu.csv"
-        echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$cpu_record"
-        echo 'line,pass,cpus,test,depth,client_busy_mean,client_limited' >"$OUT/compare-limited.csv"
-    else
-        echo "skip,compare-cpu.csv,no /proc/stat"
+    # The void rule reads /proc/stat, so a host without it cannot compare.
+    if [ ! -r /proc/stat ]; then
+        echo "compare needs /proc/stat: the void rule reads the CPUs it does not use" >&2
+        exit 1
     fi
+    cpu_record="$OUT/compare-cpu.csv"
+    EXACT_FILES="compare.csv compare-percentiles.csv compare-limited.csv compare-memory.csv compare-cpu.csv"
+    echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$cpu_record"
+    echo 'line,pass,cpus,test,depth,client_busy_mean,client_limited' >"$OUT/compare-limited.csv"
+    # The void rule (see the header): its limits, with the files it writes.
+    # summary.py's own test runs first, since ratios reads compare-void.csv.
+    session_start=$(date +%s)
+    OTHER_BUSY_MAX=${COMPARE_OTHER_BUSY_MAX:-0.05}
+    WAIT_MAX=${COMPARE_WAIT_MAX:-600}
+    WAIT_BUDGET=${COMPARE_WAIT_BUDGET:-2700}
+    DEADLINE_MINUTES=${COMPARE_DEADLINE_MINUTES:-115}
+    PROFILE_WAIT_MAX=${COMPARE_PROFILE_WAIT_MAX:-120}
+    PROFILE_DEADLINE_MINUTES=${COMPARE_PROFILE_DEADLINE_MINUTES:-140}
+    case $OTHER_BUSY_MAX in
+        ''|*[!0-9.]*|*.*.*|.|*.) echo "COMPARE_OTHER_BUSY_MAX must be a number such as 0.05, not '$OTHER_BUSY_MAX'" >&2; exit 1 ;;
+    esac
+    for limit in "$WAIT_MAX" "$WAIT_BUDGET" "$DEADLINE_MINUTES" "$PROFILE_WAIT_MAX" "$PROFILE_DEADLINE_MINUTES"; do
+        case $limit in
+            ''|*[!0-9]*) echo "the compare time limits must be whole numbers, not '$limit'" >&2; exit 1 ;;
+        esac
+    done
+    wait_spent=0
+    python3 "$ROOT/research/experiments/redis-bench/summary.py" selftest || exit 1
+    echo 'cpus,idle,loaded,threshold,loops,others,verdict' >"$OUT/compare-control.csv"
+    echo 'cpus,line,attempt,kind,test,depth,start,end,other_busy' >"$OUT/compare-runs.csv"
+    echo 'cpus,pass,number,runs,above,max_busy,threshold' >"$OUT/compare-void.csv"
+    echo 'cpus,line,test,depth,attempt,other_busy,threshold' >"$OUT/profile-void.csv"
+    record_setting "void-threshold=$OTHER_BUSY_MAX"
+    record_setting "void-deadlines-minutes=$DEADLINE_MINUTES,$PROFILE_DEADLINE_MINUTES"
+    record_setting "void-waits-seconds=$WAIT_MAX,$WAIT_BUDGET,$PROFILE_WAIT_MAX"
+    stamp session-start
     tests=${COMPARE_TESTS:-mset set get}
     if [ "$tests" = SUITE_DEFAULT ]; then
         tests=$(echo "$SUITE_DEFAULT" | tr ',' ' ')
@@ -1918,6 +2339,15 @@ if [ "$MODE" = compare ]; then
             fi
         fi
         reversed=$(echo $names | tr ' ' '\n' | awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) printf "%s ", a[i] }')
+        PERF_CPU=$(other_cpus_of /proc/stat "$SERVER_CPUS" "$CLIENT_CPUS" perf) || exit 1
+        OTHER_CPUS=$(other_cpus_of /proc/stat "$SERVER_CPUS" "$CLIENT_CPUS" other) || exit 1
+        record_setting "profiler-cpu=$PERF_CPU,other-cpus=$OTHER_CPUS,cpus=$n"
+        if [ -z "$OTHER_CPUS" ]; then
+            echo "compare: no CPU outside the server CPUs $SERVER_CPUS, the client CPUs $CLIENT_CPUS and the profiler's CPU $PERF_CPU: the void rule has nothing to read" >&2
+            exit 1
+        fi
+        other_control
+        stamp control-end
         for name in $names; do
             arg=$(compare_arg "$name") || exit 1
             echo "verify,$name,cpus=$n"
@@ -1941,27 +2371,50 @@ if [ "$MODE" = compare ]; then
                 echo "$test $depth $(awk -v r="$fastest" -v s="${COMPARE_SECONDS:-10}" 'BEGIN { printf "%d", r * s }')" >>"$sizes"
             done
         done
-        pass=1
+        # Attempts at passes: compare.csv's pass column numbers them, and an
+        # attempt that read busy is void and is run again (see the header). A
+        # competitor selection adds one more kind of attempt, the exact pass: a
+        # single-process threaded client whose merged histogram gives the exact
+        # p99. Its rows are labelled exact and stay out of the throughput
+        # medians; it is run again when void, and a void attempt's rows are
+        # relabelled exact-void-<attempt>, so that only a clean one is exact.
+        stamp pass-phase-start
+        pass=0
+        clean=0
         ordinary_client=${COMPARE_CLIENT:-procs}
-        final_pass=${COMPARE_PASSES:-6}
-        # Competitor selections add one exact merged-histogram pass. Its
-        # disjoint identity keeps this slower client out of throughput medians.
-        if [ -n "$cell_competitors" ]; then final_pass=$((final_pass + 1)); fi
-        while [ "$pass" -le "$final_pass" ]; do
+        final_clean=${COMPARE_PASSES:-6}
+        if [ -n "$cell_competitors" ]; then final_clean=$((final_clean + 1)); fi
+        exact_announced=false
+        while [ "$clean" -lt "$final_clean" ]; do
+            if [ $(($(date +%s) - session_start)) -ge $((DEADLINE_MINUTES * 60)) ]; then
+                echo "deadline,$n,no new attempt after $DEADLINE_MINUTES minutes,clean=$clean,wanted=$final_clean"
+                break
+            fi
+            pass=$((pass + 1))
+            number=$((clean + 1))
             sample_pass=$pass
             COMPARE_CLIENT=$ordinary_client
-            if [ "$pass" -gt "${COMPARE_PASSES:-6}" ]; then
+            exact_marks=
+            if [ "$number" -gt "${COMPARE_PASSES:-6}" ]; then
                 sample_pass=exact
                 COMPARE_CLIENT=threads
-                echo "setting,exact_pass,cpus=$n,ordinal=$pass,client=threads,throughput=diagnostic_only"
-                echo "setting,exact_pass,cpus=$n,ordinal=$pass,client=threads,throughput=diagnostic_only" >>"$OUT/host.txt"
-                echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer"
-                echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer" >>"$OUT/host.txt"
+                if [ "$exact_announced" = false ]; then
+                    exact_announced=true
+                    echo "setting,exact_pass,cpus=$n,ordinal=$number,client=threads,throughput=diagnostic_only"
+                    echo "setting,exact_pass,cpus=$n,ordinal=$number,client=threads,throughput=diagnostic_only" >>"$OUT/host.txt"
+                    echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer"
+                    echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer" >>"$OUT/host.txt"
+                fi
+                for exact_file in $EXACT_FILES; do
+                    exact_marks="$exact_marks $(wc -l <"$OUT/$exact_file" | tr -d ' ')"
+                done
             fi
             order=$names
-            if [ $((pass % 2)) -eq 0 ]; then
+            if [ $((number % 2)) -eq 0 ]; then
                 order=$reversed
             fi
+            wait_quiet "$WAIT_MAX" yes
+            stamp "attempt-$pass-start"
             for name in $order; do
                 arg=$(compare_arg "$name") || exit 1
                 start "$arg"
@@ -1972,63 +2425,82 @@ if [ "$MODE" = compare ]; then
                     compare_percentile_rows "$name,$sample_pass,$n,$test,$depth" "$requests" \
                         "${COMPARE_CLIENT:-procs}" "$OUT/compare-allocation.txt" "$OUT/compare-latencies.txt" "$sample" \
                         >>"$OUT/compare-percentiles.csv" || exit 1
-                    if [ -n "$cpu_record" ]; then
-                        cpu_busy "$OUT/compare-stat-before" "$OUT/compare-stat-after" \
-                            "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/compare-busy"
-                        limit=$(client_limited "$OUT/compare-busy") || exit 1
-                        echo "$name,$sample_pass,$n,$test,$depth,$limit" >>"$OUT/compare-limited.csv"
-                        awk -v key="$name,$sample_pass,$n,$test,$depth" '{ print key "," $0 }' \
-                            "$OUT/compare-busy" >>"$cpu_record"
-                    fi
+                    finish_run pass "$name" "$pass" "$test" "$depth"
+                    limit=$(client_limited "$OUT/compare-busy") || exit 1
+                    echo "$name,$sample_pass,$n,$test,$depth,$limit" >>"$OUT/compare-limited.csv"
+                    awk -v key="$name,$sample_pass,$n,$test,$depth" '{ print key "," $0 }' \
+                        "$OUT/compare-busy" >>"$cpu_record"
                 done <"$sizes"
                 compare_affinity_check "$arg" || exit 1
                 compare_memory "$name" "$sample_pass" "$n" || exit 1
                 stop
                 cp "$OUT/server.log" "$OUT/compare-server-$name-$n-$sample_pass.txt"
             done
-            pass=$((pass + 1))
+            voided=0
+            readings=$(attempt_void "$OUT/compare-runs.csv" "$n" pass "$pass" "$OTHER_BUSY_MAX") || voided=$?
+            [ "$voided" -le 1 ] || { echo "compare: attempt $pass left no run in compare-runs.csv" >&2; exit 1; }
+            read -r attempt_runs attempt_above attempt_max <<READINGS
+$readings
+READINGS
+            if [ "$voided" -eq 0 ]; then
+                void_number=$number
+                [ "$sample_pass" != exact ] || void_number=exact
+                echo "$n,$pass,$void_number,$attempt_runs,$attempt_above,$attempt_max,$OTHER_BUSY_MAX" >>"$OUT/compare-void.csv"
+                if [ "$sample_pass" = exact ]; then
+                    set -- $exact_marks
+                    for exact_file in $EXACT_FILES; do
+                        relabel_exact_void "$OUT/$exact_file" "$1" "exact-void-$pass" || exit 1
+                        shift
+                    done
+                fi
+                echo "void,$n,attempt $pass (would be pass $number),runs=$attempt_runs,above=$attempt_above,max_other_busy=$attempt_max"
+            else
+                clean=$((clean + 1))
+                echo "clean,$n,attempt $pass is pass $clean,runs=$attempt_runs,max_other_busy=$attempt_max"
+            fi
+            stamp "attempt-$pass-end"
         done
         COMPARE_CLIENT=$ordinary_client
+        echo "passes,$n,clean=$clean,attempts=$pass,void=$((pass - clean)),wanted=$final_clean"
         if [ -n "$PERF" ]; then
-            # COMPARE_PROFILE lists test and depth pairs, separated by ';'.
-            echo "${COMPARE_PROFILE:-mset 16}" | tr ';' '\n' | while read -r ptest pdepth; do
+            stamp profile-phase-start
+            # COMPARE_PROFILE lists test and depth pairs, separated by ';'. A
+            # profiled run waits for quiet, and one that read busy is run once
+            # more; one that is still busy, or has no time left to be repeated,
+            # is listed in profile-void.csv (see the header). The list is read
+            # from a file so that a failure ends the run, not a pipeline's
+            # subshell.
+            echo "${COMPARE_PROFILE:-mset 16}" | tr ';' '\n' >"$OUT/compare-profile-list"
+            while read -r ptest pdepth; do
                 test -n "$ptest" || continue
                 requests=$(awk -v t="$ptest" -v d="$pdepth" '$1 == t && $2 == d { print $3 }' "$sizes")
                 test -n "$requests" || { echo "skip,profile,$ptest $pdepth not measured"; continue; }
                 for name in $names; do
-                    arg=$(compare_arg "$name") || exit 1
-                    start "$arg"
-                    # With PERF_CALLERS set, each sample carries a DWARF-unwound
-                    # stack, since firn keeps no frame pointers.
-                    "$PERF" record ${PERF_CALLERS:+--call-graph dwarf,16384} -F "${PERF_FREQUENCY:-4999}" \
-                        -p "$server" -o "$OUT/perf-$name-$n-$ptest.data" >/dev/null 2>&1 &
-                    recorder=$!
-                    sleep 1
-                    profile_sample=$(compare_client "$ptest" "$pdepth" "$requests") || exit 1
-                    echo "$profile_sample" | sed "s/^/profiled,$name,$n,$ptest,/"
-                    compare_affinity_check "$arg" || exit 1
-                    kill -INT "$recorder"
-                    wait "$recorder" || true
-                    stop
-                    "$PERF" report -i "$OUT/perf-$name-$n-$ptest.data" --stdio --no-children \
-                        --sort dso,symbol --percent-limit 0.01 -g none >"$OUT/profile-$name-$n-$ptest.txt" 2>/dev/null
-                    for symbol in $PERF_ANNOTATE; do
-                        "$PERF" annotate -i "$OUT/perf-$name-$n-$ptest.data" --stdio -s "$symbol" \
-                            >"$OUT/annotate-$name-$n-$ptest-$symbol.txt" 2>/dev/null || true
+                    profile_attempt=1
+                    while :; do
+                        if [ $(($(date +%s) - session_start)) -lt $((PROFILE_DEADLINE_MINUTES * 60)) ]; then
+                            wait_quiet "$PROFILE_WAIT_MAX" no
+                        fi
+                        profile_image "$name" "$ptest" "$pdepth" "$requests"
+                        finish_run profile "$name" "$profile_attempt" "$ptest" "$pdepth"
+                        above_threshold "$run_other" "$OTHER_BUSY_MAX" || break
+                        if [ "$profile_attempt" -eq 1 ] &&
+                            [ $(($(date +%s) - session_start)) -lt $((PROFILE_DEADLINE_MINUTES * 60)) ]; then
+                            echo "profile,repeat,$name,$ptest $pdepth,other_busy=$run_other"
+                            profile_attempt=2
+                            continue
+                        fi
+                        echo "$n,$name,$ptest,$pdepth,$profile_attempt,$run_other,$OTHER_BUSY_MAX" |
+                            tee -a "$OUT/profile-void.csv"
+                        break
                     done
-                    if [ -n "$PERF_CALLERS" ]; then
-                        "$PERF" report -i "$OUT/perf-$name-$n-$ptest.data" --stdio --no-children \
-                            --sort dso,symbol --percent-limit 0.3 -g caller,0.5,callee,function,percent \
-                            >"$OUT/callers-$name-$n-$ptest.txt" 2>/dev/null
-                    fi
-                    rm -f "$OUT/perf-$name-$n-$ptest.data"
                     # With PERF_C2C set, a second run of the same test records
                     # perf c2c's load and store samples, which name the cache
                     # lines several cores write and read in turn.
                     if [ -n "$PERF_C2C" ]; then
                         arg=$(compare_arg "$name") || exit 1
                         start "$arg"
-                        "$PERF" c2c record -p "$server" -o "$OUT/c2c-$name-$n-$ptest.data" >/dev/null 2>&1 &
+                        taskset -c "$PERF_CPU" "$PERF" c2c record -p "$server" -o "$OUT/c2c-$name-$n-$ptest.data" >/dev/null 2>&1 &
                         recorder=$!
                         sleep 1
                         profile_sample=$(compare_client "$ptest" "$pdepth" "$requests") || exit 1
@@ -2037,12 +2509,13 @@ if [ "$MODE" = compare ]; then
                         kill -INT "$recorder"
                         wait "$recorder" || true
                         stop
-                        "$PERF" c2c report -i "$OUT/c2c-$name-$n-$ptest.data" --stdio --full-symbols \
+                        taskset -c "$PERF_CPU" "$PERF" c2c report -i "$OUT/c2c-$name-$n-$ptest.data" --stdio --full-symbols \
                             >"$OUT/c2c-$name-$n-$ptest.txt" 2>&1 || true
                         rm -f "$OUT/c2c-$name-$n-$ptest.data"
                     fi
                 done
-            done
+            done <"$OUT/compare-profile-list"
+            stamp profile-phase-end
         fi
     done
     cat "$OUT/compare.csv"

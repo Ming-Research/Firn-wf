@@ -39,9 +39,14 @@ on:
         default: ''
 
 # A newer push to the same branch makes the older run pointless; every run the
-# engine asks for is kept.
+# engine asks for is kept. Each commit pushed to main has a group of its own:
+# its gate must reach a verdict, since that is how a red main is traced to the
+# merge that made it, and a group keeps only one pending run, so a group shared
+# by main's pushes would cancel the run of every merge but the last of a quick
+# succession. A run the engine asks for has a group named by its `call`, and a
+# run started by hand on main keeps the group of the branch.
 concurrency:
-  group: check-${{ inputs.call || github.ref }}
+  group: check-${{ inputs.call || (github.event_name == 'push' && github.ref == 'refs/heads/main' && format('{0}-{1}', github.ref, github.sha) || github.ref) }}
   cancel-in-progress: ${{ !inputs.call }}
 
 jobs:
