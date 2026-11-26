@@ -64,6 +64,25 @@ fn minute() -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+/// Connects to a starting subject and waits until it answers commands. Redis opens its listener before it
+/// loads the dataset and answers `-LOADING` until it has finished; a SHUTDOWN sent meanwhile is handled in
+/// the middle of the load, which then writes none of the lines that follow it. Firn listens only after
+/// its load.
+fn connect_served(port: u16, child: &ProgramChild) -> TcpStream {
+    let mut client = connect_when_ready(port, child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        client.write_all(&resp(&["PING"])).expect("ping the starting server");
+        let reply = reply_line(&mut client, "the reply to PING");
+        if reply == "+PONG\r\n" {
+            return client;
+        }
+        assert!(reply.starts_with("-LOADING ") && std::time::Instant::now() < deadline,
+            "the server neither answers PING nor loads: {reply:?}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Runs one start of the subject, lets `during` use a connected client, stops it with SHUTDOWN NOSAVE and
 /// returns the subject's process id with what it wrote to standard output and standard error.
 fn run_logged(binary: &Path, directory: &Path, extra: &[&str], during: impl FnOnce(&mut TcpStream)) -> (u32, String, String) {
@@ -79,7 +98,7 @@ fn run_logged(binary: &Path, directory: &Path, extra: &[&str], during: impl FnOn
     arguments.extend_from_slice(rest);
     let child = start(binary, directory, &arguments).with_port(&lease);
     let pid = child.id();
-    let mut client = connect_when_ready(lease.port(), &child);
+    let mut client = connect_served(lease.port(), &child);
     during(&mut client);
     drop(client);
     let output = stop(lease.port(), child);
