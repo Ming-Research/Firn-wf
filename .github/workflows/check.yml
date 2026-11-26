@@ -179,6 +179,11 @@ jobs:
       - name: Build firn for the network cases and run them
         run: whitefoot-kit/ci/run-tests.py test
 
+      # The list commands at an eight-element ceiling, a test of its own that
+      # `test` no longer builds first.
+      - name: Check the list commands at their ceiling
+        run: whitefoot-kit/ci/run-tests.py list-ceiling
+
       - name: Name the job's end in its results
         if: ${{ !cancelled() }}
         env:

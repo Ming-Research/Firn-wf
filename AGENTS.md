@@ -59,7 +59,8 @@ When priorities conflict, first:
   parallel jobs (`check.yml`) so that the answer takes as long as the
   slowest: it downloads the pinned compiler (`make compiler`), builds firn
   and runs the Redis 7.2.16 suite ratchet (`tests/redis-suite/`, without
-  `--tolerant`); builds firn and runs its network cases (`tests/`); runs
+  `--tolerant`); builds firn and runs its network cases (`tests/`) and,
+  as a test of its own, the list commands at their ceiling (`list-ceiling`); runs
   the design lint; and compiles the paired safety witnesses
   (`research/experiments/safety-witnesses/`). Each faulty program must receive
   its specified source diagnostic and each correction must build with the pin.
@@ -109,7 +110,10 @@ When priorities conflict, first:
   `compiler`, then `aof-sync-fault`, `design-ready` and `pin-ready`. CI runs
   each in a step by itself through `whitefoot-kit/ci/run-tests.py`, which
   reports it as JUnit XML; `fast.yml` runs, by hand only, just the tests it is
-  given ([downstream.md](whitefoot-kit/downstream.md#tests-in-ci)). A push to
+  given ([downstream.md](whitefoot-kit/downstream.md#tests-in-ci)), each a
+  whole target or one test inside one, as `TEST_FAMILIES` of the Makefile
+  names it (`network::<case>`, `bench-client::<test>`,
+  `redis-suite/<unit>`), within the time budget the engine gives it. A push to
   a branch the engine of wf-agents makes (`work-…`, `wf-try/…`) runs no check.
 - `release.yml` is separate from `make check`: packaging pull requests and
   manual dispatches build `make firn-lto`, check its shared libraries, package

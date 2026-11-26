@@ -83,10 +83,15 @@ def passed_tests(outcomes):
             if all(r == "passed" for r in results)}
 
 
-def check(run, passing, unstable):
+def check(run, passing, unstable, unit=None):
+    """With a unit, only that unit's tests: a run of the unit alone, as a fast check names one."""
     outcomes = read_run(run)
     required = read_passing(passing)
     excluded = set(read_list(unstable, 3))
+    if unit is not None:
+        outcomes = {key: rows for key, rows in outcomes.items() if key[0] == unit}
+        required = {key: rows for key, rows in required.items() if key[0] == unit}
+        excluded = {key for key in excluded if key[0] == unit}
     overlap = set(required) & excluded
     if overlap:
         raise ValueError("passing.tsv and unstable.tsv overlap: " + repr(sorted(overlap)))
@@ -303,6 +308,17 @@ def self_test():
         case("event rows ignored", "unit/a\tblock-error\tother\terror\t-\n", 0,
              excludes=("REGRESSION", "CANDIDATE"))
 
+        passing.write_text("unit/a\tkept\t1\nunit/b\tother\t1\n", encoding="utf-8")
+        fixture(run, kept)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = check(run, passing, unstable, unit="unit/a")
+        assert status == 0 and "1/1 required" in output.getvalue(), output.getvalue()
+        fixture(run, "unit/a\tfailed\t\t\tkept\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert check(run, passing, unstable, unit="unit/a") == 1
+        print("PASS: one unit is checked against that unit's tests alone")
+
         dup = "unit/a\tpassed\t\t\tdup\n"
         fixture(run, kept + dup + dup + "unit/a\tpassed\t\t\tflaky\nunit/a\tfailed\t\t\tnever\n")
         second = root / "second.tsv"
@@ -449,6 +465,7 @@ def main():
     checker.add_argument("run", type=Path)
     checker.add_argument("--passing", type=Path, required=True)
     checker.add_argument("--unstable", type=Path, required=True)
+    checker.add_argument("--unit", help="check only this unit's tests, for a run of that unit alone")
     recorder = commands.add_parser("record", help="generate lists from repeated CI runs")
     recorder.add_argument("runs", nargs="+", type=Path)
     recorder.add_argument("--out", type=Path, required=True)
@@ -463,7 +480,7 @@ def main():
         if args.self_test:
             return self_test()
         if args.command == "check":
-            return check(args.run, args.passing, args.unstable)
+            return check(args.run, args.passing, args.unstable, args.unit)
         if args.command == "record":
             return record(args.runs, args.out)
         if args.command == "assign":

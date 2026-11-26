@@ -3,31 +3,52 @@
 # only someone who may write to the repository can ask for. The engine of
 # wf-agents always asks for it on main, so that this file as main holds it
 # runs, with the commit to test, a value only its request knows, which the
-# run's name holds, the tests to run and how long one test may run.
+# run's name holds, the tests to run, how long they may take together and the
+# work they are for.
 #
 # A test is a target in TESTS of the Makefile, as check.yml and
-# design-readiness.yml name it in their results. This workflow runs only the
+# design-readiness.yml name it in their results, or one test inside such a
+# target, as TEST_FAMILIES of the Makefile names it: `network::<case>`,
+# `bench-client::<case>` or `redis-suite/<unit>`. This workflow runs only the
 # tests it is given, each by itself, through whitefoot-kit/ci/run-tests.py,
 # after only the setup they need: the compiler and its LLVM for any test but
-# the design checks and gate-sync; the reference Redis for the network cases,
-# the Redis suite and the sync failures; Rust for the network cases and the
-# sync failures; tclsh and patch for the Redis suite; strace for the network
-# cases and the sync failures; and the failing device for the sync failures.
-# A name no test has is said in the log and reported as nothing, which the
-# engine reads as a test that did not run. What became of each test is JUnit
-# XML in the artifact `test-results`.
+# the design checks, gate-sync and the benchmark client's tests; the
+# reference Redis for the network cases, the Redis suite and the sync
+# failures; Rust for the network cases, the benchmark client and the sync
+# failures; tclsh and patch for the Redis suite; strace for the network cases
+# and the sync failures; and the failing device for the sync failures. A name
+# no test has is said in the log and reported as nothing, which the engine
+# reads as a test that did not run. What became of each test is JUnit XML in
+# the artifact `test-results`.
+#
+# The time limits, each set in one place:
+# - budget_seconds, the input the engine gives from its own setting: how long
+#   the named tests may take together in a job. run-tests.py stops the test
+#   running when it is spent and reports it, and each test not yet started,
+#   as such. Empty, as in a run asked by hand, is no budget.
+# - The repository variable FIRN_FAST_TEST_MINUTES, else 15: the test step's
+#   limit, past which GitHub fails the step and the steps after it still
+#   write the results.
+# - The repository variable FIRN_FAST_JOB_MINUTES, else 20: the 14900k job's
+#   limit, the last stop.
+# - The repository variable FIRN_FAST_ROOT_JOB_MINUTES, else 30: the limit of
+#   the job on GitHub's machine, whose device and builds take longer.
 #
 # The tests run on the owner's own machine, the self-hosted runner 14900k, as
 # the fast workflow of wf-agents does, because an agent waits for this
-# workflow each time it asks for tests. Each runner of that machine keeps its
-# checkout between runs, and with it build/ (the compiler's download, firn's
-# builds and their caches, the reference Redis) and tests/target/ (the network
-# cases' Rust build), so a run builds again only what changed. The checkout
-# leaves them in place (`clean: false`), and the step after it clears the rest
-# of what the last run left. A job there has no root: it checks the LLVM the
-# machine keeps (`make toolchain-check`) and installs none, takes Rust from
-# the machine's rustup, and unpacks a tool the machine lacks from its Ubuntu
-# package into the job's own directory.
+# workflow each time it asks for tests. Every runner of that machine runs as
+# one user, so each work keeps its own tree in that user's home
+# ($HOME/fast-state/Firn-wf/<work>/src, or manual/ for a run asked by hand),
+# with build/ (the compiler's download, firn's builds and their caches, the
+# reference Redis) and tests/target/ (the network cases' Rust build): a
+# work's next run, on whichever runner, builds again only what the work
+# changed. A work's first run copies main's tree, which fast-state.yml keeps
+# built at the tip of main and which also removes a tree not used for a day.
+# .github/fast-state.sh, taken from main beside this file, does this, and
+# lets only one run of a work use its tree at a time. A job there has no
+# root: it checks the LLVM the machine keeps (`make toolchain-check`) and
+# installs none, takes Rust from the machine's rustup, and unpacks a tool the
+# machine lacks from its Ubuntu package into the job's own directory.
 #
 # aof-sync-fault does not run there: it needs a device-mapper device that only
 # root can make (`sudo tests/aof_sync_fault_device.sh`), and the package
@@ -57,48 +78,75 @@ on:
         description: How long one test may run before it is stopped, in whole seconds; empty for no stop but the job's limit
         required: false
         default: ''
+      budget_seconds:
+        description: How long the named tests may take together in a job, in whole seconds; empty for no budget
+        required: false
+        default: ''
+      work:
+        description: The engine's work the run is for, whose build it keeps; empty for a run asked by hand
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 # No concurrency group: each run is a request an agent waits for, which
-# another request must not cancel.
+# another request must not cancel. Two runs of one work take turns at its
+# tree (fast-state.sh).
 
 env:
   # The tests that need root, which run on GitHub's machines.
   ROOT_TESTS: aof-sync-fault
+  TESTS_STOP: ${{ inputs.test_stop }}
+  TESTS_BUDGET: ${{ inputs.budget_seconds }}
 
 jobs:
   tests:
     name: tests (14900k)
     runs-on: [self-hosted, 14900k]
-    # check.yml gives the jobs of the Redis suite and the network cases 25 and
-    # 20 minutes; named together, they run one after the other here.
-    timeout-minutes: 60
+    timeout-minutes: ${{ fromJSON(vars.FIRN_FAST_JOB_MINUTES || '20') }}
     env:
-      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
-      TESTS_JUNIT: ${{ github.workspace }}/build/test-results/tests (14900k).xml
       TESTS_SUITE: tests (14900k)
-      TESTS_STOP: ${{ inputs.test_stop }}
+      FAST_STATE_REPO: ${{ github.server_url }}/${{ github.repository }}
     steps:
+      # This workflow's own files as main holds them, with the kit: the
+      # script that keeps the work's tree, and run-tests.py for the job's end
+      # when the tree could not be made. The commit to test goes to the tree.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.commit }}
-          submodules: true
-          fetch-depth: 0
-          clean: false
-          # No later step pushes, so the token is not left in the checkout,
-          # which the runner keeps.
+          path: ci
+          sparse-checkout: |
+            .github
+            whitefoot-kit
           persist-credentials: false
 
-      # What the builds make stays; what a run writes as its outcome goes: the
-      # results, which run-tests.py adds to, the suite's run and the
-      # witnesses' diagnostics.
+      # The results go to the job's own directory, named before anything
+      # else, so the job's end can be said even when the tree is not made.
+      - name: Check out the kit beside this workflow
+        run: |
+          git -C ci submodule update --init --depth 1 whitefoot-kit
+          echo "TESTS_JUNIT=$RUNNER_TEMP/test-results/tests (14900k).xml" >> "$GITHUB_ENV"
+          rm -rf "$RUNNER_TEMP/test-results"
+
+      # The work's tree, brought to the commit and held by this job alone.
+      # A run asked by hand uses the tree `manual`; no run but
+      # fast-state.yml's uses main's.
+      - name: Take the work's tree
+        env:
+          WORK: ${{ inputs.work }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          if [ "$WORK" = main ]; then echo "fast: the work main names main's own tree" >&2; exit 2; fi
+          ci/.github/fast-state.sh enter "${WORK:-manual}" "$COMMIT" > "$RUNNER_TEMP/tree.env"
+          cat "$RUNNER_TEMP/tree.env" >> "$GITHUB_ENV"
+
+      # What the builds make stays; what a run writes as its outcome goes:
+      # the suite's runs and the witnesses' diagnostics.
       - name: Clear what the last run left
         run: |
-          git clean -ffdxq -e /build -e /tests/target
-          git submodule foreach --quiet --recursive git clean -ffdxq
-          rm -rf build/test-results build/redis-suite build/safety-witnesses
+          cd "$FIRN_SRC"
+          rm -rf build/redis-suite build/redis-suite-units build/safety-witnesses
 
       # The names given, one a line, but those of GitHub's job, and what they
       # need set up.
@@ -114,12 +162,13 @@ jobs:
           compiler=false redis=false rust=false tcl=false strace=false
           while IFS= read -r name; do
             case "$name" in
-              design-lint|design-ready|pin-ready|gate-sync) ;;
+              design-lint|design-ready|pin-ready|gate-sync|bench-client::*) ;;
               *) compiler=true ;;
             esac
             case "$name" in
-              test) redis=true; rust=true; strace=true ;;
-              redis-suite) redis=true; tcl=true ;;
+              test|network::*) redis=true; rust=true; strace=true ;;
+              bench-client::*) rust=true ;;
+              redis-suite|redis-suite/*) redis=true; tcl=true ;;
             esac
           done < "$RUNNER_TEMP/names"
           {
@@ -130,16 +179,18 @@ jobs:
             echo "strace=$strace"
           } >> "$GITHUB_OUTPUT"
 
-      # As design-readiness.yml names it, for the design checks.
+      # As design-readiness.yml names it, for the design checks; the tree
+      # fetched origin's main as it was brought to the commit.
       - name: Name main as a local ref
         run: |
-          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          cd "$FIRN_SRC"
           git branch -f main origin/main
 
       # The design checks review the commit as a work branch is reviewed:
       # against its fork point from main.
       - name: Select the design review base
         run: |
+          cd "$FIRN_SRC"
           design_review_base=$(git merge-base refs/remotes/origin/main HEAD)
           echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
           git log --oneline -1 "$design_review_base"
@@ -211,6 +262,7 @@ jobs:
       - name: Download the pinned compiler and check the machine's LLVM
         if: steps.names.outputs.compiler == 'true'
         run: |
+          cd "$FIRN_SRC"
           make toolchain-check
           ld.lld --version
           /usr/bin/clang --version
@@ -224,28 +276,41 @@ jobs:
           "$HOME/.cargo/bin/cargo" --version
 
       # The reference Redis 7.2.16, built once from its release archive into
-      # build/redis-compat-cache, which the runner keeps.
+      # the tree's build/redis-compat-cache.
       - name: Build the reference Redis
         if: steps.names.outputs.redis == 'true'
         run: |
+          cd "$FIRN_SRC"
           bin=$(tests/redis-suite/reference.sh)
           "$bin/redis-server" --version
           echo "REDIS_SERVER=$bin/redis-server" >> "$GITHUB_ENV"
 
+      # The names within the budget (TESTS_BUDGET), each test within the stop
+      # (TESTS_STOP); the Redis suite runs a unit again once past a test that
+      # timed out, not five times as in the full check.
       - name: Test
-        run: whitefoot-kit/ci/run-tests.py --names "$RUNNER_TEMP/names"
+        timeout-minutes: ${{ fromJSON(vars.FIRN_FAST_TEST_MINUTES || '15') }}
+        env:
+          SUITE_RETRIES: 1
+        run: |
+          cd "$FIRN_SRC"
+          whitefoot-kit/ci/run-tests.py --names "$RUNNER_TEMP/names"
 
       - name: Name the job's end in its results
         if: ${{ !cancelled() }}
         env:
           STATUS: ${{ job.status }}
-        run: whitefoot-kit/ci/run-tests.py --end "$STATUS"
+        run: ci/whitefoot-kit/ci/run-tests.py --end "$STATUS"
+
+      - name: Let go of the work's tree
+        if: always()
+        run: ci/.github/fast-state.sh leave
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
           name: junit-14900k
-          path: build/test-results/
+          path: ${{ runner.temp }}/test-results/
           if-no-files-found: ignore
           retention-days: 14
 
@@ -255,13 +320,11 @@ jobs:
     name: tests (ubuntu-24.04)
     if: ${{ contains(inputs.tests, 'aof-sync-fault') }}
     runs-on: ubuntu-24.04
-    # check.yml gives the sync failures 30 minutes.
-    timeout-minutes: 30
+    timeout-minutes: ${{ fromJSON(vars.FIRN_FAST_ROOT_JOB_MINUTES || '30') }}
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
       TESTS_JUNIT: ${{ github.workspace }}/build/test-results/tests (ubuntu-24.04).xml
       TESTS_SUITE: tests (ubuntu-24.04)
-      TESTS_STOP: ${{ inputs.test_stop }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -333,6 +396,7 @@ jobs:
           sudo tests/aof_sync_fault_device.sh check-writeback "$mount"
 
       - name: Test
+        timeout-minutes: ${{ fromJSON(vars.FIRN_FAST_TEST_MINUTES || '15') }}
         run: whitefoot-kit/ci/run-tests.py --names "$RUNNER_TEMP/names"
 
       - name: Remove the faulty device
@@ -353,13 +417,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The JUnit of both jobs, in the one artifact the engine reads. It runs on
-  # the owner's machine, which picks it up at once, and runs none of the
-  # repository's code.
+  # The JUnit of both jobs, in the one artifact the engine reads. It runs none
+  # of the repository's code, so it runs on GitHub's machine, which picks it
+  # up at once, and leaves the 14900k to tests.
   results:
     needs: [tests, github]
     if: ${{ !cancelled() }}
-    runs-on: [self-hosted, 14900k]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/upload-artifact/merge@v4

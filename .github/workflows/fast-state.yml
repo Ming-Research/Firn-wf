@@ -1,0 +1,72 @@
+# Keeps the 14900k's tree of main built for fast.yml, and removes the trees
+# of works no run has used for a day (.github/fast-state.sh). A work's first
+# fast run copies main's tree, so it builds only what the work changed from
+# main. It runs after each push to main, every hour, so that an unused tree
+# goes soon after its day, and by hand.
+#
+# Its limit is the repository variable FIRN_FAST_STATE_MINUTES, else 45: a
+# build of main after a large change compiles firn three times over.
+name: fast-state
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One at a time; a newer request waits rather than stopping a build.
+concurrency:
+  group: fast-state
+  cancel-in-progress: false
+
+jobs:
+  main:
+    name: main's tree on the 14900k
+    runs-on: [self-hosted, 14900k]
+    timeout-minutes: ${{ fromJSON(vars.FIRN_FAST_STATE_MINUTES || '45') }}
+    env:
+      FAST_STATE_REPO: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # main.lock is taken exclusive here, so no work copies a tree half
+      # built.
+      - name: Take main's tree
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ci/.github/fast-state.sh enter main "$COMMIT" > "$RUNNER_TEMP/tree.env"
+          cat "$RUNNER_TEMP/tree.env" >> "$GITHUB_ENV"
+
+      # What a fast run of any test builds: the compiler, firn as the suite
+      # and the network cases run it, the list-ceiling fixture, the reference
+      # Redis and the Rust builds of the network cases and the benchmark
+      # client.
+      - name: Build main
+        run: |
+          set -euo pipefail
+          cd "$FIRN_SRC"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          make toolchain-check
+          make firn firn-test "$FIRN_SRC/build/list-ceiling/check"
+          tests/redis-suite/reference.sh > /dev/null
+          cargo test --manifest-path tests/Cargo.toml --locked --no-run
+          cargo test --manifest-path research/experiments/redis-bench/workload/Cargo.toml --locked \
+            --target-dir build/workload-target --no-run
+
+      - name: Let go of main's tree
+        if: always()
+        run: ci/.github/fast-state.sh leave
+
+      - name: Remove the trees not used for a day
+        if: always()
+        run: ci/.github/fast-state.sh sweep 24
