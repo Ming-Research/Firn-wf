@@ -133,7 +133,6 @@ unit/keyspace	Regression for pattern matching very long nested loops	1
 unit/keyspace	Untagged multi-key commands	1
 unit/keyspace	Vararg DEL	1
 unit/keyspace	Zero length value in key. SET/GET/EXISTS	1
-unit/lazyfree	FLUSHDB ASYNC can reclaim memory in background	1
 unit/multi	DISCARD	1
 unit/multi	DISCARD should not fail during OOM	1
 unit/multi	EXEC fails if there are errors while queueing commands #1	1
@@ -178,6 +177,8 @@ unit/protocol	Wrong multibulk payload header	1
 unit/protocol	raw protocol response	1
 unit/protocol	raw protocol response - deferred	1
 unit/protocol	raw protocol response - multiline	1
+unit/protocol	test argument rewriting - issue 9598	1
+unit/protocol	test large number of args	1
 unit/pubsub	Mix SUBSCRIBE and PSUBSCRIBE	1
 unit/pubsub	NUMPATs returns the number of unique patterns	1
 unit/pubsub	NUMSUB returns numbers, not strings (#1561)	1
@@ -637,13 +638,19 @@ unit/type/string	STRLEN against plain string	1
 unit/type/string	Very big payload in GET/SET	1
 unit/type/string	Very big payload random access	1
 unit/type/zset	Basic ZMPOP_MIN/ZMPOP_MAX - listpack RESP3	1
+unit/type/zset	Basic ZMPOP_MIN/ZMPOP_MAX - skiplist RESP3	1
 unit/type/zset	Basic ZMPOP_MIN/ZMPOP_MAX with a single key - listpack	1
+unit/type/zset	Basic ZMPOP_MIN/ZMPOP_MAX with a single key - skiplist	1
 unit/type/zset	Basic ZPOPMIN/ZPOPMAX - listpack RESP3	1
+unit/type/zset	Basic ZPOPMIN/ZPOPMAX - skiplist RESP3	1
 unit/type/zset	Basic ZPOPMIN/ZPOPMAX with a single key - listpack	1
+unit/type/zset	Basic ZPOPMIN/ZPOPMAX with a single key - skiplist	1
 unit/type/zset	Check encoding - listpack	1
 unit/type/zset	Check encoding - skiplist	1
 unit/type/zset	ZADD - Return value is the number of actually added items - listpack	1
+unit/type/zset	ZADD - Return value is the number of actually added items - skiplist	1
 unit/type/zset	ZADD - Variadic version base case - listpack	1
+unit/type/zset	ZADD - Variadic version base case - skiplist	1
 unit/type/zset	ZADD - Variadic version does not add nothing on single parsing err - listpack	1
 unit/type/zset	ZADD - Variadic version does not add nothing on single parsing err - skiplist	1
 unit/type/zset	ZADD - Variadic version will raise error on missing arg - listpack	1
@@ -686,51 +693,143 @@ unit/type/zset	ZADD XX returns the number of elements actually added - listpack	
 unit/type/zset	ZADD XX returns the number of elements actually added - skiplist	1
 unit/type/zset	ZADD XX updates existing elements score - listpack	1
 unit/type/zset	ZADD XX updates existing elements score - skiplist	1
+unit/type/zset	ZADD overflows the maximum allowed elements in a listpack - multiple	1
+unit/type/zset	ZADD overflows the maximum allowed elements in a listpack - single	1
+unit/type/zset	ZADD overflows the maximum allowed elements in a listpack - single_multiple	1
 unit/type/zset	ZADD with options syntax error with incomplete pair - listpack	1
 unit/type/zset	ZADD with options syntax error with incomplete pair - skiplist	1
 unit/type/zset	ZCARD basics - listpack	1
 unit/type/zset	ZCARD basics - skiplist	1
 unit/type/zset	ZDIFF algorithm 1 - listpack	1
+unit/type/zset	ZDIFF algorithm 1 - skiplist	1
 unit/type/zset	ZDIFF algorithm 2 - listpack	1
+unit/type/zset	ZDIFF algorithm 2 - skiplist	1
 unit/type/zset	ZDIFF basics - listpack	1
+unit/type/zset	ZDIFF basics - skiplist	1
 unit/type/zset	ZDIFF fuzzing - listpack	1
+unit/type/zset	ZDIFF fuzzing - skiplist	1
 unit/type/zset	ZDIFF subtracting set from itself - listpack	1
+unit/type/zset	ZDIFF subtracting set from itself - skiplist	1
 unit/type/zset	ZDIFFSTORE basics - listpack	1
+unit/type/zset	ZDIFFSTORE basics - skiplist	1
 unit/type/zset	ZDIFFSTORE with a regular set - listpack	1
+unit/type/zset	ZDIFFSTORE with a regular set - skiplist	1
 unit/type/zset	ZINCRBY - can create a new sorted set - listpack	1
+unit/type/zset	ZINCRBY - can create a new sorted set - skiplist	1
 unit/type/zset	ZINCRBY - increment and decrement - listpack	1
+unit/type/zset	ZINCRBY - increment and decrement - skiplist	1
 unit/type/zset	ZINCRBY calls leading to NaN result in error - listpack	1
 unit/type/zset	ZINCRBY calls leading to NaN result in error - skiplist	1
 unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - listpack	1
 unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - skiplist	1
 unit/type/zset	ZINCRBY return value - listpack	1
+unit/type/zset	ZINCRBY return value - skiplist	1
 unit/type/zset	ZINTER RESP3 - listpack	1
+unit/type/zset	ZINTER RESP3 - skiplist	1
 unit/type/zset	ZINTER basics - listpack	1
+unit/type/zset	ZINTER basics - skiplist	1
 unit/type/zset	ZINTER with weights - listpack	1
+unit/type/zset	ZINTER with weights - skiplist	1
 unit/type/zset	ZINTERCARD basics - listpack	1
+unit/type/zset	ZINTERCARD basics - skiplist	1
+unit/type/zset	ZINTERCARD with illegal arguments	2
+unit/type/zset	ZINTERSTORE #516 regression, mixed sets and ziplist zsets	1
 unit/type/zset	ZINTERSTORE basics - listpack	1
+unit/type/zset	ZINTERSTORE basics - skiplist	1
+unit/type/zset	ZINTERSTORE regression with two sets, intset+hashtable	1
 unit/type/zset	ZINTERSTORE with +inf/-inf scores - listpack	1
+unit/type/zset	ZINTERSTORE with +inf/-inf scores - skiplist	1
 unit/type/zset	ZINTERSTORE with AGGREGATE MAX - listpack	1
+unit/type/zset	ZINTERSTORE with AGGREGATE MAX - skiplist	1
 unit/type/zset	ZINTERSTORE with AGGREGATE MIN - listpack	1
+unit/type/zset	ZINTERSTORE with AGGREGATE MIN - skiplist	1
 unit/type/zset	ZINTERSTORE with NaN weights - listpack	1
+unit/type/zset	ZINTERSTORE with NaN weights - skiplist	1
 unit/type/zset	ZINTERSTORE with a regular set and weights - listpack	1
+unit/type/zset	ZINTERSTORE with a regular set and weights - skiplist	1
 unit/type/zset	ZINTERSTORE with weights - listpack	1
+unit/type/zset	ZINTERSTORE with weights - skiplist	1
 unit/type/zset	ZLEXCOUNT advanced - listpack	1
+unit/type/zset	ZLEXCOUNT advanced - skiplist	1
+unit/type/zset	ZMPOP readraw in RESP2	1
+unit/type/zset	ZMPOP readraw in RESP3	1
+unit/type/zset	ZMPOP with illegal argument	1
 unit/type/zset	ZMPOP_MIN/ZMPOP_MAX with count - listpack	1
 unit/type/zset	ZMPOP_MIN/ZMPOP_MAX with count - listpack RESP3	1
+unit/type/zset	ZMPOP_MIN/ZMPOP_MAX with count - skiplist	1
+unit/type/zset	ZMPOP_MIN/ZMPOP_MAX with count - skiplist RESP3	1
+unit/type/zset	ZMSCORE - listpack	1
+unit/type/zset	ZMSCORE - skiplist	1
+unit/type/zset	ZMSCORE retrieve	1
+unit/type/zset	ZMSCORE retrieve from empty set	1
+unit/type/zset	ZMSCORE retrieve requires one or more members	1
+unit/type/zset	ZMSCORE retrieve single member	1
+unit/type/zset	ZMSCORE retrieve with missing member	1
+unit/type/zset	ZPOP/ZMPOP against wrong type	1
+unit/type/zset	ZPOPMAX with negative count	2
+unit/type/zset	ZPOPMAX with the count 0 returns an empty array	2
+unit/type/zset	ZPOPMIN with negative count	2
+unit/type/zset	ZPOPMIN with the count 0 returns an empty array	2
+unit/type/zset	ZPOPMIN/ZPOPMAX readraw in RESP2	1
+unit/type/zset	ZPOPMIN/ZPOPMAX readraw in RESP3	1
 unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack	1
 unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack RESP3	1
+unit/type/zset	ZPOPMIN/ZPOPMAX with count - skiplist	1
+unit/type/zset	ZPOPMIN/ZPOPMAX with count - skiplist RESP3	1
+unit/type/zset	ZRANDMEMBER - listpack	1
+unit/type/zset	ZRANDMEMBER - skiplist	1
+unit/type/zset	ZRANDMEMBER count of 0 is handled correctly	1
+unit/type/zset	ZRANDMEMBER count of 0 is handled correctly - emptyarray	1
+unit/type/zset	ZRANDMEMBER count overflow	1
+unit/type/zset	ZRANDMEMBER with <count> - listpack	1
+unit/type/zset	ZRANDMEMBER with <count> - skiplist	1
+unit/type/zset	ZRANDMEMBER with <count> against non existing key	1
+unit/type/zset	ZRANDMEMBER with <count> against non existing key - emptyarray	1
+unit/type/zset	ZRANDMEMBER with RESP3	1
+unit/type/zset	ZRANGE BYLEX	1
+unit/type/zset	ZRANGE BYSCORE REV LIMIT	1
 unit/type/zset	ZRANGE basics - listpack	1
+unit/type/zset	ZRANGE basics - skiplist	1
+unit/type/zset	ZRANGE invalid syntax	1
+unit/type/zset	ZRANGEBYLEX fuzzy test, 100 ranges in 100 element sorted set - skiplist	1
+unit/type/zset	ZRANGEBYLEX fuzzy test, 100 ranges in 128 element sorted set - listpack	1
 unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - listpack	1
+unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - skiplist	1
 unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - listpack	1
+unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - skiplist	1
+unit/type/zset	ZRANGEBYSCORE fuzzy test, 100 ranges in 100 element sorted set - skiplist	1
+unit/type/zset	ZRANGEBYSCORE fuzzy test, 100 ranges in 128 element sorted set - listpack	1
 unit/type/zset	ZRANGEBYSCORE with LIMIT - listpack	1
+unit/type/zset	ZRANGEBYSCORE with LIMIT - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with LIMIT and WITHSCORES - listpack	1
+unit/type/zset	ZRANGEBYSCORE with LIMIT and WITHSCORES - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with WITHSCORES - listpack	1
+unit/type/zset	ZRANGEBYSCORE with WITHSCORES - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with non-value min or max - listpack	1
+unit/type/zset	ZRANGEBYSCORE with non-value min or max - skiplist	1
 unit/type/zset	ZRANGEBYSCORE/ZREVRANGEBYSCORE/ZCOUNT basics - listpack	1
+unit/type/zset	ZRANGEBYSCORE/ZREVRANGEBYSCORE/ZCOUNT basics - skiplist	1
 unit/type/zset	ZRANGEBYSLEX with LIMIT - listpack	1
+unit/type/zset	ZRANGEBYSLEX with LIMIT - skiplist	1
+unit/type/zset	ZRANGESTORE - empty range	1
+unit/type/zset	ZRANGESTORE - src key missing	1
+unit/type/zset	ZRANGESTORE - src key wrong type	1
+unit/type/zset	ZRANGESTORE BYLEX	1
+unit/type/zset	ZRANGESTORE BYLEX - empty range	1
+unit/type/zset	ZRANGESTORE BYSCORE	1
+unit/type/zset	ZRANGESTORE BYSCORE - empty range	1
+unit/type/zset	ZRANGESTORE BYSCORE LIMIT	1
+unit/type/zset	ZRANGESTORE BYSCORE REV LIMIT	1
+unit/type/zset	ZRANGESTORE RESP3	1
+unit/type/zset	ZRANGESTORE basic	1
+unit/type/zset	ZRANGESTORE invalid syntax	1
+unit/type/zset	ZRANGESTORE range	1
+unit/type/zset	ZRANGESTORE with zset-max-listpack-entries 0 #10767 case	1
+unit/type/zset	ZRANGESTORE with zset-max-listpack-entries 1 dst key should use skiplist encoding	1
 unit/type/zset	ZRANK - after deletion - listpack	1
+unit/type/zset	ZRANK - after deletion - skiplist	1
 unit/type/zset	ZRANK/ZREVRANK basics - listpack	1
+unit/type/zset	ZRANK/ZREVRANK basics - skiplist	1
 unit/type/zset	ZREM removes key after last element is removed - listpack	1
 unit/type/zset	ZREM removes key after last element is removed - skiplist	1
 unit/type/zset	ZREM variadic version - listpack	1
@@ -738,28 +837,66 @@ unit/type/zset	ZREM variadic version - skiplist	1
 unit/type/zset	ZREM variadic version -- remove elements after key deletion - listpack	1
 unit/type/zset	ZREM variadic version -- remove elements after key deletion - skiplist	1
 unit/type/zset	ZREMRANGEBYLEX basics - listpack	1
+unit/type/zset	ZREMRANGEBYLEX basics - skiplist	1
+unit/type/zset	ZREMRANGEBYLEX fuzzy test, 100 ranges in 100 element sorted set - skiplist	1
+unit/type/zset	ZREMRANGEBYLEX fuzzy test, 100 ranges in 128 element sorted set - listpack	1
 unit/type/zset	ZREMRANGEBYRANK basics - listpack	1
+unit/type/zset	ZREMRANGEBYRANK basics - skiplist	1
 unit/type/zset	ZREMRANGEBYSCORE basics - listpack	1
+unit/type/zset	ZREMRANGEBYSCORE basics - skiplist	1
 unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - listpack	1
+unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - skiplist	1
 unit/type/zset	ZREVRANGE basics - listpack	1
+unit/type/zset	ZREVRANGE basics - skiplist	1
+unit/type/zset	ZSCORE - listpack	1
+unit/type/zset	ZSCORE - skiplist	1
 unit/type/zset	ZSET basic ZADD and score update - listpack	1
 unit/type/zset	ZSET basic ZADD and score update - skiplist	1
+unit/type/zset	ZSET commands don't accept the empty strings as valid score	1
 unit/type/zset	ZSET element can't be set to NaN with ZADD - listpack	1
 unit/type/zset	ZSET element can't be set to NaN with ZADD - skiplist	1
 unit/type/zset	ZSET element can't be set to NaN with ZINCRBY - listpack	1
 unit/type/zset	ZSET element can't be set to NaN with ZINCRBY - skiplist	1
+unit/type/zset	ZSET skiplist order consistency when elements are moved	1
+unit/type/zset	ZSET sorting stresser - listpack	1
+unit/type/zset	ZSET sorting stresser - skiplist	1
+unit/type/zset	ZSETs ZRANK augmented skip list stress testing - listpack	1
+unit/type/zset	ZSETs ZRANK augmented skip list stress testing - skiplist	1
+unit/type/zset	ZSETs skiplist implementation backlink consistency test - listpack	1
+unit/type/zset	ZSETs skiplist implementation backlink consistency test - skiplist	1
 unit/type/zset	ZUNION with weights - listpack	1
+unit/type/zset	ZUNION with weights - skiplist	1
 unit/type/zset	ZUNION/ZINTER with AGGREGATE MAX - listpack	1
+unit/type/zset	ZUNION/ZINTER with AGGREGATE MAX - skiplist	1
 unit/type/zset	ZUNION/ZINTER with AGGREGATE MIN - listpack	1
+unit/type/zset	ZUNION/ZINTER with AGGREGATE MIN - skiplist	1
 unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF against non-existing key - listpack	1
+unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF against non-existing key - skiplist	1
 unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF with empty set - listpack	1
+unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF with empty set - skiplist	1
 unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF with integer members - listpack	1
+unit/type/zset	ZUNION/ZINTER/ZINTERCARD/ZDIFF with integer members - skiplist	1
 unit/type/zset	ZUNIONSTORE against non-existing key doesn't set destination - listpack	1
+unit/type/zset	ZUNIONSTORE against non-existing key doesn't set destination - skiplist	1
 unit/type/zset	ZUNIONSTORE basics - listpack	1
+unit/type/zset	ZUNIONSTORE basics - skiplist	1
+unit/type/zset	ZUNIONSTORE regression, should not create NaN in scores	1
+unit/type/zset	ZUNIONSTORE result is sorted	1
 unit/type/zset	ZUNIONSTORE with +inf/-inf scores - listpack	1
+unit/type/zset	ZUNIONSTORE with +inf/-inf scores - skiplist	1
 unit/type/zset	ZUNIONSTORE with AGGREGATE MAX - listpack	1
+unit/type/zset	ZUNIONSTORE with AGGREGATE MAX - skiplist	1
 unit/type/zset	ZUNIONSTORE with AGGREGATE MIN - listpack	1
+unit/type/zset	ZUNIONSTORE with AGGREGATE MIN - skiplist	1
 unit/type/zset	ZUNIONSTORE with NaN weights - listpack	1
+unit/type/zset	ZUNIONSTORE with NaN weights - skiplist	1
 unit/type/zset	ZUNIONSTORE with a regular set and weights - listpack	1
+unit/type/zset	ZUNIONSTORE with a regular set and weights - skiplist	1
 unit/type/zset	ZUNIONSTORE with empty set - listpack	1
+unit/type/zset	ZUNIONSTORE with empty set - skiplist	1
 unit/type/zset	ZUNIONSTORE with weights - listpack	1
+unit/type/zset	ZUNIONSTORE with weights - skiplist	1
+unit/type/zset	ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE error if using WITHSCORES	1
+unit/type/zset	zset score double range	1
+unit/type/zset	zunionInterDiffGenericCommand acts on SET and ZSET	1
+unit/type/zset	zunionInterDiffGenericCommand at least 1 input key	1
