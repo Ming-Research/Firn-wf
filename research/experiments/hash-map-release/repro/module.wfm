@@ -1,0 +1,7 @@
+alias ExitStatus = std::process::ExitStatus;
+
+public fn fill() -> status: ExitStatus pure doc "Builds a map of 100,000 fields, exits 0 when it holds all of them.";
+
+public fn replace() -> status: ExitStatus pure doc "Builds the map, then replaces random present fields as many times as the operations constant says; exits 0 when every one was present.";
+
+public fn lookup() -> status: ExitStatus pure doc "Builds the map, then looks up random present fields as many times as the operations constant says; exits 0 when every one was found.";
