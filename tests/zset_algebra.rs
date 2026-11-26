@@ -413,6 +413,115 @@ fn zset_algebra_generated_inputs_answer_as_redis_does() {
     stop(oracle);
 }
 
+/// `command`, then its number of sets, then the sets, then `tail`.
+fn naming(command: &[&str], sets: &[String], tail: &[String]) -> Vec<String> {
+    let mut statement: Vec<String> = command.iter().map(|word| (*word).to_owned()).collect();
+    statement.push(sets.len().to_string());
+    statement.extend(sets.iter().cloned());
+    statement.extend(tail.iter().cloned());
+    statement
+}
+
+fn with(words: &[&str], more: &[String]) -> Vec<String> {
+    words.iter().map(|word| (*word).to_owned()).chain(more.iter().cloned()).collect()
+}
+
+/// A union or an intersection visits its sets in order of size, which decides
+/// the order their float scores are added in. Here the forty sets all differ in
+/// size, so Redis's order has no ties, and the scores of the member they share
+/// differ in magnitude, so that adding them in another order gives another
+/// sum; weights follow the sets by where they were named, not by where the
+/// sort put them.
+#[test]
+fn zset_algebra_visits_sets_in_order_of_size() {
+    let directory = fixture_directory();
+    let program = CompiledProgram::from_environment();
+    let mut oracle = redis(directory.path(), false);
+    let mut server = firn_in(&program, false);
+    let count = 40_usize;
+    let mut rng = Rng(0x5851_f42d_4c95_7f2d);
+    let mut commands = list(&["FLUSHALL"]);
+    let mut names = Vec::new();
+    for index in 0..count {
+        let size = (index * 17) % count + 1;
+        let magnitude = rng.below(13) as i32 - 6;
+        let score = (rng.below(9000) + 1000) as f64 * 10_f64.powi(magnitude);
+        let mut add = vec!["ZADD".to_owned(), format!("s{index}"), format!("{score}"), "m".to_owned()];
+        for filler in 1..size {
+            add.push("1".to_owned());
+            add.push(format!("f{index}_{filler}"));
+        }
+        commands.push(add);
+        names.push(format!("s{index}"));
+    }
+    let weights: Vec<String> = (0..count).map(|index| format!("{}", 0.5 + (index % 7) as f64 * 0.37)).collect();
+    let weighted = with(&["WEIGHTS"], &weights);
+    let scored = with(&["WITHSCORES"], &[]);
+    let both = [weighted.clone(), scored.clone()].concat();
+    let store = |command: &str, tail: &[String]| {
+        let mut statement = vec![command.to_owned(), "out".to_owned(), count.to_string()];
+        statement.extend(names.iter().cloned());
+        statement.extend(tail.iter().cloned());
+        statement
+    };
+    commands.push(naming(&["ZUNION"], &names, &scored));
+    commands.push(naming(&["ZUNION"], &names, &both));
+    commands.push(naming(&["ZINTER"], &names, &scored));
+    commands.push(naming(&["ZINTER"], &names, &both));
+    commands.push(naming(&["ZINTERCARD"], &names, &[]));
+    commands.push(store("ZUNIONSTORE", &weighted));
+    commands.extend(list(&["ZRANGE out 0 -1 WITHSCORES"]));
+    commands.push(store("ZINTERSTORE", &weighted));
+    commands.extend(list(&["ZRANGE out 0 -1 WITHSCORES"]));
+    let replies = check(&mut server, &mut oracle, "sets of forty sizes", &commands);
+    assert!(replies.len() > 10, "{} replies compared", replies.len());
+    stop(server);
+    stop(oracle);
+}
+
+/// A command may name as many sets as it has arguments, the client's choice,
+/// and the sets are ordered by size inside the statement that holds them. Here
+/// one command names two sets 200 000 times each, the larger first, the order
+/// in which an insertion sort moves each later set across every earlier one,
+/// 4e10 moves; a sort of n log n orders them in a few hundredths of a second.
+/// The scores are whole numbers, so the order does not change the answer and
+/// only the time tells the sorts apart.
+#[test]
+fn zset_algebra_orders_a_great_many_named_sets_in_time_proportional_to_their_number() {
+    let directory = fixture_directory();
+    let program = CompiledProgram::from_environment();
+    let mut oracle = redis(directory.path(), false);
+    let mut server = firn_in(&program, false);
+    check(&mut server, &mut oracle, "setup", &list(&["FLUSHALL", "ZADD a 1 x 2 y", "ZADD b 3 y"]));
+    let repeats = 200_000_usize;
+    let mut sets = vec!["a".to_owned(); repeats];
+    sets.extend(vec!["b".to_owned(); repeats]);
+    let scored = with(&["WITHSCORES"], &[]);
+    let mut statements = vec![
+        naming(&["ZUNION"], &sets, &scored),
+        naming(&["ZINTER"], &sets, &scored),
+        naming(&["ZINTERCARD"], &sets, &[]),
+    ];
+    let mut stored = vec!["ZUNIONSTORE".to_owned(), "out".to_owned(), sets.len().to_string()];
+    stored.extend(sets.iter().cloned());
+    statements.push(stored);
+    statements.extend(list(&["ZRANGE out 0 -1 WITHSCORES"]));
+    for statement in &statements {
+        let arguments: Vec<&str> = statement.iter().map(String::as_str).collect();
+        let expected = ask(&mut oracle, &arguments);
+        let started = Instant::now();
+        let actual = ask(&mut server, &arguments);
+        let elapsed = started.elapsed();
+        assert_eq!(lossy(&actual), lossy(&expected), "firn must answer {} over {} sets as Redis 7.2.16 does",
+            arguments[0], sets.len());
+        assert!(elapsed < Duration::from_secs(5), "{} over {} sets took {elapsed:?}", arguments[0], sets.len());
+        assert!(!lossy(&expected).starts_with('-'), "{} over {} sets is answered: {}", arguments[0], sets.len(),
+            lossy(&expected));
+    }
+    stop(server);
+    stop(oracle);
+}
+
 /// The append-only file records the store commands and ZRANGESTORE as
 /// received, ZMPOP as the ZPOPMIN or ZPOPMAX it came to with the number
 /// popped, and nothing for a command that changed nothing; a restart replays
