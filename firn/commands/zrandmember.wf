@@ -16,7 +16,6 @@ alias hash_map_each = std::collections::hash_map::hash_map_each;
 alias hash_map_len = std::collections::hash_map::hash_map_len;
 alias hash_map_new = std::collections::hash_map::hash_map_new;
 alias hash_map_put = std::collections::hash_map::hash_map_put;
-alias ordered_map_each = std::collections::ordered_map::ordered_map_each;
 alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
 alias read_integer = pkg::bytes::read_integer;
 alias remove_expired = pkg::store::remove_expired;
@@ -95,12 +94,6 @@ fn scored_emit(env: &Client, member: &Key, score: f64) -> result: unit reads(mem
   return unit;
 }
 
-fn rank_emit(env: &Client, key: &Rank, value: &unit) -> result: unit reads(key), writes(env) {
-  doc "Writes a rank of a sorted set's order as scored_emit writes a member.";
-  scored_emit(env: env, member: &key^.member, score: key^.score);
-  return unit;
-}
-
 fn score_emit(env: &Client, key: &Key, value: &f64) -> result: unit reads(key.bytes), reads(value), writes(env) {
   doc "Writes a member of a sorted set's scores as scored_emit writes it.";
   scored_emit(env: env, member: key, score: value^);
@@ -117,8 +110,8 @@ fn scored_header(env: &Client, count: u64) -> result: unit writes(env) {
   return unit;
 }
 
-fn random_ranked(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) {
-  doc "Writes members of a live sorted set chosen at random as Redis's zrandmemberWithCountCommand chooses them, recording done: one bulk string when high is 0; else for the count low an empty array for 0; for a negative count, or 1, an array of that many members each drawn from the whole set, so that one may repeat; for a count of at least the set's size the whole set in order; and else that many distinct members, chosen by one pass over the buckets that takes each member with the chance still needed, for a count above a third of the set, and otherwise by draws kept in a map of their own until it holds that many. With high 2 each member is followed by its score. Records wrong for another kind and expired for an expired entry.";
+fn random_ranked(env: &Client, value: &Entry, bounds: &[u8]) -> kind: u64 reads(value), reads(bounds), writes(env) {
+  doc "Writes members of a live sorted set chosen at random as Redis's zrandmemberWithCountCommand chooses them, recording done: one bulk string when high is 0; else for the count low an empty array for 0; for a negative count, or 1, an array of that many members each drawn from the whole set, so that one may repeat; for a count of at least the set's size the whole set from its highest score to its lowest, as Redis's zuiNext walks both encodings, the walk's empty range ends being made from bounds; and else that many distinct members, chosen by one pass over the buckets that takes each member with the chance still needed, for a count above a third of the set, and otherwise by draws kept in a map of their own until it holds that many. With high 2 each member is followed by its score. Records wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -168,7 +161,12 @@ fn random_ranked(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
       }
       if magnitude >= size {
         scored_header(env: env, count: size);
-        ordered_map_each::<Rank, unit, Client, fn rank_emit, ceiling>(map: &sorted^.order, env: env);
+        let act = 0_u64;
+        if env^.high == 2_i64 {
+          set act = 1_u64;
+        }
+        let walk = walk_new(reverse: True(), kind: 0_u64, act: act, input: bounds);
+        let walked = walk_from(order: &sorted^.order, walk: &walk, client: env, offset: 0_u64, limit: 0_u64, unlimited: True(), act: act);
         return 5_u64;
       }
       let tripled = magnitude *wrap 3_u64;
@@ -303,7 +301,7 @@ fn zrandmember_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held_value) => {
-      let found = random_ranked(env: client, value: held_value);
+      let found = random_ranked(env: client, value: held_value, bounds: access_key);
     }
     None() => {
     }

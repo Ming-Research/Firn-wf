@@ -514,10 +514,24 @@ fn zalg_scan(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, p
   return count;
 }
 
+fn zalg_first_naming(seen: &Box<Slots<u64>>, rank: u64) -> first: Bool writes(seen) {
+  doc "Whether no earlier argument has named the held entry at a rank, marking it named: a set named again adds no member to a union, so the client's repeats must not add to what the result is sized for.";
+  if rank >= seen^.inner.len {
+    return False();
+  }
+  if seen^.inner[rank] != 0_u64 {
+    return False();
+  }
+  set seen^.inner[rank] = 1_u64;
+  return True();
+}
+
 fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client, plan: &ZPlan, operation: u64, counting: Bool, result: &Sorted) -> size: u64 reads(slots), reads(ranks), reads(client), reads(plan), writes(result) {
-  doc "Computes the operation over the sets, which are all live or absent: the sets are put in order of size, the smallest first, ties in argument order, unless the operation is a difference; a union visits every set in that order aggregating into the result, an intersection the smallest only, and a difference the first, which a later set named by the same key empties. The result's scores are filled in, its order is not, and are sized beforehand for the most the operation can give, so that they are not grown and moved while it is built. Returns the size of the result, or for a count the members every set holds, up to the limit.";
+  doc "Computes the operation over the sets, which are all live or absent: the sets are put in order of size, the smallest first, ties in argument order, unless the operation is a difference; a union visits every set in that order aggregating into the result, an intersection the smallest only, and a difference the first, which a later set named by the same key empties. The result's scores are filled in, its order is not, and are sized beforehand for the most the operation can give, so that they are not grown and moved while it is built: a union by the sizes of the distinct sets named, since a set the client names again adds no member. Returns the size of the result, or for a count the members every set holds, up to the limit.";
   let numkeys = plan^.end -wrap plan^.first;
   let order = box_slots_new::<u64>(capacity: numkeys);
+  let seen = box_slots_new::<u64>(capacity: 0_u64);
+  key_positions(positions: &seen, count: slots^.len);
   let summed = 0_u64;
   let least = 0_u64;
   let first_size = 0_u64;
@@ -528,7 +542,10 @@ fn zalg_compute(slots: &Entries<Entry>, ranks: &Box<Slots<u64>>, client: &Client
     if rank < slots^.len {
       set cardinality = zalg_size(slot: &slots^[rank]);
     }
-    set summed = summed +wrap cardinality;
+    let fresh = zalg_first_naming(seen: &seen, rank: rank);
+    if fresh {
+      set summed = summed +wrap cardinality;
+    }
     if index == 0_u64 {
       set first_size = cardinality;
       set least = cardinality;
