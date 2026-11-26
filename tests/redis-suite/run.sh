@@ -130,69 +130,6 @@ out=$(cd "$out" && pwd)
 suite=$out/redis-$version
 rm -rf "$suite" "$out/logs" "$out/servers" "$out/hung" "$out/data"
 tar -xzf "$archive" -C "$out"
-# Redis's no-argument unsubscribe helpers read no acknowledgments. Preserve
-# those wire commands, but make their tests wait for all known memberships
-# before another connection publishes or the next test starts. The same
-# contextual patch applies to every target; stale or missing hunks stop the run.
-python3 -B "$here/check-pubsub-barriers.py" "$suite" "$here/pubsub-barriers.patch"
-patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/pubsub-barriers.patch"
-# Tests that run the suite's own client tools look for them in src/, as in a
-# built source tree; the 7.2.16 tools built from the same archive stand in
-# for them.
-for tool in redis-cli redis-benchmark; do
-    ln -s "$(command -v "$tool")" "$suite/src/$tool"
-done
-if [ "$tolerant" = 1 ]; then
-    # The six calls of run_external_server_test become calls that may fail;
-    # the count checks that the suite still makes them as expected.
-    framework=$suite/tests/support/server.tcl
-    sed -i -E \
-        -e 's/^    (r flushall|r function flush)$/    catch {\1}/' \
-        -e 's/^        (r config set \$param \$val)$/        catch {\1}/' \
-        -e 's/^        (dict set saved_config \$param \[lindex \[r config get \$param\] 1\])$/        catch {\1}/' \
-        -e 's/^            (waitForBgrewriteaof r)$/            catch {\1}/' \
-        "$framework"
-    tolerated=$(grep -c -E '^ +catch \{(r flushall|r function flush|r config set \$param \$val|dict set saved_config |waitForBgrewriteaof r)' "$framework" || true)
-    if [ "$tolerated" != 6 ]; then
-        echo "run.sh: --tolerant found $tolerated of the framework's 6 calls" >&2
-        exit 1
-    fi
-fi
-mkdir -p "$out/logs" "$out/servers" "$out/hung" "$out/data"
-cd "$suite"
-./runtest --list-tests > "$out/suite-units.txt"
-[ -n "$units" ] || units=$(cat "$out/suite-units.txt")
-if [ -n "$shard" ]; then
-    units=$(printf '%s\n' $units | python3 -B "$here/ratchet.py" assign --costs "$here/unit-seconds.tsv" --shard "$shard")
-fi
-printf '%s\n' $units > "$out/shard-units.txt"
-
-flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeout")
-{
-    echo "suite: redis-$version.tar.gz sha256 $sha256"
-    echo "suite adjustment: pubsub-barriers.patch waits for and checks all known no-argument unsubscribe acknowledgments"
-    echo "target: $target"
-    case $target in
-        redis) echo "server: $(redis-server --version)"
-               echo "server arguments: --port PORT$(printf ' %q' "${redis_args[@]}")" ;;
-        firn) echo "server: firn sha256 $(sha256sum < "$firn" | cut -d' ' -f1)"
-              echo "server arguments: --port PORT --firn-clients 0 --appendonly no --timeout 0" ;;
-        external) echo "server: $host:$port" ;;
-    esac
-    echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE --portcount 1000 ${flags[*]} --skipfile HUNG ${extra[*]}"
-    echo "shard: ${shard:-none}"
-    if [ "$tolerant" = 1 ]; then
-        echo "start_server framework: tolerant (FLUSHALL, FUNCTION FLUSH and the overrides' CONFIG GET, CONFIG SET and INFO may fail)"
-    else
-        echo "start_server framework: as released"
-    fi
-    echo "retries: $retries"
-    echo "client: $(redis-cli --version), tclsh $(echo 'puts [info patchlevel]' | tclsh)"
-    echo "host: $(uname -srm), $(nproc) processors"
-    echo "started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-} > "$out/meta.txt"
-printf 'unit\tattempt\truntest_exit\tserver\n' > "$out/attempts.tsv"
-
 # Ports come from below the kernel's range of ephemeral ports: an outgoing
 # connection, the suite's own among them, can hold a port in that range
 # without listening on it, and a listener then cannot bind the port.
@@ -229,6 +166,77 @@ free_port() {
     done
     return 1
 }
+
+# Redis's no-argument unsubscribe helpers read no acknowledgments. Preserve
+# those wire commands, but make their tests wait for all known memberships
+# before another connection publishes or the next test starts. The suite also
+# runs the tests of a unit on one shared connection, which a failed test can
+# leave in RESP3, in raw mode or with unread replies, so that every later test
+# of the unit fails; the second patch gives the test after a failure a fresh
+# connection in the mode the failed one started in. The same contextual
+# patches apply to every target; stale or missing hunks stop the run, and the
+# check also runs two witnesses of the second patch against the pinned
+# redis-server.
+python3 -B "$here/check-pubsub-barriers.py" --ports "$port_low" "$port_high" "$suite" "$here/pubsub-barriers.patch" "$here/connection-reset.patch"
+patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/pubsub-barriers.patch"
+patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/connection-reset.patch"
+# Tests that run the suite's own client tools look for them in src/, as in a
+# built source tree; the 7.2.16 tools built from the same archive stand in
+# for them.
+for tool in redis-cli redis-benchmark; do
+    ln -s "$(command -v "$tool")" "$suite/src/$tool"
+done
+if [ "$tolerant" = 1 ]; then
+    # The six calls of run_external_server_test become calls that may fail;
+    # the count checks that the suite still makes them as expected.
+    framework=$suite/tests/support/server.tcl
+    sed -i -E \
+        -e 's/^    (r flushall|r function flush)$/    catch {\1}/' \
+        -e 's/^        (r config set \$param \$val)$/        catch {\1}/' \
+        -e 's/^        (dict set saved_config \$param \[lindex \[r config get \$param\] 1\])$/        catch {\1}/' \
+        -e 's/^            (waitForBgrewriteaof r)$/            catch {\1}/' \
+        "$framework"
+    tolerated=$(grep -c -E '^ +catch \{(r flushall|r function flush|r config set \$param \$val|dict set saved_config |waitForBgrewriteaof r)' "$framework" || true)
+    if [ "$tolerated" != 6 ]; then
+        echo "run.sh: --tolerant found $tolerated of the framework's 6 calls" >&2
+        exit 1
+    fi
+fi
+mkdir -p "$out/logs" "$out/servers" "$out/hung" "$out/data"
+cd "$suite"
+./runtest --list-tests > "$out/suite-units.txt"
+[ -n "$units" ] || units=$(cat "$out/suite-units.txt")
+if [ -n "$shard" ]; then
+    units=$(printf '%s\n' $units | python3 -B "$here/ratchet.py" assign --costs "$here/unit-seconds.tsv" --shard "$shard")
+fi
+printf '%s\n' $units > "$out/shard-units.txt"
+
+flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeout")
+{
+    echo "suite: redis-$version.tar.gz sha256 $sha256"
+    echo "suite adjustment: pubsub-barriers.patch waits for and checks all known no-argument unsubscribe acknowledgments"
+    echo "suite adjustment: connection-reset.patch gives the test after a failed test a fresh connection in the mode the failed one started in"
+    echo "target: $target"
+    case $target in
+        redis) echo "server: $(redis-server --version)"
+               echo "server arguments: --port PORT$(printf ' %q' "${redis_args[@]}")" ;;
+        firn) echo "server: firn sha256 $(sha256sum < "$firn" | cut -d' ' -f1)"
+              echo "server arguments: --port PORT --firn-clients 0 --appendonly no --timeout 0" ;;
+        external) echo "server: $host:$port" ;;
+    esac
+    echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE --portcount 1000 ${flags[*]} --skipfile HUNG ${extra[*]}"
+    echo "shard: ${shard:-none}"
+    if [ "$tolerant" = 1 ]; then
+        echo "start_server framework: tolerant (FLUSHALL, FUNCTION FLUSH and the overrides' CONFIG GET, CONFIG SET and INFO may fail)"
+    else
+        echo "start_server framework: as released"
+    fi
+    echo "retries: $retries"
+    echo "client: $(redis-cli --version), tclsh $(echo 'puts [info patchlevel]' | tclsh)"
+    echo "host: $(uname -srm), $(nproc) processors"
+    echo "started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$out/meta.txt"
+printf 'unit\tattempt\truntest_exit\tserver\n' > "$out/attempts.tsv"
 
 server_pid=
 # Starts the server under test on a free port, setting port and server_pid.

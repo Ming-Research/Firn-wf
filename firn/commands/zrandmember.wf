@@ -1,0 +1,387 @@
+alias Key = pkg::bytes::Key;
+alias KeyHash = pkg::bytes::KeyHash;
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias HashMap = std::collections::hash_map::HashMap;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Rank = pkg::store::Rank;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias arg = pkg::protocol::arg;
+alias ceiling = pkg::store::ceiling;
+alias copy_key = pkg::bytes::copy_key;
+alias expired = pkg::store::expired;
+alias hash_map_each = std::collections::hash_map::hash_map_each;
+alias hash_map_len = std::collections::hash_map::hash_map_len;
+alias hash_map_new = std::collections::hash_map::hash_map_new;
+alias hash_map_put = std::collections::hash_map::hash_map_put;
+alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
+alias read_integer = pkg::bytes::read_integer;
+alias remove_expired = pkg::store::remove_expired;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_nil = pkg::protocol::reply_nil;
+alias reply_pair = pkg::protocol::reply_pair;
+alias reply_pairs = pkg::protocol::reply_pairs;
+alias reply_score = pkg::scores::reply_score;
+alias reply_text = pkg::protocol::reply_text;
+alias reply_wrong_type = pkg::protocol::reply_wrong_type;
+
+struct ScoredKey {
+  member: Key;
+  score: f64;
+}
+
+fn pick_scored(env: &Client, scores: &HashMap<Key, f64, ceiling>) -> found: Option<ScoredKey> reads(scores), writes(env) {
+  doc "Copies a member and its score chosen with equal chance from the map, none for an empty map: the first filled bucket among 32 buckets drawn at random, which at the map's load takes a few draws, and else the filled bucket whose place among the filled ones, from the first bucket, is a draw modulo the number of members. Each draw steps the client's random state.";
+  let buckets = scores^.cells.inner.len;
+  if buckets == 0_u64 {
+    return None<ScoredKey>();
+  }
+  let size = hash_map_len::<Key, f64, ceiling>(map: scores);
+  if size == 0_u64 {
+    return None<ScoredKey>();
+  }
+  for @probes (attempt in 0_u64..32_u64) {
+    set env^.random = next_random(state: env^.random);
+    let index = env^.random % buckets;
+    let slot = &scores^.cells.inner[index];
+    match slot^ {
+      HashMapFilled(key: member, value: current) => {
+        let copied = copy_key(key: member);
+        let drawn = ScoredKey(member: move copied, score: current^);
+        return Some<ScoredKey>(value: move drawn);
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
+      }
+    }
+  }
+  set env^.random = next_random(state: env^.random);
+  let target = env^.random % size;
+  let passed = 0_u64;
+  for @scan (index in 0_u64..buckets) {
+    let slot = &scores^.cells.inner[index];
+    match slot^ {
+      HashMapFilled(key: member, value: current) => {
+        if passed == target {
+          let copied = copy_key(key: member);
+          let drawn = ScoredKey(member: move copied, score: current^);
+          return Some<ScoredKey>(value: move drawn);
+        }
+        set passed = passed +wrap 1_u64;
+      }
+      HashMapVacant() => {
+      }
+      HashMapDeleted() => {
+      }
+    }
+  }
+  return None<ScoredKey>();
+}
+
+fn scored_emit(env: &Client, member: &Key, score: f64) -> result: unit reads(member.bytes), writes(env) {
+  doc "Writes one member of ZRANDMEMBER's reply, followed by its score as a pair when the command asked for scores, which is high 2 in the client.";
+  if env^.high == 2_i64 {
+    reply_pair(client: env);
+    reply_text(client: env, text: &member^.bytes);
+    reply_score(client: env, score: score);
+    return unit;
+  }
+  reply_text(client: env, text: &member^.bytes);
+  return unit;
+}
+
+fn rank_emit(env: &Client, key: &Rank, value: &unit) -> result: unit reads(key), writes(env) {
+  doc "Writes a rank of a sorted set's order as scored_emit writes a member.";
+  scored_emit(env: env, member: &key^.member, score: key^.score);
+  return unit;
+}
+
+fn score_emit(env: &Client, key: &Key, value: &f64) -> result: unit reads(key.bytes), reads(value), writes(env) {
+  doc "Writes a member of a sorted set's scores as scored_emit writes it.";
+  scored_emit(env: env, member: key, score: value^);
+  return unit;
+}
+
+fn scored_header(env: &Client, count: u64) -> result: unit writes(env) {
+  doc "Writes the header of ZRANDMEMBER's array of count members: of pairs when the command asked for scores, nested under RESP3 only, and otherwise of members.";
+  if env^.high == 2_i64 {
+    reply_pairs(client: env, pairs: count);
+    return unit;
+  }
+  reply_array(client: env, count: count);
+  return unit;
+}
+
+fn random_ranked(env: &Client, value: &Entry, bounds: &[u8]) -> kind: u64 reads(value), reads(bounds), writes(env) {
+  doc "Writes members of a live sorted set chosen at random as Redis's zrandmemberWithCountCommand chooses them, recording done: one bulk string when high is 0; else for the count low an empty array for 0; for a negative count, or 1, an array of that many members each drawn from the whole set, so that one may repeat; for a count of at least the set's size the whole set from its highest score to its lowest, as Redis's zuiNext walks both encodings, the walk's empty range ends being made from bounds; and else that many distinct members, chosen by one pass over the buckets that takes each member with the chance still needed, for a count above a third of the set, and otherwise by draws kept in a map of their own until it holds that many. With high 2 each member is followed by its score. Records wrong for another kind and expired for an expired entry.";
+  let reached = expired(expires: value^.expires, now: env^.now);
+  if reached {
+    set env^.state = state_expired;
+    return 0_u64;
+  }
+  match value^.value {
+    Ranked(ranked: sorted) => {
+      set env^.state = state_done;
+      let size = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
+      if env^.high == 0_i64 {
+        let picked = pick_scored(env: env, scores: &sorted^.scores);
+        match move picked {
+          Some(value: drawn) => {
+            reply_text(client: env, text: &drawn.member.bytes);
+          }
+          None() => {
+            set env^.state = state_absent;
+          }
+        }
+        return 5_u64;
+      }
+      let wanted = env^.low;
+      if wanted == 0_i64 {
+        reply_array(client: env, count: 0_u64);
+        return 5_u64;
+      }
+      let repeats = wanted < 0_i64;
+      let magnitude = cvt.wrap::<i64, u64>(wanted);
+      if repeats {
+        set magnitude = 0_u64 -wrap magnitude;
+      }
+      let single = magnitude == 1_u64;
+      let drawn_each = bor(repeats, single);
+      if drawn_each {
+        scored_header(env: env, count: magnitude);
+        for @draws (step in 0_u64..magnitude) {
+          let picked = pick_scored(env: env, scores: &sorted^.scores);
+          match move picked {
+            Some(value: drawn) => {
+              scored_emit(env: env, member: &drawn.member, score: drawn.score);
+            }
+            None() => {
+            }
+          }
+        }
+        return 5_u64;
+      }
+      if magnitude >= size {
+        scored_header(env: env, count: size);
+        let act = 0_u64;
+        if env^.high == 2_i64 {
+          set act = 1_u64;
+        }
+        let backward = True();
+        let walk = walk_new(reverse: backward, kind: 0_u64, act: act, input: bounds);
+        let everything = True();
+        let walked = walk_from(order: &sorted^.order, walk: &walk, client: env, offset: 0_u64, limit: 0_u64, unlimited: everything, act: act);
+        return 5_u64;
+      }
+      let tripled = magnitude *wrap 3_u64;
+      if tripled > size {
+        scored_header(env: env, count: magnitude);
+        let needed = magnitude;
+        let remaining = size;
+        let buckets = sorted^.scores.cells.inner.len;
+        for @buckets (index in 0_u64..buckets) {
+          if needed == 0_u64 {
+            break @buckets;
+          }
+          if remaining == 0_u64 {
+            break @buckets;
+          }
+          let slot = &sorted^.scores.cells.inner[index];
+          match slot^ {
+            HashMapFilled(key: member, value: current) => {
+              set env^.random = next_random(state: env^.random);
+              let draw = env^.random % remaining;
+              if draw < needed {
+                scored_emit(env: env, member: member, score: current^);
+                set needed = needed -wrap 1_u64;
+              }
+              set remaining = remaining -wrap 1_u64;
+            }
+            HashMapVacant() => {
+            }
+            HashMapDeleted() => {
+            }
+          }
+        }
+        return 5_u64;
+      }
+      if magnitude <= ceiling {
+        let chosen = hash_map_new::<Key, f64, ceiling>(capacity: magnitude);
+        let keys = env^.keys;
+        loop @draws {
+          let held_count = hash_map_len::<Key, f64, ceiling>(map: &chosen);
+          if held_count >= magnitude {
+            break @draws;
+          }
+          let picked = pick_scored(env: env, scores: &sorted^.scores);
+          match move picked {
+            Some(value: drawn) => {
+              let ScoredKey(member: picked_key, score: picked_score) = move drawn;
+              let put = hash_map_put::<KeyHash, f64, ceiling>(map: &chosen, key: move picked_key, value: picked_score, env: &keys);
+            }
+            None() => {
+              break @draws;
+            }
+          }
+        }
+        let found = hash_map_len::<Key, f64, ceiling>(map: &chosen);
+        scored_header(env: env, count: found);
+        hash_map_each::<Key, f64, Client, fn score_emit, ceiling>(map: &chosen, env: env);
+      }
+      return 5_u64;
+    }
+    Text(bytes: stored) => {
+      set env^.state = state_wrong;
+      return 1_u64;
+    }
+    Items(items: list) => {
+      set env^.state = state_wrong;
+      return 2_u64;
+    }
+    Members(members: set_of) => {
+      set env^.state = state_wrong;
+      return 3_u64;
+    }
+    Fields(fields: hash_of) => {
+      set env^.state = state_wrong;
+      return 4_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
+  }
+}
+
+fn zrandmember_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> ready: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares ZRANDMEMBER once for network and held execution, in the order of Redis's zrandmemberCommand and before the key is looked up: a count that is no integer, or is -2^63, whose magnitude no 64-bit integer holds, is refused; a fourth argument other than WITHSCORES, letters in either case up to a zero byte, or a fifth argument, is a syntax error; and a count outside half the 64-bit range is refused with WITHSCORES. The client's low holds the count, and high 0 for none, 1 for a count and 2 for a count with scores.";
+  let count = args^.inner.len;
+  let wanted = 1_i64;
+  let mode = 0_i64;
+  if count >= 3_u64 {
+    let amount = arg(args: args, index: 2_u64);
+    let number = read_integer(input: input, start: amount.start, length: amount.length);
+    if number.state != 1_u64 {
+      reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+      return False();
+    }
+    if number.value == -9223372036854775808_i64 {
+      reply_error(client: client, word: &text_count_range[0_u64..90_u64]);
+      return False();
+    }
+    let extra = count > 4_u64;
+    let four = count == 4_u64;
+    let option = arg(args: args, index: 3_u64);
+    let spelled = word_at(input: input, span: option, word: &word_withscores[0_u64..10_u64]);
+    let unspelled = bnot(spelled);
+    let wrong_option = band(four, unspelled);
+    let malformed = bor(extra, wrong_option);
+    if malformed {
+      reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+      return False();
+    }
+    set wanted = number.value;
+    set mode = 1_i64;
+    if four {
+      let below = number.value < -4611686018427387903_i64;
+      let above = number.value > 4611686018427387903_i64;
+      let outside = bor(below, above);
+      if outside {
+        reply_error(client: client, word: &text_out_of_range[0_u64..25_u64]);
+        return False();
+      }
+      set mode = 2_i64;
+    }
+  }
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.low = wanted;
+  set client^.high = mode;
+  return True();
+}
+
+fn zrandmember_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client) {
+  doc "ZRANDMEMBER over one entry, whose members random_ranked chooses.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
+  match slot^ {
+    Some(value: held_value) => {
+      let found = random_ranked(env: client, value: held_value, bounds: access_key);
+    }
+    None() => {
+    }
+  }
+  let lapsed = client^.state == state_expired;
+  return lapsed;
+}
+
+fn zrandmember_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZRANDMEMBER's reply: the members were written while visiting the entry; a wrong-type refusal, the empty array of a count and the null bulk string of none remain.";
+  if client^.state == state_done {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if client^.high > 0_i64 {
+    reply_array(client: client, count: 0_u64);
+    return unit;
+  }
+  reply_nil(client: client);
+  return unit;
+}
+
+fn run_zrandmember(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZRANDMEMBER key [count [WITHSCORES]]: answers a member chosen at random, or with a count the members random_ranked chooses, each with its score as a pair when asked, written into the reply inside the statement that finds the set; an absent key answers the null bulk string, or an empty array with a count.";
+  let journal = None<pkg::store::AccessJournal>();
+  let ready = zrandmember_parse(input: input, args: args, client: client, now: time^.check);
+  if bnot(ready) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  atomic slot = &store^.keys[key] {
+    let lapsed = zrandmember_body(journal: &journal, access_key: key, slot: slot, client: client);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+  }
+  zrandmember_finish(client: client);
+  return unit;
+}
+
+fn script_zrandmember(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} {
+  doc "ZRANDMEMBER under a held statement, through the network parts, removing and recording an expired entry at once.";
+  let unlimited_log_budget = pkg::store::log_budget_new();
+  let ready = zrandmember_parse(input: input, args: args, client: client, now: time^.check);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let footprint_ready = script_entries_ready(kind: operation_kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+  if bnot(footprint_ready) {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let rank = script_key_rank(keys: declared, key: key);
+  if rank >= keys^.len {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let slot = &keys^[rank];
+  let lapsed = zrandmember_body(journal: journal, access_key: key, slot: slot, client: client);
+  if lapsed {
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: key);
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: lapsed, key: key, budget: &unlimited_log_budget);
+  zrandmember_finish(client: client);
+  return appended;
+}

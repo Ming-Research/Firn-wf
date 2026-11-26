@@ -1,0 +1,156 @@
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Rank = pkg::store::Rank;
+alias Sorted = pkg::store::Sorted;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias ceiling = pkg::store::ceiling;
+alias clear_items = pkg::protocol::clear_items;
+alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
+alias reply_integer = pkg::protocol::reply_integer;
+alias reply_wrong_type = pkg::protocol::reply_wrong_type;
+
+fn zrangestore_prepare(input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys: &KeySet, now: u64) -> pair: KeyPair reads(input), reads(args), writes(client), writes(keys) {
+  doc "Prepares ZRANGESTORE's key set, the source and then the destination, which may be one key, and the client's initial state after the range is read.";
+  let source_place = key_bounds(input: input, args: args, index: 2_u64);
+  let source_key = &input^[source_place.start..source_place.end];
+  let destination_place = key_bounds(input: input, args: args, index: 1_u64);
+  let destination_key = &input^[destination_place.start..destination_place.end];
+  let source = key_set_insert(keys: keys, key: source_key);
+  let destination = key_set_insert(keys: keys, key: destination_key);
+  clear_items(client: client);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  return KeyPair(source: source, target: destination);
+}
+
+fn zrangestore_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, access_keys: &KeySet, ranks: &Box<Slots<u64>>, client: &Client, walk: &Walk, source: u64, target: u64, result: &Sorted) -> work: SetCombineWork reads(access_keys), reads(ranks), writes(sequence), writes(journal), writes(slots), writes(client), writes(walk), writes(result) contract {
+  requires slots^.len == access_keys^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "ZRANGESTORE over its key set entries, as Redis's zrangeGenericCommand does with a destination: the source is looked up first, removed and noted when it has expired, refused when it holds another kind, a set included; the ranks the walk takes from a sorted set, or none from an absent source, are collected and make the result, whose size is the answer; then the destination is settled as a store command settles it, replaced by a result with members and removed for an empty one.";
+  let no = False();
+  let removed = box_slots_new::<u64>(capacity: 0_u64);
+  let work = SetCombineWork(changed: no, removed: move removed);
+  let from = key_position(positions: ranks, index: source);
+  let to = key_position(positions: ranks, index: target);
+  if from < slots^.len {
+    refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: from, client: client);
+    let kind = zalg_kind(slot: &slots^[from], now: client^.now);
+    if kind == zkind_lapsed {
+      pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[from], keys: access_keys, index: from);
+      note_position(positions: &work.removed, position: 2_u64);
+    } else if kind == zkind_zset {
+      let slot = &slots^[from];
+      match slot^ {
+        Some(value: held_value) => {
+          let found = range_ranked(env: client, value: held_value, walk: walk);
+        }
+        None() => {
+        }
+      }
+    } else if kind != zkind_none {
+      set client^.state = state_wrong;
+    }
+  }
+  if client^.state == state_wrong {
+    return move work;
+  }
+  set client^.state = state_done;
+  let keys_env = client^.keys;
+  loop @collect {
+    let have_member = client^.items.inner.len > 0_u64;
+    let have_score = client^.scores.inner.len > 0_u64;
+    let both = band(have_member, have_score);
+    if both {
+    } else {
+      break @collect;
+    }
+    let member = take_back(window: &client^.items.inner);
+    let score = take_back(window: &client^.scores.inner);
+    place_rank(sorted: result, member: move member, score: score, keys: &keys_env);
+  }
+  let size = ordered_map_len::<Rank, unit, ceiling>(map: &result^.order);
+  set client^.number = size;
+  zalg_settle(sequence: sequence, journal: journal, slots: slots, access_keys: access_keys, client: client, target: to, size: size, result: result, work: &work);
+  return move work;
+}
+
+fn zrangestore_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZRANGESTORE's reply, the size of the stored range or the wrong-type refusal.";
+  clear_items(client: client);
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let answer = cvt.wrap::<u64, i64>(client^.number);
+  reply_integer(client: client, value: answer);
+  return unit;
+}
+
+fn run_zrangestore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZRANGESTORE destination source min max [BYSCORE|BYLEX] [REV] [LIMIT offset count]: stores the ranks ZRANGE would answer for the source, with their scores, at the destination, without an expiry, whatever it held, removing it for an empty range, and answers how many members it stored. The range and options are read as ZRANGE reads them, from the third argument on, but for WITHSCORES, which is a syntax error, before any key is looked up; one statement holds both keys. The command is appended to the file as sent when the destination changed, after the removal of an expired source or destination.";
+  let journal = None<pkg::store::AccessJournal>();
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 3_u64, input: input);
+  let storing = True();
+  let valid = zrange_parse(input: input, args: args, client: client, kind: 0_u64, direction: 0_u64, plan: &walk, base: 1_u64, storing: storing);
+  if bnot(valid) {
+    return unit;
+  }
+  let keys = key_set_new(capacity: 2_u64);
+  let pair = zrangestore_prepare(input: input, args: args, client: client, keys: &keys, now: time^.check);
+  let ranks = script_key_ranks(keys: &keys, declared: &keys);
+  let result = zalg_result();
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let sequence = if store^.logging {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let work = zrangestore_body(sequence: &sequence, journal: &journal, slots: slots, access_keys: &keys, ranks: &ranks, client: client, walk: &walk, source: pair.source, target: pair.target, result: &result);
+    if store^.logging {
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
+      let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  }
+  zrangestore_finish(client: client);
+  return unit;
+}
+
+fn script_zrangestore(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} {
+  doc "ZRANGESTORE under a held statement, through the network parts, removing and recording an expired source or destination once.";
+  let unlimited_log_budget = pkg::store::log_budget_new();
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 3_u64, input: input);
+  let storing = True();
+  let valid = zrange_parse(input: input, args: args, client: client, kind: 0_u64, direction: 0_u64, plan: &walk, base: 1_u64, storing: storing);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let ks = key_set_new(capacity: 2_u64);
+  let pair = zrangestore_prepare(input: input, args: args, client: client, keys: &ks, now: time^.check);
+  let footprint_ready = script_entries_ready(kind: operation_kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+  if bnot(footprint_ready) {
+    set fallback^ = True();
+    return 0_u64;
+  }
+  let ranks = script_key_ranks(keys: &ks, declared: declared);
+  let result = zalg_result();
+  let work = zrangestore_body(sequence: sequence, journal: journal, slots: keys, access_keys: declared, ranks: &ranks, client: client, walk: &walk, source: pair.source, target: pair.target, result: &result);
+  let appended = set_operands_meta(log: effects, logged: logged, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &unlimited_log_budget);
+  zrangestore_finish(client: client);
+  return appended;
+}
