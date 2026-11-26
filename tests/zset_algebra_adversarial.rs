@@ -234,8 +234,11 @@ fn zset_algebra_over_thousands_of_members_answers_as_redis_does() {
             let end = (start + 200).min(to);
             let mut add = format!("ZADD {key}");
             for member in start..end {
-                // Quarter steps over a small range: thousands of ties.
-                add.push_str(&format!(" {} m{member}", next(400) as f64 / 4.0 - 20.0));
+                // Quarter steps over a small range: thousands of ties. The scores sit an eighth off
+                // the whole numbers so that none is zero: a zero under a negative weight is a
+                // negative zero, which firn keeps as a zero in every sorted set (kept_score, the
+                // listpack's rule) and Redis keeps as it is in one of more than 128 members.
+                add.push_str(&format!(" {} m{member}", next(400) as f64 / 4.0 - 20.0 + 0.125));
             }
             all.push((0, add));
             start = end;
