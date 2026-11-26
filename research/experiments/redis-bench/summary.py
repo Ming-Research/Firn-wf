@@ -2,11 +2,13 @@
 """Tables from the CSV files of a redis-bench run, for the records and the
 acceptance rows.
 
-  summary.py pubsub|zset DIR [--firn LINE] [--twin LINE] [--floor PERCENT]
+  summary.py pubsub|zset DIR [--firn LINE] [--twin LINE] [--floor PERCENT] [--csv FILE]
       pubsub.csv and pubsub-limited.csv of a workloads run with the pub/sub
-      workloads, or zset.csv and zset-limited.csv of one with the sorted-set
-      workloads (their workload names carry the source layout, and their rate
-      is of commands): per workload and pipeline depth, each line's median rate and
+      workloads, or with --csv scan.csv the scan.csv of a run with the scan
+      workloads (its rate is members a second, and its limited rows are in
+      pubsub-limited.csv too), or zset.csv and zset-limited.csv of one with the
+      sorted-set workloads (their workload names carry the source layout, and
+      their rate is of commands): per workload and pipeline depth, each line's median rate and
       p99 over the passes, firn's multiple of the fastest competitor, whether
       the cell's criteria hold, and the twin's ratio to firn per pass with its
       95% interval (the noise; its largest half-width over the cells of a run
@@ -135,7 +137,7 @@ def pubsub(args):
     rates = defaultdict(lambda: defaultdict(dict))
     p99s = defaultdict(lambda: defaultdict(list))
     work = defaultdict(lambda: defaultdict(list))
-    for r in rows(directory / f"{table}.csv"):
+    for r in rows(directory / (getattr(args, "csv", None) or f"{table}.csv")):
         key = (int(r["cpus"]), r["workload"], int(r["connections"]), int(r["pipeline"]))
         rates[key][r["line"]][int(r["pass"])] = float(r["rate"])
         p99s[key][r["line"]].append(float(r["p99_ms"]))
@@ -260,7 +262,7 @@ def selftest():
         (Path(tmp) / "pubsub-limited.csv").write_text("\n".join(limited) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, csv="pubsub.csv"))
         text = out.getvalue()
         assert "firn-2 / reference (the fastest competitor): 1.500, needs at least 1.4: ok" in text, text
         assert "\n0 criteria not met\n" in text, text
@@ -275,7 +277,7 @@ def selftest():
         (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, csv="pubsub.csv"))
         text = out.getvalue()
         assert "2.800 ms against the fastest competitor's 3.000 ms: ok" in text, text
         assert "\n0 criteria not met\n" in text, text
@@ -287,7 +289,7 @@ def selftest():
         (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, csv="pubsub.csv"))
         text = out.getvalue()
         assert "BELOW" in text and "HIGHER" in text and "\n2 criteria not met\n" in text, text
         # A client-limited cell asks only that firn is not behind: 105 against
@@ -301,7 +303,7 @@ def selftest():
         (Path(tmp) / "pubsub-limited.csv").write_text("\n".join(limited) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, csv="pubsub.csv"))
         text = out.getvalue()
         assert "needs at least 1.0 (client-limited): ok" in text and "not judged (client-limited)" in text, text
         assert "\n0 criteria not met\n" in text, text
@@ -313,7 +315,7 @@ def selftest():
         (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, csv="pubsub.csv"))
         assert "\n1 criteria not met\n" in out.getvalue(), out.getvalue()
         # A run without competitors prints the twin's interval and its largest
         # half-width; with a floor below that, the cell is marked not counting,
@@ -327,12 +329,25 @@ def selftest():
         for floor, counts in ((0.5, False), (5.0, True)):
             out = io.StringIO()
             with redirect_stdout(out):
-                pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=floor))
+                pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=floor, csv="pubsub.csv"))
             text = out.getvalue()
             assert "twin firn-2-twin / firn-2: median 1.0100" in text, text
             assert "largest twin half-width over 1 cells:" in text, text
             assert ("does not count" in text) == (not counts), text
             assert text.rstrip().endswith(f"{0 if counts else 1} cells above the floor of {floor:.2f}%"), text
+        # The scan workloads' file is read the same way: 1.3 times the fastest
+        # competitor falls short of the 1.4 that depth 16 asks.
+        scan_header = "line,pass,cpus,workload,connections,pipeline,calls,members,seconds,rate,p50_ms,p99_ms"
+        data = [scan_header]
+        for p in (1, 2, 3):
+            for line, rate in (("reference", 100), ("firn-2", 130)):
+                data.append(f"{line},{p},2,scan-set,50,16,100,10000,5,{rate},1.0,1.0")
+        (Path(tmp) / "scan.csv").write_text("\n".join(data) + "\n")
+        (Path(tmp) / "pubsub-limited.csv").write_text("line,pass,cpus,workload,connections,pipeline,client_busy_mean,client_work_fraction,client_limited\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None, csv="scan.csv"))
+        assert "scan-set" in out.getvalue() and "\n1 criteria not met\n" in out.getvalue(), out.getvalue()
     # The sorted-set tables are judged by the same criteria: 1.4 at depth 16,
     # 1.0 at depth 1, and the fastest competitor's p99.
     with tempfile.TemporaryDirectory() as tmp:
@@ -365,6 +380,7 @@ def main():
         p.add_argument("--firn")
         p.add_argument("--twin")
         p.add_argument("--floor", type=float)
+        p.add_argument("--csv")
         p.set_defaults(table=table)
     p = sub.add_parser("ratios")
     p.add_argument("compare")

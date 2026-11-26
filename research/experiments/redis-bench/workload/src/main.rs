@@ -4,6 +4,7 @@ mod limiter;
 mod eviction;
 mod handshake;
 mod pubsub;
+mod scan;
 mod zset;
 
 use std::collections::{BTreeMap, HashMap};
@@ -19,6 +20,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
     "evict-zipf", "handshake", "client-list", "pubsub-channel", "pubsub-pattern",
+    "scan-set", "scan-hash", "scan-zset",
     "zunionstore", "zinterstore", "zmpop",
 ];
 
@@ -65,7 +67,7 @@ impl Options {
             pipeline: 1, window: 1024,
             layout: zset::Layout::Shared, prefill: 200_000, pop_count: 1,
         };
-        let (mut keys_given, mut value_given, mut window_given, mut pipeline_given) = (false, false, false, false);
+        let (mut keys_given, mut value_given, mut pipeline_given, mut window_given) = (false, false, false, false);
         let (mut layout_given, mut prefill_given) = (false, false);
         let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -109,11 +111,12 @@ impl Options {
         let pubsub = pubsub::is_pubsub(&opts.workload);
         if pubsub && !value_given { opts.value = vec![b'x'; 64]; }
         let sorted_set = zset::is_zset(&opts.workload);
+        let scanning = scan::is_scan(&opts.workload);
         if window_given && !pubsub {
             return Err("--window only applies to the pub/sub workloads".into());
         }
-        if pipeline_given && !pubsub && !sorted_set {
-            return Err("--pipeline only applies to the pub/sub and sorted-set workloads".into());
+        if pipeline_given && !pubsub && !scanning && !sorted_set {
+            return Err("--pipeline only applies to the pub/sub, scan and sorted-set workloads".into());
         }
         if layout_given && !matches!(opts.workload.as_str(), "zunionstore" | "zinterstore") {
             return Err("--layout only applies to zunionstore and zinterstore".into());
@@ -126,6 +129,14 @@ impl Options {
         }
         if opts.workload == "zmpop" && opts.prefill < opts.pop_count {
             return Err("--prefill must hold at least --pop-count members".into());
+        }
+        if scanning {
+            if opts.requests.is_some() || opts.seconds.is_none() {
+                return Err("the scan workloads take --seconds, not --requests".into());
+            }
+            if opts.pipeline == 0 {
+                return Err("--pipeline must be positive".into());
+            }
         }
         if pubsub {
             if opts.requests.is_some() || opts.seconds.is_none() {
@@ -649,6 +660,7 @@ fn run(opts: Options) -> Result<()> {
     if pubsub::is_pubsub(&opts.workload) { return pubsub::run(&opts); }
     // The sets are written before any measured connection opens.
     if zset::is_zset(&opts.workload) { zset::setup(&opts)?; }
+    if scan::is_scan(&opts.workload) { return scan::run(&opts); }
     if matches!(opts.workload.as_str(), "handshake" | "client-list") && !opts.warmup.is_zero() {
         let mut warm = opts.clone();
         warm.seconds = Some(opts.warmup);
@@ -668,7 +680,9 @@ fn main() {
         eprintln!("firn-workload: {e}");
         // Exit status 3 says that the server lacks the workload's commands, so
         // that the harness can record a skip; every other failure is 1.
-        std::process::exit(if e.downcast_ref::<pubsub::Unsupported>().is_some() { 3 } else { 1 });
+        let unsupported = e.downcast_ref::<pubsub::Unsupported>().is_some()
+            || e.downcast_ref::<scan::Unsupported>().is_some();
+        std::process::exit(if unsupported { 3 } else { 1 });
     }
 }
 
@@ -705,9 +719,10 @@ mod tests {
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
-            // Cache-aside, connection, pub/sub and sorted-set workloads have separate checked cases.
+            // Cache-aside, connection, pub/sub, scan and sorted-set workloads have separate checked cases.
             if matches!(workload, "evict-zipf" | "handshake" | "client-list"
-                | "pubsub-channel" | "pubsub-pattern") || zset::is_zset(workload) { continue; }
+                | "pubsub-channel" | "pubsub-pattern" | "scan-set" | "scan-hash" | "scan-zset")
+                || zset::is_zset(workload) { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {
