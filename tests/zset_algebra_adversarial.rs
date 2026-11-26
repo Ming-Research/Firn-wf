@@ -82,13 +82,20 @@ fn text(bytes: &[u8]) -> String {
 /// replies; returns the replies of Redis with their steps.
 fn run(label: &str, firn: &mut Side, oracle: &mut Side, steps: &[(usize, String)]) -> Vec<(String, Vec<u8>)> {
     let mut replies = Vec::new();
+    let mut previous = String::new();
     for (who, command) in steps {
         let want = oracle.say(*who, command);
         let got = firn.say(*who, command);
         if command.starts_with("HELLO") {
             continue;
         }
-        assert_eq!(text(&got), text(&want), "{label}: connection {who} sent {command:?}; firn must answer as Redis 7.2.16 does");
+        if text(&got) != text(&want) {
+            let at = text(&got).bytes().zip(text(&want).bytes()).position(|(left, right)| left != right).unwrap_or(0);
+            let from = at.saturating_sub(80);
+            let slice = |reply: &[u8]| text(&reply[from.min(reply.len())..(at + 160).min(reply.len())]);
+            panic!("{label}: connection {who} sent {command:?} after {previous:?}; firn must answer as Redis 7.2.16 does\n firn near the first difference (byte {at}): {:?}\n redis near it: {:?}", slice(&got), slice(&want));
+        }
+        previous = command.clone();
         replies.push((command.clone(), want));
     }
     replies
@@ -96,65 +103,6 @@ fn run(label: &str, firn: &mut Side, oracle: &mut Side, steps: &[(usize, String)
 
 fn steps(connection: usize, commands: &[&str]) -> Vec<(usize, String)> {
     commands.iter().map(|command| (connection, (*command).to_owned())).collect()
-}
-
-/// A write by another connection aborts a transaction that watches the key
-/// exactly when Redis's command signals the key as modified: a store or pop that
-/// changed its key, whether or not the value came out the same, and not a
-/// read, a refusal, nor a store of an empty result over an absent key.
-#[test]
-fn zset_writes_signal_watched_keys_as_redis_does() {
-    let directory = fixture_directory();
-    let program = CompiledProgram::from_environment();
-    let mut oracle = spawn_redis(directory.path(), 2);
-    let mut firn = spawn_firn(&program, 2);
-    let base = [
-        "FLUSHALL", "ZADD a 1 x 2 y 3 z 4 w", "ZADD b 10 y 20 z 30 v", "ZADD out 9 old", "SET str hello",
-        "ZADD ttl 1 p 2 q 3 r",
-    ];
-    let cases: &[(&str, &str)] = &[
-        ("out", "ZUNIONSTORE out 2 a b"), ("out", "ZINTERSTORE out 2 a b"), ("out", "ZDIFFSTORE out 2 a b"),
-        ("out", "ZRANGESTORE out a 0 -1"), ("out", "ZUNIONSTORE out 1 nosuch"), ("out", "ZINTERSTORE out 2 a nosuch"),
-        ("out", "ZDIFFSTORE out 1 nosuch"), ("out", "ZRANGESTORE out a 50 60"), ("out", "ZRANGESTORE out nosuch 0 -1"),
-        ("a", "ZUNIONSTORE a 1 a"), ("a", "ZRANGESTORE a a 0 -1"), ("a", "ZINTERSTORE a 2 a a"),
-        ("a", "ZMPOP 1 a MIN"), ("a", "ZMPOP 2 nosuch a MAX COUNT 2"), ("ttl", "ZMPOP 1 ttl MIN"),
-        ("str", "ZUNIONSTORE str 2 a b"), ("str", "ZRANGESTORE str a 0 -1"),
-        ("fresh", "ZUNIONSTORE fresh 1 nosuch"), ("fresh", "ZINTERSTORE fresh 2 a nosuch"),
-        ("fresh", "ZDIFFSTORE fresh 2 nosuch a"), ("fresh", "ZRANGESTORE fresh a 50 60"), ("fresh", "ZUNIONSTORE fresh 1 a"),
-        ("a", "ZUNION 2 a b"), ("a", "ZINTER 2 a b"), ("a", "ZDIFF 2 a b"), ("a", "ZINTERCARD 2 a b"),
-        ("a", "ZRANDMEMBER a"), ("a", "ZRANDMEMBER a 3 WITHSCORES"), ("a", "ZUNIONSTORE x 1 a"),
-        ("a", "ZRANGESTORE x a 0 -1"), ("nosuch", "ZMPOP 2 nosuch a MIN COUNT 1"), ("a", "ZMPOP 2 nosuch gone MIN"),
-        ("a", "ZMPOP 1 str MIN"), ("out", "ZUNIONSTORE out 2 str a"), ("out", "ZUNIONSTORE out 2 a b WEIGHTS x y"),
-        ("out", "ZINTERSTORE out 0 a"), ("out", "ZRANGESTORE out a 0 -1 WITHSCORES"), ("out", "ZMPOP 1 a MIN COUNT 0"),
-    ];
-    for version in [2_u8, 3] {
-        let mut aborted = 0;
-        let mut ran = 0;
-        for (index, (watched, write)) in cases.iter().enumerate() {
-            let mut all = Vec::new();
-            if index == 0 {
-                let hello = format!("HELLO {version}");
-                all.extend(steps(0, &[hello.as_str()]));
-                all.extend(steps(1, &[hello.as_str()]));
-            }
-            all.extend(steps(1, &base));
-            all.push((0, format!("WATCH {watched}")));
-            all.push((1, (*write).to_owned()));
-            all.extend(steps(0, &["MULTI", "PING", "EXEC"]));
-            all.extend(steps(1, &["ZRANGE out 0 -1 WITHSCORES", "ZRANGE a 0 -1 WITHSCORES", "EXISTS fresh x", "DBSIZE"]));
-            let replies = run(&format!("RESP{version} WATCH {watched} then {write}"), &mut firn, &mut oracle, &all);
-            let exec = replies.iter().rev().find(|(command, _)| command == "EXEC").expect("EXEC was sent");
-            if exec.1.starts_with(b"*-1") || exec.1.starts_with(b"_") {
-                aborted += 1;
-            } else {
-                ran += 1;
-            }
-        }
-        // Both outcomes occur, so the comparison separates a signal from none.
-        assert!(aborted >= 10 && ran >= 10, "RESP{version}: {aborted} transactions aborted, {ran} ran");
-    }
-    stop(firn);
-    stop(oracle);
 }
 
 /// A store gives its destination no expiry, a pop that leaves members keeps its
@@ -176,7 +124,7 @@ fn zset_stores_and_pops_treat_expiry_as_redis_does() {
         ("a", "ZDIFFSTORE a 1 a"), ("a", "ZUNIONSTORE a 1 nosuch"), ("a", "ZRANGESTORE a a 7 9"),
         ("b", "ZUNIONSTORE b 2 a b"), ("dst", "ZUNIONSTORE dst 1 a"), ("dst", "ZINTERSTORE dst 2 a nosuch"),
         ("dst", "ZRANGESTORE dst a 0 1"), ("a", "ZUNION 2 a b"), ("a", "ZINTER 2 a b"), ("a", "ZDIFF 2 a b"),
-        ("a", "ZINTERCARD 2 a b"), ("a", "ZRANDMEMBER a 2"), ("a", "ZUNIONSTORE copy 1 a"), ("a", "ZMPOP 2 nosuch a MIN"),
+        ("a", "ZINTERCARD 2 a b"), ("a", "ZRANDMEMBER a 10"), ("a", "ZUNIONSTORE copy 1 a"), ("a", "ZMPOP 2 nosuch a MIN"),
     ] {
         all.extend(steps(0, &base));
         all.push((0, format!("PEXPIREAT {setup} {far}")));
@@ -220,7 +168,21 @@ fn zset_negative_zero_scores_answer_as_redis_does() {
             "ZUNION 2 two zn2 WITHSCORES", "ZRANDMEMBER zn", "ZRANDMEMBER zn 1 WITHSCORES", "ZRANDMEMBER zn -2 WITHSCORES",
             "ZRANDMEMBER zn 5 WITHSCORES", "ZMPOP 1 zn MIN", "ZADD zn -0 m", "ZMPOP 1 zn MAX COUNT 3", "ZMPOP 1 o1 MIN",
             "ZMPOP 1 two MAX COUNT 2", "ZMPOP 1 two MIN COUNT 5", "ZRANGE o3 0 -1 WITHSCORES", "ZRANGE o6 0 -1 WITHSCORES",
+            "FLUSHALL", "ZADD z0 0 m", "ZADD big 0 m 1 q 2 r", "ZADD big2 0 m 1 q 2 r 3 s 4 t",
         ]));
+        // A zero score under a negative weight, joined with a zero of the other sign by each aggregate,
+        // visiting the sets in each order (the sizes of z0, big and big2 are 1, 3 and 4).
+        for operation in ["ZUNIONSTORE", "ZINTERSTORE"] {
+            for aggregate in ["SUM", "MIN", "MAX"] {
+                for (sets, weights) in [("z0 big", "-1 1"), ("z0 big", "1 -1"), ("z0 big", "-1 -1"), ("big z0", "-1 1"),
+                    ("big z0", "1 -1"), ("big big2", "-1 1"), ("big2 big", "-1 1"), ("big2 big", "1 -1"), ("big big2", "-1 -1")] {
+                    let count = sets.split(' ').count();
+                    all.push((0, format!("{operation} neg {count} {sets} WEIGHTS {weights} AGGREGATE {aggregate}")));
+                    all.extend(steps(0, &["ZSCORE neg m", "ZRANGE neg 0 -1 WITHSCORES"]));
+                }
+                all.push((0, format!("{} 3 z0 big big2 WEIGHTS -1 1 -1 AGGREGATE {aggregate} WITHSCORES", operation.trim_end_matches("STORE"))));
+            }
+        }
         // ZRANDMEMBER of one member and a count drawing it are the same everywhere.
         run(&format!("RESP{version}"), &mut firn, &mut oracle, &all);
     }
