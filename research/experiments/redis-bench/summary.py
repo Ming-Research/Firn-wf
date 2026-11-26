@@ -22,7 +22,10 @@ acceptance rows.
       compare.csv of a compare run: per cpus, test and depth, the median over
       passes of head's rate over base's, with the 95% interval of the mean log
       ratio over the passes (Student's t); the twin, an image measured again
-      as head, gives the run's noise as its own ratio to head.
+      as head, gives the run's noise as its own ratio to head. The attempts
+      that the compare-void.csv beside it lists (cpus and pass columns) ran
+      beside other jobs and are left out; the last line says how many. With no
+      such file nothing is left out and that line is not printed.
   summary.py selftest
 
 Only the standard library, since the hosts that run it have no more.
@@ -71,9 +74,26 @@ def verdict(low, high):
     return "no detected change"
 
 
+def void_attempts(compare):
+    """The (cpus, pass) attempts compare-void.csv beside <compare> lists, or
+    None when there is no such file."""
+    path = Path(compare).with_name("compare-void.csv")
+    if not path.is_file():
+        return None
+    listed = rows(path)
+    if listed and not {"cpus", "pass"} <= set(listed[0]):
+        raise SystemExit(f"{path} has no cpus and pass columns")
+    return {(int(r["cpus"]), int(r["pass"])) for r in listed}
+
+
 def ratios(args):
     by_pass = defaultdict(dict)
+    void = void_attempts(args.compare)
+    dropped = set()
     for r in rows(args.compare):
+        if void is not None and (int(r["cpus"]), int(r["pass"])) in void:
+            dropped.add((int(r["cpus"]), int(r["pass"])))
+            continue
         key = (int(r["cpus"]), r["test"], int(r["depth"]))
         by_pass[key].setdefault(r["line"], {})[int(r["pass"])] = float(r["rps"])
     print("cpus,test,depth,passes,head/base median,head/base 95% interval,verdict,"
@@ -96,6 +116,8 @@ def ratios(args):
             out += [f"{statistics.median(twin):.4f}", f"{tlow:.4f}-{thigh:.4f}",
                     verdict(tlow, thigh)]
         print(",".join(out))
+    if void is not None:
+        print(f"# {len(dropped)} void attempts left out, of the {len(void)} compare-void.csv lists")
 
 
 def is_firn(line):
@@ -202,6 +224,30 @@ def selftest():
         row = out.getvalue().splitlines()[1].split(",")
         assert row[:4] == ["2", "set", "16", "4"] and row[4] == "0.9000" and row[6] == "slower", row
         assert row[7] == "1.0000" and row[9] == "no detected change", row
+        # With no compare-void.csv beside it, nothing is left out and the
+        # output is the header and the row.
+        assert len(out.getvalue().splitlines()) == 2, out.getvalue()
+        # Attempts 2 and 5 of two CPUs ran beside other jobs (rates of 50
+        # against 100) and are listed in compare-void.csv, with attempt 3 of
+        # four CPUs, which compare.csv has no rows of: only the two are left
+        # out, the clean attempts 1, 3, 4 and 6 give 0.9, and the last line
+        # says how many were left out of how many listed.
+        lines = ["line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms"]
+        for p, after in ((1, 90), (2, 50), (3, 91), (4, 89), (5, 50), (6, 90)):
+            for name, rate in (("before", 100), ("after", after)):
+                lines.append(f"{name},{p},2,set,16,1000,{rate},1.0,0.1,0.2")
+        compare.write_text("\n".join(lines) + "\n")
+        (Path(tmp) / "compare-void.csv").write_text(
+            "cpus,pass,number,runs,above,max_busy,threshold\n"
+            "2,2,2,20,3,0.2000,0.05\n2,5,4,20,1,0.1000,0.05\n4,3,3,20,2,0.3000,0.05\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            ratios(argparse.Namespace(compare=str(compare), base="before", head="after", twin=None))
+        printed = out.getvalue().splitlines()
+        row = printed[1].split(",")
+        assert row[:5] == ["2", "set", "16", "4", "0.9000"] and row[6] == "slower", printed
+        assert printed[-1] == "# 2 void attempts left out, of the 3 compare-void.csv lists", printed
+        (Path(tmp) / "compare-void.csv").unlink()
         header = "line,pass,cpus,workload,connections,pipeline,published,delivered,seconds,rate,p50_ms,p99_ms"
         data = [header]
         limited = ["line,pass,cpus,workload,connections,pipeline,client_busy_mean,client_work_fraction,client_limited"]
