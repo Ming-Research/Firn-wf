@@ -32,7 +32,18 @@
 #
 # An investigation names the run and copies the tables it relies on into its
 # record, because job logs and artifacts expire.
+#
+# The engine of wf-agents runs it by hand for the measurements firn declares
+# in wf-agents.toml (`ci.measure.compare` and `ci.measure.workloads`), with
+# `call`, a value only its request knows, which the run's name holds so that
+# the engine finds the run. It reads compare.csv or workloads.csv from the
+# artifact `measurement`, compare.csv with a column `void` that is 1 for a
+# row of an attempt compare-void.csv lists. On the self-hosted machine the
+# step that measures first takes the machine's gate, which wf-agents'
+# docs/installing.md installs: no other job runs on the machine while it
+# measures, and the step fails where the gate is not installed.
 name: redis-bench
+run-name: redis-bench ${{ inputs.mode }} (${{ inputs.runner }}) ${{ inputs.call }}
 
 on:
   workflow_dispatch:
@@ -71,10 +82,6 @@ on:
         description: "Whitefoot drivers for each measured image; empty gives one per server CPU"
         type: string
         default: ""
-      c2c:
-        description: "With profile, also record perf c2c on each profiled test: the cache lines several cores contend for"
-        type: boolean
-        default: false
       sched_report:
         description: "Set WF_SCHED_REPORT=2 on firn images, so each compare pass's kept server log ends with the Whitefoot runtime's per-driver scheduling counts"
         type: boolean
@@ -135,10 +142,14 @@ on:
         description: Symbols whose instructions each profile annotates, space-separated
         type: string
         default: ""
-      callers:
-        description: Give each profile sample its DWARF-unwound callers
-        type: boolean
-        default: false
+      profile_extra:
+        description: "With profile, space-separated: c2c also records perf c2c on each profiled test, the cache lines several cores contend for; callers gives each profile sample its DWARF-unwound callers"
+        type: string
+        default: ""
+      call:
+        description: A value only the request of wf-agents' engine that asked for this run knows, which the run's name holds; empty for a run started by hand
+        type: string
+        default: ""
 
 defaults:
   run:
@@ -423,7 +434,7 @@ jobs:
           CLIENT_CPU_LIST: ${{ inputs.client_cpus }}
           WF_SCHED_REPORT: ${{ inputs.sched_report && '2' || '' }}
           IMAGE_DRIVERS: ${{ inputs.drivers }}
-          PERF_C2C: ${{ inputs.c2c && '1' || '' }}
+          PERF_C2C: ${{ contains(format(' {0} ', inputs.profile_extra), ' c2c ') && '1' || '' }}
           COMPARE_CPUS: ${{ inputs.cpus }}
           COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
           COMPARE_DEPTHS: ${{ inputs.depths }}
@@ -435,8 +446,8 @@ jobs:
           PROFILE: ${{ inputs.profile }}
           COMPARE_PROFILE: ${{ inputs.profile_test }}
           PERF_ANNOTATE: ${{ inputs.annotate }}
-          PERF_CALLERS: ${{ inputs.callers && '1' || '' }}
-          PERF_FREQUENCY: ${{ inputs.callers && '999' || '4999' }}
+          PERF_CALLERS: ${{ contains(format(' {0} ', inputs.profile_extra), ' callers ') && '1' || '' }}
+          PERF_FREQUENCY: ${{ contains(format(' {0} ', inputs.profile_extra), ' callers ') && '999' || '4999' }}
           SCALE: ${{ inputs.cpus }}
           SCALE_TESTS: ${{ inputs.tests || 'mset set get' }}
           PASSES: ${{ inputs.passes }}
@@ -453,6 +464,17 @@ jobs:
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
+          # No other job runs on the self-hosted machine while this step
+          # measures: the gate holds them off until the step ends.
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            gate="$HOME/.wf-agents-runner/measure-gate.sh"
+            if [ ! -f "$gate" ]; then
+              echo "::error::the machine's gate $gate is not installed; wf-agents' docs/installing.md says how to install it"
+              exit 1
+            fi
+            . "$gate"
+            wait_for_a_quiet_machine || exit 1
+          fi
           if [ "$MODE" = compare ] || [ "$MODE" = workloads ]; then
             if [ "$PROFILE" = true ]; then
               # The first perf that can count a task: the one on PATH, as the
@@ -497,6 +519,42 @@ jobs:
             fi
             run_session "$MODE" 2>&1 | tee "$OUT/$MODE.txt"
           fi
+
+      # What the engine of wf-agents reads of a comparison or of the
+      # workloads, whatever became of the step that measured: the rows it
+      # wrote, those of a void attempt marked.
+      - name: Write what was measured for the engine
+        if: ${{ !cancelled() && (inputs.mode == 'compare' || inputs.mode == 'workloads') }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/measurement"
+          if [ "$MODE" = workloads ]; then
+            if [ -f "$OUT/workloads.csv" ]; then cp "$OUT/workloads.csv" "$RUNNER_TEMP/measurement/"; fi
+            exit 0
+          fi
+          [ -f "$OUT/compare.csv" ] || exit 0
+          python3 - "$OUT/compare.csv" "$OUT/compare-void.csv" "$RUNNER_TEMP/measurement/compare.csv" <<'PY'
+          import csv
+          import sys
+          from pathlib import Path
+          compare, void_file, out = sys.argv[1:]
+          void = set()
+          if Path(void_file).is_file():
+              with open(void_file, newline="") as source:
+                  void = {(r["cpus"], r["pass"]) for r in csv.DictReader(source)}
+          with open(compare, newline="") as source, open(out, "w", newline="") as target:
+              rows = csv.DictReader(source)
+              writer = csv.DictWriter(target, fieldnames=[*rows.fieldnames, "void"], lineterminator="\n")
+              writer.writeheader()
+              for row in rows:
+                  writer.writerow({**row, "void": int((row["cpus"], row["pass"]) in void)})
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && (inputs.mode == 'compare' || inputs.mode == 'workloads') }}
+        with:
+          name: measurement
+          path: ${{ runner.temp }}/measurement/
+          if-no-files-found: ignore
 
       - name: Publish the host and the revisions
         if: always()

@@ -57,6 +57,32 @@ workflows = ["check.yml", "design-readiness.yml"]
 runner = "github"
 too_long = "90m"
 
+# firn's measurements, which an agent names to `run_tests`: redis-bench.yml on the owner's i9-14900K, which the engine
+# gives the commit as `head` and `head-twin` and the commit the work's change began from as `base`, and reads the CSV
+# its run writes in the artifact `measurement`. The time a run may take is the job's `timeout-minutes`; the wait for
+# the machine does not count in it. research/experiments/redis-bench/redis-bench.sh's head says what each input does.
+[ci.measure.compare]
+about = "the work's firn image against the image of the commit its change began from and the work's image again (head-twin, the noise), interleaved under redis-benchmark: one row a line, pass, server CPU count, test and pipeline depth; `void` is 1 for an attempt run beside other load, which `summary.py ratios` leaves out"
+workflow = "redis-bench.yml"
+runner = "14900k"
+too_long = "3h"
+inputs = { runner = "14900k", mode = "compare", revisions = "base={base} head={commit} head-twin={commit}", profile = "false", call = "{call}" }
+open = ["tests", "depths", "passes", "seconds", "cpus", "server_cpus", "client_cpus", "drivers", "maxmemory", "aof", "compare_reference"]
+artifact = "measurement"
+file = "compare.csv"
+metrics = { rps = "requests/s", server_cpu_us_per_request = "µs", p50_ms = "ms", p99_ms = "ms" }
+
+[ci.measure.workloads]
+about = "the work's firn image, the image of the commit its change began from and the work's image again (head-twin, the noise) against Redis 7.2.16 on the consumer workloads, without AOF: one row a line, pass, server CPU count, workload and connection count"
+workflow = "redis-bench.yml"
+runner = "14900k"
+too_long = "3h"
+inputs = { runner = "14900k", mode = "workloads", workload_images = "true", revisions = "base={base} head={commit} head-twin={commit}", profile = "false", call = "{call}" }
+open = ["tests", "cpus", "passes", "seconds", "connections", "depths", "workload_options", "workload_servers"]
+artifact = "measurement"
+file = "workloads.csv"
+metrics = { rate = "operations/s", p50_ms = "ms", p99_ms = "ms" }
+
 # firn merges its pull requests with a merge commit, as all of them so far. A work's branch is deleted once merged, its
 # commits being in main.
 [pull_request]
