@@ -1472,6 +1472,15 @@ The criteria. A cell is a test and a server CPU count, or a workload.
    one by itself, and reported against Garnet with the multiple of rate and of
    p99, not judged.
 
+Since `main` at c0395c2 the runner voids a pass during which the CPUs outside
+the server, client and profiler CPUs averaged busier than its threshold and
+runs it again (decision benchmark-voids-passes-run-beside-other-jobs), and
+`summary.py` leaves a voided attempt out. The passes above are clean passes: a
+run whose clean passes fall short of the number asked for, for lack of time
+before the deadline, judges its cells on the passes it has and says how many,
+and a cell with fewer than 6 clean passes is reported as not decided, not as
+met.
+
 A cell that is not met is reported as not met with its size and is brought to
 the owner; the rules are not changed after the results are seen. Rejecting
 the change needs a cell not met; accepting it needs none, the two accepted
