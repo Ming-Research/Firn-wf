@@ -1,0 +1,172 @@
+alias Bytes = pkg::bytes::Bytes;
+alias ExitStatus = std::process::ExitStatus;
+alias HashMap = std::collections::hash_map::HashMap;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias KeyHash = pkg::bytes::KeyHash;
+alias bytes_length = pkg::bytes::bytes_length;
+alias bytes_new = pkg::bytes::bytes_new;
+alias exit_status = std::process::exit_status;
+alias hash_map_len = std::collections::hash_map::hash_map_len;
+alias hash_map_lookup = std::collections::hash_map::hash_map_lookup;
+alias hash_map_new = std::collections::hash_map::hash_map_new;
+alias hash_map_put = std::collections::hash_map::hash_map_put;
+alias make_key = pkg::bytes::make_key;
+
+const ceiling: u64 = 4294967296_u64;
+
+const fields: u64 = 100000_u64;
+
+const operations: u64 = 20000000_u64;
+
+const field_prefix: Array<u8, 8> = "element:";
+
+struct Probe {
+  total: u64;
+}
+
+fn field_key(number: u64) -> made: Key pure {
+  doc "The key of one field as redis-benchmark names it: element: and twelve decimal digits, 20 bytes held inline.";
+  let digits = array_filled::<u8, 12>(value: 48_u8);
+  let rest = number;
+  for (index in 0_u64..12_u64) {
+    let low = rest % 10_u64;
+    let narrow = cvt.wrap::<u64, u8>(low);
+    let glyph = narrow +wrap 48_u8;
+    let place = 11_u64 -wrap index;
+    set digits[place] = glyph;
+    set rest = rest / 10_u64;
+  }
+  let window = slots_new::<u8, 24>();
+  for (index in 0_u64..8_u64) {
+    if window.len < window.cap {
+      place_back(window: &window, value: field_prefix[index]);
+    }
+  }
+  for (index in 0_u64..12_u64) {
+    if window.len < window.cap {
+      place_back(window: &window, value: digits[index]);
+    }
+  }
+  let length = window.len;
+  let view = &window[0_u64..length];
+  let made = make_key(input: view, start: 0_u64, length: length);
+  return move made;
+}
+
+fn field_value() -> made: Bytes pure {
+  doc "The three-byte value redis-benchmark stores with -d 3.";
+  let window = slots_new::<u8, 24>();
+  for (index in 0_u64..3_u64) {
+    if window.len < window.cap {
+      place_back(window: &window, value: 'x'_u8);
+    }
+  }
+  let length = window.len;
+  let view = &window[0_u64..length];
+  let made = bytes_new(input: view, start: 0_u64, length: length);
+  return move made;
+}
+
+fn advance(state: u64) -> advanced: u64 pure {
+  doc "One step of a 64-bit linear congruential generator.";
+  let scaled = state *wrap 6364136223846793005_u64;
+  let advanced = scaled +wrap 1442695040888963407_u64;
+  return advanced;
+}
+
+fn pick(state: u64) -> number: u64 pure {
+  doc "A field number below the field count from the high bits of a generator state.";
+  let high = ishr(state, 33_u32);
+  let number = high % 100000_u64;
+  return number;
+}
+
+fn build() -> map: HashMap<Key, Bytes, ceiling> pure {
+  doc "A map of the fields by their numbers in order, grown from four buckets by the map's own puts, as the server's hash grows.";
+  let keys = KeyEnv();
+  let map = hash_map_new::<Key, Bytes, ceiling>(capacity: 4_u64);
+  for (number in 0_u64..fields) {
+    let key = field_key(number: number);
+    let stored = field_value();
+    let put = hash_map_put::<KeyHash, Bytes, ceiling>(map: &map, key: move key, value: move stored, env: &keys);
+    match move put {
+      HashMapInserted() => {
+      }
+      HashMapReturned(reason: why, pair: returned) => {
+      }
+    }
+  }
+  return move map;
+}
+
+fn replace_all(map: &HashMap<Key, Bytes, ceiling>, keys: &KeyEnv) -> replaced: u64 reads(keys), writes(map) {
+  doc "Puts a value under a random present field, as many times as there are operations, and counts the puts that replaced a pair.";
+  let state = 88172645463325252_u64;
+  let replaced = 0_u64;
+  for (index in 0_u64..operations) {
+    set state = advance(state: state);
+    let number = pick(state: state);
+    let key = field_key(number: number);
+    let stored = field_value();
+    let put = hash_map_put::<KeyHash, Bytes, ceiling>(map: map, key: move key, value: move stored, env: keys);
+    match move put {
+      HashMapInserted() => {
+      }
+      HashMapReturned(reason: why, pair: returned) => {
+        set replaced = replaced +wrap 1_u64;
+      }
+    }
+  }
+  return replaced;
+}
+
+fn seen(env: &Probe, key: &Key, value: &Bytes) -> result: u64 reads(value), writes(env) {
+  doc "Adds the length of a found value to the probe's total.";
+  let size = bytes_length(bytes: value);
+  set env^.total = env^.total +wrap size;
+  return size;
+}
+
+fn lookup_all(map: &HashMap<Key, Bytes, ceiling>, keys: &KeyEnv) -> total: u64 reads(map), reads(keys) {
+  doc "Looks up a random present field as many times as there are operations and returns the lengths of the values found.";
+  let state = 88172645463325252_u64;
+  let probe = Probe(total: 0_u64);
+  for (index in 0_u64..operations) {
+    set state = advance(state: state);
+    let number = pick(state: state);
+    let key = field_key(number: number);
+    let found = hash_map_lookup::<KeyHash, Bytes, Probe, u64, fn seen, ceiling>(map: map, key: &key, key_env: keys, visit_env: &probe);
+  }
+  return probe.total;
+}
+
+fn fill() -> status: ExitStatus pure {
+  let map = build();
+  let length_now = hash_map_len::<Key, Bytes, ceiling>(map: &map);
+  if length_now == fields {
+    return exit_status(code: 0_u8);
+  }
+  return exit_status(code: 1_u8);
+}
+
+fn replace() -> status: ExitStatus pure {
+  let keys = KeyEnv();
+  let map = build();
+  let replaced = replace_all(map: &map, keys: &keys);
+  if replaced == operations {
+    return exit_status(code: 0_u8);
+  }
+  return exit_status(code: 1_u8);
+}
+
+fn lookup() -> status: ExitStatus pure {
+  let keys = KeyEnv();
+  let map = build();
+  let total = lookup_all(map: &map, keys: &keys);
+  let expected = operations *wrap 3_u64;
+  if total == expected {
+    return exit_status(code: 0_u8);
+  }
+  return exit_status(code: 1_u8);
+}
