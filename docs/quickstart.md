@@ -144,7 +144,7 @@ A storage error can still prevent durability. See
 ## Translate a small redis.conf
 
 firn reads a Redis-style configuration file named as its first argument,
-`firn redis.conf`, with a path relative to its working directory, and takes
+`firn redis.conf` or `firn /etc/redis/redis.conf`, and takes
 the same directives on the command line as `--name value`; command-line
 values override the file. A directive firn does not run, or a value it
 rejects, stops startup with status 1 and a `FATAL CONFIG FILE ERROR` on
@@ -159,10 +159,12 @@ small standalone setup.
 | `appendonly yes` / `no` | `appendonly yes` / `no`; off by default |
 | `appendfilename appendonly.aof` | `appendfilename appendonly.aof`; naming it alone does not enable AOF |
 | `appendfsync everysec` | Refused, although everysec is the fixed policy; remove the line. No `always` or `no` policy |
-| `dir /path/to/data` | `dir .` or `dir ./` only; change the working directory before launching |
+| `dir /path/to/data` | `dir /path/to/data`; relative paths after it, `include` and the append-only directory start there |
+| `include /path/to/other.conf` | `include /path/to/other.conf`; a path with `*`, `?` or `[` is refused, so name each file |
+| `loglevel notice` / `logfile /var/log/redis.log` | `loglevel notice` / `logfile /var/log/redis.log`; Redis's log line form, on standard output when `logfile` is empty |
 | `maxmemory 64mb` | `maxmemory 64mb` |
 | `maxmemory-policy allkeys-lru` | `maxmemory-policy allkeys-lru` |
-| `maxclients 100` | `maxclients 100`; default 10000. firn does not raise the descriptor limit, so set `ulimit -n` above it |
+| `maxclients 100` | `maxclients 100`; default 10000. At startup firn raises the soft descriptor limit to `maxclients` plus 32 as Redis does, or lowers `maxclients` when the hard limit is too low |
 | `timeout 60` | `timeout 60`; zero means no idle limit |
 | `requirepass secret` | `requirepass secret`; runtime `CONFIG SET requirepass secret` resets on restart, see the [password guidance](#start-docker-image-path) above |
 | `save ""` | Refused: firn has no RDB snapshots; remove the line |

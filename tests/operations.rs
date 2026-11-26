@@ -27,14 +27,15 @@ fn blocks(document: &str) -> Vec<Block> {
         let Some(header) = text.strip_prefix("```") else { continue };
         // A final stream expectation consumes the remainder of the header,
         // including spaces. The two stream forms are mutually exclusive.
-        let stream = ["stdout", "stderr"].into_iter()
+        let stream = ["stdout-contains", "stdout", "stderr"].into_iter()
             .filter_map(|name| header.find(&format!(" {name}=")).map(|position| (position, name)))
             .min_by_key(|(position, _)| *position);
         let (header, stream) = match stream {
             Some((position, name)) => {
                 let value = &header[position + name.len() + 2..];
                 assert!(!value.is_empty(), "line {}: empty {name} expectation", line + 1);
-                assert!(!value.contains(" stdout=") && !value.contains(" stderr="),
+                assert!(!value.contains(" stdout=") && !value.contains(" stderr=")
+                    && !value.contains(" stdout-contains="),
                     "line {}: only one final stream expectation is supported", line + 1);
                 (&header[..position], Some((name, value)))
             }
@@ -65,7 +66,7 @@ fn blocks(document: &str) -> Vec<Block> {
         for word in words {
             if matches!(word, "start" | "stop") {
                 assert!(kind == "sh" && action.is_empty()
-                    && attributes.keys().all(|name| matches!(name.as_str(), "stdout" | "stderr")),
+                    && attributes.keys().all(|name| matches!(name.as_str(), "stdout" | "stdout-contains" | "stderr")),
                     "line {}: misplaced action", line + 1);
                 action = word.to_owned();
             } else {
@@ -100,10 +101,16 @@ fn blocks(document: &str) -> Vec<Block> {
     result
 }
 
+use super::server_log::is_log_line;
+
 fn matches_output(block: &Block, output: &Output) -> bool {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_matches = match block.attributes.get("stdout-contains") {
+        Some(expected) => stdout.contains(expected.as_str()) && stdout.lines().all(is_log_line),
+        None => stdout.trim() == block.attributes.get("stdout").map(String::as_str).unwrap_or(""),
+    };
     output.status.code() == Some(block.attributes["exit"].parse().unwrap())
-        && String::from_utf8_lossy(&output.stdout).trim()
-            == block.attributes.get("stdout").map(String::as_str).unwrap_or("")
+        && stdout_matches
         && match block.attributes.get("stderr") {
             Some(expected) => String::from_utf8_lossy(&output.stderr).contains(expected),
             None => output.stderr.is_empty(),
@@ -217,6 +224,15 @@ fn guide_checker_rejects_wrong_exit_reply_and_missing_marker() {
     let shortened_error = support::run_command(support::command("/bin/sh")
         .args(["-c", "printf FATAL >&2"]));
     assert!(!matches_output(&expected_error, &shortened_error), "shortened refusal frame must fail");
+    let logged = blocks("```sh firn-check exit=0 stdout-contains=bye bye...\ntrue\n```\n").pop().unwrap();
+    let line = "1234:M 25 Nov 2026 12:58:40.123 # firn is now ready to exit, bye bye...\n";
+    let good = support::run_command(support::command("/bin/sh").args(["-c", &format!("printf '{line}'")]));
+    assert!(matches_output(&logged, &good), "a log line holding the text must pass");
+    let absent = support::run_command(support::command("/bin/sh").args(["-c", "printf ''"]));
+    assert!(!matches_output(&logged, &absent), "missing log text must fail");
+    let foreign = support::run_command(support::command("/bin/sh")
+        .args(["-c", &format!("printf '{line}stray bye bye...\\n'")]));
+    assert!(!matches_output(&logged, &foreign), "a stdout line that is no log line must fail");
     let both = blocks("```text untested-example\nnot run\n```\n```sh firn-check exit=0\ntrue\n```\n");
     assert_eq!(both.len(), 1, "an explicitly untested fence is skipped, not run");
     for invalid in [
