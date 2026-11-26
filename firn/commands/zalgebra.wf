@@ -297,32 +297,76 @@ fn zalg_weight(client: &Client, plan: &ZPlan, index: u64) -> weight: f64 reads(c
   return 1.0_f64;
 }
 
+fn zalg_swap(order: &Box<Slots<u64>>, left: u64, right: u64) -> result: unit writes(order) {
+  doc "Exchanges the numbers at two places.";
+  if left >= order^.inner.len {
+    return unit;
+  }
+  if right >= order^.inner.len {
+    return unit;
+  }
+  let held_left = order^.inner[left];
+  let held_right = order^.inner[right];
+  set order^.inner[left] = held_right;
+  set order^.inner[right] = held_left;
+  return unit;
+}
+
+fn zalg_sift(order: &Box<Slots<u64>>, start: u64, end: u64) -> result: unit writes(order) {
+  doc "Moves the number at start down a max-heap of the first end numbers, in which the children of place p are places 2p+1 and 2p+2 and whose subtrees under start are heaps already, until neither child is greater.";
+  if start >= order^.inner.len {
+    return unit;
+  }
+  let held_value = order^.inner[start];
+  let hole = start;
+  loop @down {
+    let doubled = hole *wrap 2_u64;
+    let left = doubled +wrap 1_u64;
+    if left >= end {
+      break @down;
+    }
+    if left >= order^.inner.len {
+      break @down;
+    }
+    let pick = left;
+    let pick_value = order^.inner[left];
+    let right = doubled +wrap 2_u64;
+    if right < end {
+      if right < order^.inner.len {
+        let right_value = order^.inner[right];
+        if right_value > pick_value {
+          set pick = right;
+          set pick_value = right_value;
+        }
+      }
+    }
+    if pick_value <= held_value {
+      break @down;
+    }
+    if hole < order^.inner.len {
+      set order^.inner[hole] = pick_value;
+    }
+    set hole = pick;
+  }
+  if hole < order^.inner.len {
+    set order^.inner[hole] = held_value;
+  }
+  return unit;
+}
+
 fn zalg_sort(order: &Box<Slots<u64>>) -> result: unit writes(order) {
-  doc "Sorts numbers ascending by insertion, stable for equal numbers, which keeps the sets in argument order among equal sizes as Redis's sort by cardinality does.";
+  doc "Sorts numbers ascending by heapsort, in place and in time proportional to n log n whatever their order, since a command's number of sets is the client's to choose. The numbers of zalg_compute hold a set's size above its place among the arguments, so no two are equal and the order is by size, sets of one size in argument order, as a stable sort by size would give.";
   let length = order^.inner.len;
-  for @insert (at in 1_u64..length) {
-    let held_value = order^.inner[at];
-    let cursor = at;
-    loop @shift {
-      if cursor == 0_u64 {
-        break @shift;
-      }
-      let before = cursor -wrap 1_u64;
-      if before >= order^.inner.len {
-        break @shift;
-      }
-      let previous = order^.inner[before];
-      if previous <= held_value {
-        break @shift;
-      }
-      if cursor < order^.inner.len {
-        set order^.inner[cursor] = previous;
-      }
-      set cursor = before;
-    }
-    if cursor < order^.inner.len {
-      set order^.inner[cursor] = held_value;
-    }
+  let half = ishr.wrap(length, 1_u32);
+  for @build (step in 0_u64..half) {
+    let remaining = half -wrap step;
+    let start = remaining -wrap 1_u64;
+    zalg_sift(order: order, start: start, end: length);
+  }
+  for @extract (step in 1_u64..length) {
+    let last = length -wrap step;
+    zalg_swap(order: order, left: 0_u64, right: last);
+    zalg_sift(order: order, start: 0_u64, end: last);
   }
   return unit;
 }
