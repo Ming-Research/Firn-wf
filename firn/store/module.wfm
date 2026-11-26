@@ -7,6 +7,7 @@ alias OrderedKey = std::collections::ordered_map::OrderedKey;
 alias OrderedMap = std::collections::ordered_map::OrderedMap;
 alias PriorityOrder = std::collections::priority_queue::PriorityOrder;
 alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
+alias ServerLog = pkg::serverlog::ServerLog;
 alias Span = pkg::protocol::Span;
 
 public const ceiling: u64 = 4294967296_u64;
@@ -290,13 +291,14 @@ public struct ServerState {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool and the pub/sub event hub, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state, to the script engine's pool, to the pub/sub event hub and to the server log, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
   public pubsub: Shared<pkg::connection_events::Hub>;
   public logging: Bool;
+  public log: ServerLog;
 }
 
 public struct Time {
@@ -352,7 +354,7 @@ public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> res
 
 public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(meta.log), reads(budget.charged), reads(budget.failed), writes(sequence), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
 
-public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
+public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64, server_log: ServerLog) -> made: Keyspace pure doc "An empty keyspace holding the server log's handle, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
 
 public fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits doc "Whether SHUTDOWN or a stop signal requested that contexts drain and close, before the last client lets main stop the maintenance context, or main has stopped it.";
 

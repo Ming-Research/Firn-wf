@@ -12,7 +12,7 @@ fn aof_desk_new() -> desk: Shared<AofDesk> pure {
 
 fn aof_slot_close(slot: AofSlot, factory: &HandleFactory) -> result: unit writes(factory) waits {
   doc "Closes a slot's file, dropping its boundary and any pending bytes.";
-  let AofSlot(file: file, boundary: boundary, pending: pending) = move slot;
+  let AofSlot(file: file, boundary: boundary, pending: pending, error_logged: unused_logged) = move slot;
   std::fs::close_write(factory: factory, file: move file);
   return unit;
 }

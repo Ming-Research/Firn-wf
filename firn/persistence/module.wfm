@@ -55,10 +55,11 @@ public struct AofLog {
 }
 
 public struct AofSlot {
-  doc "The active incremental file's append handle, its block boundary and pending, the bytes taken from Meta's collecting buffer and not yet in the file, retained after a failed append. Only the context that took the slot from the desk touches them, so appends, truncations and syncs of the file never run concurrently.";
+  doc "The active incremental file's append handle, its block boundary and pending, the bytes taken from Meta's collecting buffer and not yet in the file, retained after a failed append; error_logged is the Unix second of the last append error a holder of the slot logged, which Redis limits to one line in thirty seconds. Only the context that took the slot from the desk touches them, so appends, truncations and syncs of the file never run concurrently.";
   public file: WriteFile;
   public boundary: AofBoundary;
   public pending: Box<Slots<u8>>;
+  public error_logged: u64;
 }
 
 public struct AofDesk {

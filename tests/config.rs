@@ -1,5 +1,6 @@
 //! Startup configuration compared with the pinned Redis 7.2.16 oracle.
-//! Interim path restrictions are firn-only and identify the Whitefoot request.
+//! Host paths, `dir`, `include` and the log directives are compared with it too;
+//! the wildcard refusal is firn-only.
 
 use super::*;
 use std::ffi::OsString;
@@ -306,7 +307,6 @@ fn startup_reads_quoted_config_and_applies_later_command_line_overrides() {
     let lease = support::lease_port();
     let port = lease.port().to_string();
     // Both servers consume these exact bytes from the same config file.
-    // No include is accepted until firn-req-host-paths is resolved.
     let config = concat!(
         "  # startup comments have leading whitespace\n\n",
         " PoRt 1 \r\nBiNd 127.0.0.1\nTimeout 2\ntimeout 3\n",
@@ -506,31 +506,6 @@ fn startup_standard_input_errors_keep_exact_file_diagnostics() {
 }
 
 #[test]
-fn startup_refuses_interim_path_gaps_without_creating_directories() {
-    let fixture = fixture_directory();
-    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
-    for (line, reason) in [
-        ("include missing.conf", "firn cannot yet read include paths (firn-req-host-paths)"),
-        ("dir missing-directory", "firn cannot yet change its working directory (firn-req-host-paths)"),
-        ("dir /tmp", "firn cannot yet change its working directory (firn-req-host-paths)"),
-        ("bind 127.0.0.1 127.0.0.2", "firn supports only one IPv4 bind address or *"),
-        ("databases 1", "Bad directive or wrong number of arguments"),
-        ("appendfsync everysec", "Bad directive or wrong number of arguments"),
-    ] {
-        std::fs::write(fixture.path().join("startup.conf"), format!("{line}\n")).expect("write gap config");
-        let output = start(&binary, fixture.path(), &arguments(&["startup.conf"]), None)
-            .wait_with_output().expect("bounded gap refusal");
-        assert_fatal(output, &fatal(1, line, reason), "firn interim path restrictions");
-        assert!(!fixture.path().join("missing-directory").exists(), "dir must not create the refused directory");
-    }
-    let absolute = fixture.path().join("startup.conf");
-    let output = start(&binary, fixture.path(), &[absolute.into_os_string()], None)
-        .wait_with_output().expect("bounded config-path refusal");
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert_eq!(output.stderr, b"firn cannot yet open paths outside its working directory (firn-req-host-paths)\n");
-}
-
-#[test]
 fn startup_defaults_keep_loopback_and_accept_explicit_wildcard_bind() {
     let fixture = fixture_directory();
     let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
@@ -573,23 +548,174 @@ fn startup_opens_nested_relative_config_paths() {
 }
 
 #[test]
-fn startup_reports_missing_config_files_without_starting() {
+fn startup_reports_missing_config_files_as_a_log_line_without_starting() {
     let fixture = fixture_directory();
     for (label, binary) in servers() {
         let output = start(&binary, fixture.path(), &arguments(&["missing.conf"]), None)
             .wait_with_output().expect("bounded missing config refusal");
         assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
-        if label == "firn" {
-            assert_eq!(output.stderr, b"Fatal error, can't open config file 'missing.conf': No such file or directory\n");
-        } else {
-            // Redis's ordinary log adds a PID/time prefix and resolves the
-            // supplied filename to an absolute path; firn has no such logger.
-            let expected = format!("Fatal error, can't open config file '{}': No such file or directory",
-                fixture.path().join("missing.conf").display());
-            assert!(String::from_utf8_lossy(&output.stdout).contains(&expected),
-                "{label}: {output:?}");
-        }
+        assert!(output.stderr.is_empty(), "{label}: the failure is a log line, not a frame: {output:?}");
+        // Redis names the absolute path of the file; firn names the path as given.
+        let named = if label == "firn" { "missing.conf".to_owned() }
+            else { fixture.path().join("missing.conf").display().to_string() };
+        let expected = format!("Fatal error, can't open config file '{named}': No such file or directory");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.lines().any(|line| line.ends_with(&expected) && super::server_log::is_log_line(line)),
+            "{label}: {output:?}");
     }
+}
+
+#[test]
+fn startup_reads_absolute_paths_dir_and_nested_include_like_redis() {
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::create_dir(root.join("conf")).expect("create conf");
+    std::fs::create_dir(root.join("data")).expect("create data");
+    std::fs::write(root.join("conf/deeper.conf"), "loglevel warning\n").expect("write deeper");
+    std::fs::write(root.join("conf/inner.conf"), "include deeper.conf\nmaxclients 77\ndir ../data\n")
+        .expect("write inner");
+    let main = root.join("conf/redis.conf");
+    std::fs::write(&main, format!("bind 127.0.0.1\ndir {}\ninclude inner.conf\nappendfilename read.aof\n",
+        root.join("conf").display())).expect("write main");
+    for (label, binary) in servers() {
+        let args = vec![main.clone().into_os_string(), OsString::from("--port"), OsString::from(&port)];
+        let child = start(&binary, fixture.path(), &args, None).with_port(&lease);
+        let mut client = connect_when_ready(lease.port(), &child);
+        config_value(&mut client, "dir", &root.join("data").display().to_string(), label);
+        config_value(&mut client, "loglevel", "warning", label);
+        config_value(&mut client, "logfile", "", label);
+        config_value(&mut client, "appendfilename", "read.aof", label);
+        config_value(&mut client, "maxclients", "77", label);
+        shutdown(&mut client, child, label);
+    }
+}
+
+#[test]
+fn startup_reports_nothing_for_dir_while_only_relative_directories_were_given() {
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
+    std::fs::create_dir(fixture.path().join("sub")).expect("create sub");
+    let child = start(&binary, fixture.path(), &arguments(&["--bind", "127.0.0.1", "--dir", "sub", "--port", &port]), None)
+        .with_port(&lease);
+    let mut client = connect_when_ready(lease.port(), &child);
+    client.write_all(&resp(&["CONFIG", "GET", "dir"])).expect("query dir");
+    expect_replies(&mut client, b"*0\r\n", "relative dir alone is not reported");
+    shutdown(&mut client, child, "firn");
+}
+
+#[test]
+fn startup_errors_in_an_included_file_carry_that_files_line_number() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::write(root.join("bad.conf"), "# first line\ntimeout nope\n").expect("write bad");
+    let main = root.join("main.conf");
+    std::fs::write(&main, format!("bind 127.0.0.1\ninclude {}\n", root.join("bad.conf").display()))
+        .expect("write main");
+    for (label, binary) in servers() {
+        let output = start(&binary, fixture.path(), &[main.clone().into_os_string()], None)
+            .wait_with_output().expect("bounded included-file refusal");
+        assert_fatal(output, &fatal(2, "timeout nope", "argument couldn't be parsed into an integer"), label);
+    }
+}
+
+#[test]
+fn startup_refuses_unusable_include_dir_and_wildcard_paths() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    let missing_include = root.join("absent.conf");
+    let missing_dir = root.join("missing-directory");
+    for (label, binary) in servers() {
+        std::fs::write(root.join("startup.conf"), format!("include {}\n", missing_include.display()))
+            .expect("write include config");
+        let output = start(&binary, &root, &arguments(&["startup.conf"]), None)
+            .wait_with_output().expect("bounded include refusal");
+        assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
+        assert!(output.stderr.is_empty(), "{label}: {output:?}");
+        let expected = format!("Fatal error, can't open config file '{}': No such file or directory",
+            missing_include.display());
+        assert!(String::from_utf8_lossy(&output.stdout).lines().any(|line| line.ends_with(&expected)),
+            "{label}: {output:?}");
+        let line = format!("dir {}", missing_dir.display());
+        std::fs::write(root.join("startup.conf"), format!("{line}\n")).expect("write dir config");
+        let output = start(&binary, &root, &arguments(&["startup.conf"]), None)
+            .wait_with_output().expect("bounded dir refusal");
+        assert_fatal(output, &fatal(1, &line, "No such file or directory"), label);
+        assert!(!missing_dir.exists(), "{label}: dir must not create the directory");
+    }
+    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
+    for (line, reason) in [
+        ("include conf.d/*.conf", "firn does not expand wildcards in include paths"),
+        ("include conf.d/a?.conf", "firn does not expand wildcards in include paths"),
+        ("include conf.d/[ab].conf", "firn does not expand wildcards in include paths"),
+        ("include", "Bad directive or wrong number of arguments"),
+        ("include a b", "Bad directive or wrong number of arguments"),
+        ("dir", "wrong number of arguments"),
+        ("bind 127.0.0.1 127.0.0.2", "firn supports only one IPv4 bind address or *"),
+        ("databases 1", "Bad directive or wrong number of arguments"),
+        ("appendfsync everysec", "Bad directive or wrong number of arguments"),
+    ] {
+        std::fs::write(root.join("startup.conf"), format!("{line}\n")).expect("write gap config");
+        let output = start(&binary, &root, &arguments(&["startup.conf"]), None)
+            .wait_with_output().expect("bounded refusal");
+        assert_fatal(output, &fatal(1, line, reason), "firn refusals");
+    }
+}
+
+/// Redis resolves a relative `include` against the process's current directory, not against the directory
+/// of the file that holds the directive, and names the path as the directive gave it when it cannot open it.
+#[test]
+fn a_relative_include_is_read_from_the_current_directory_not_from_the_including_file() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::create_dir(root.join("conf")).expect("create conf");
+    std::fs::write(root.join("conf/deeper.conf"), "loglevel warning\n").expect("write deeper");
+    std::fs::write(root.join("conf/inner.conf"), "include deeper.conf\n").expect("write inner");
+    std::fs::write(root.join("main.conf"), "include conf/inner.conf\n").expect("write main");
+    for (label, binary) in servers() {
+        let output = start(&binary, &root, &arguments(&["main.conf"]), None)
+            .wait_with_output().expect("bounded include refusal");
+        assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
+        assert!(output.stderr.is_empty(), "{label}: {output:?}");
+        let expected = "Fatal error, can't open config file 'deeper.conf': No such file or directory";
+        assert!(String::from_utf8_lossy(&output.stdout).lines().any(|line| line.ends_with(expected)), "{label}: {output:?}");
+    }
+}
+
+/// Redis opens an included directory with fopen, which succeeds on Linux, and reads nothing from it, so a
+/// directory is an empty include. The line after it shows that both servers went on reading.
+#[test]
+fn an_include_naming_a_directory_reads_nothing_and_startup_goes_on_as_in_redis() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::create_dir(root.join("conf.d")).expect("create conf.d");
+    std::fs::write(root.join("main.conf"), format!("include {}\ntimeout nope\n", root.join("conf.d").display()))
+        .expect("write main");
+    for (label, binary) in servers() {
+        let output = start(&binary, &root, &arguments(&["main.conf"]), None)
+            .wait_with_output().expect("bounded refusal");
+        assert_fatal(output, &fatal(2, "timeout nope", "argument couldn't be parsed into an integer"), label);
+    }
+}
+
+/// An include chain that never ends must stop with a diagnostic: Redis would recurse until it ran out of
+/// descriptors or stack, so there is no reference text, only the requirement that firn exits 1 with the
+/// fatal-configuration frame and does not hang or crash.
+#[test]
+fn an_include_that_includes_itself_is_refused_with_a_frame() {
+    let fixture = fixture_directory();
+    let root = fixture.path().canonicalize().expect("resolve the fixture directory");
+    std::fs::write(root.join("loop.conf"), "include loop.conf\n").expect("write loop");
+    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
+    let output = start(&binary, &root, &arguments(&["loop.conf"]), None)
+        .wait_with_output().expect("bounded refusal");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("\n*** FATAL CONFIG FILE ERROR (Redis 7.2.16) ***\nReading the configuration file, at line 1\n>>> 'include loop.conf'\n"),
+        "{output:?}");
 }
 
 #[test]

@@ -4,6 +4,8 @@ alias HandleFactory = std::io::HandleFactory;
 alias Keyspace = pkg::store::Keyspace;
 alias Time = pkg::store::Time;
 alias WriteFile = std::fs::WriteFile;
+alias level_notice = pkg::serverlog::level_notice;
+alias level_warning = pkg::serverlog::level_warning;
 
 const aof_rw_base_suffix: Array<u8, 9> = ".base.aof";
 
@@ -158,8 +160,12 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, slot: 
 }
 
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
-  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush, aof_rw_switch or a publication's failed directory sync, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
+  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A failed attempt logs Redis's error line unless a stop is under way, which Redis ends by killing the child without a line. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush, aof_rw_switch or a publication's failed directory sync, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
+  let stopped = pkg::store::shutdown_requested(store: store);
   atomic m = &store^.meta {
+    if m^.stopping {
+      set stopped = True();
+    }
     if accepted {
       set m^.aof_sync_error = None<std::io::IoError>();
     }
@@ -179,6 +185,15 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
       } else {
         set m^.aof_rewrite_reply = 2_u64;
       }
+    }
+  }
+  if started {
+    if accepted {
+      event_text(store: store, level: level_notice, word: &event_rewrite_terminated[0_u64..46_u64]);
+      event_text(store: store, level: level_notice, word: &event_rewrite_finished[0_u64..44_u64]);
+    } else if stopped {
+    } else {
+      event_text(store: store, level: level_warning, word: &event_rewrite_error[0_u64..44_u64]);
     }
   }
   return unit;
@@ -351,6 +366,19 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, slot: &AofSlot, clock
       Err(error: problem) => {
         let counted = aof_sync_counts(error: &problem);
         if counted {
+          let first_failure = True();
+          atomic m = &store^.meta {
+            match m^.aof_sync_error {
+              Some(..) => {
+                set first_failure = False();
+              }
+              None() => {
+              }
+            }
+          }
+          if first_failure {
+            event_sync_failed(store: store, problem: &problem);
+          }
           atomic m = &store^.meta {
             set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
           }
@@ -814,7 +842,15 @@ fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, slot: 
         set log^.manifest = move candidate;
         swap(first: &slot^.file, second: &opened);
         set slot^.boundary = aof_boundary_empty();
+        let recovered = False();
         atomic m = &store^.meta {
+          match m^.aof_append_error {
+            Some(..) => {
+              set recovered = True();
+            }
+            None() => {
+            }
+          }
           set m^.aof_incr_size = 0_u64;
           set m^.aof_synced_size = 0_u64;
           set m^.aof_current_size = size;
@@ -826,6 +862,9 @@ fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, slot: 
           set m^.aof_pending_capacity = slot^.pending.inner.cap;
           set m^.aof_pending_length = slot^.pending.inner.len;
           set m^.rewrite.rotating = False();
+        }
+        if recovered {
+          event_text(store: store, level: level_notice, word: &event_solved[0_u64..52_u64]);
         }
         match std::fs::close_write(factory: factory, file: move opened) {
           Ok(value: closed) => {
@@ -875,6 +914,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, desk: &S
   let overhead = aof_rw_overhead(log: &log);
   let admitted = aof_rw_admit(store: store, manual: manual, overhead: overhead);
   if admitted {
+    event_text(store: store, level: level_notice, word: &event_rewrite_start[0_u64..45_u64]);
   } else {
     aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
     return move log;
@@ -1141,10 +1181,28 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, slot: &AofSlot) -> dr
     set slot^.boundary.whole = False();
   }
   let covered = 0_u64;
+  if failed {
+    let failed_at = std::time::unix_nanoseconds(clock: &store^.log.clock);
+    let failed_unsigned = cvt.wrap::<i64, u64>(failed_at);
+    let failed_seconds = failed_unsigned / 1000000000_u64;
+    let since = failed_seconds -sat slot^.error_logged;
+    if since > 30_u64 {
+      set slot^.error_logged = failed_seconds;
+      event_write_failed(store: store, written: appended.written, expected: length, problem: &appended.error);
+    }
+  }
+  let recovered = False();
   atomic m = &store^.meta {
     set m^.aof_current_size = m^.aof_current_size +wrap progress;
     set m^.aof_incr_size = m^.aof_incr_size +wrap progress;
     if drained {
+      match m^.aof_append_error {
+        Some(..) => {
+          set recovered = True();
+        }
+        None() => {
+        }
+      }
       set m^.aof_append_error = None<std::io::IoError>();
       set m^.aof_append_partial = False();
       set m^.aof_written_sequence = imax(m^.aof_written_sequence, m^.aof_pending_sequence);
@@ -1167,6 +1225,9 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, slot: &AofSlot) -> dr
     set m^.aof_pending_capacity = slot^.pending.inner.cap;
     set m^.aof_pending_length = slot^.pending.inner.len;
     set covered = pkg::store::aof_covered(meta: m);
+  }
+  if recovered {
+    event_text(store: store, level: level_notice, word: &event_solved[0_u64..52_u64]);
   }
   return AofDrained(drained: drained, covered: covered);
 }

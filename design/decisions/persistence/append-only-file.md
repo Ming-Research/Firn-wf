@@ -1,6 +1,6 @@
 # Append-only file
 
-How firn replays its append-only file at startup, cuts a damaged end, writes each command's records to it, when replies wait for them, and when it syncs it.
+How firn replays its append-only file at startup and what it logs then, cuts a damaged end, writes each command's records to it, when replies wait for them, and when it syncs it.
 
 ### decision aof-multi-record-command-grouped-at-commit
 A command that appends several records is wrapped in MULTI and EXEC at its commit, by inserting MULTI at the log length it noted at its start; one record stays bare.
@@ -28,3 +28,12 @@ A reply waits for the commit sequence its command's own Meta statement noted, or
 The maintenance context syncs the active file once a second through the handle that appends to it, during its turn, so appends and replies wait for the fsync.
 - rejected: an agent proposed a second handle on the same file for the sync, so appends go on as with Redis's background fsync; the owner rejected it, because covering the other handle's appends rests on host behaviour outside Whitefoot's sync_file contract, which others cannot check.
 - rejected: an agent proposed waiting for a Whitefoot sync apart from the append handle before group commit; the owner rejected it, because the appending handle's own sync already gives durability others can check from Whitefoot's contract, while the gap goes to Whitefoot.
+
+### decision aof-load-failure-logs-one-generic-line
+When the append-only file does not load, firn logs Fatal error loading the DB, check server logs. Exiting. and exits with status 4, and the log names no cause.
+- rejected: an agent proposed logging Redis's specific line for each cause, from aof.c, and not the generic line; the owner rejected it, because every failure point in startup.wf must be matched with Redis's text and tested, one to two days more.
+- rejected: an agent proposed logging the specific line and then the generic one; the owner rejected it, because it costs the same work, and Redis's append-only file path never writes the generic closing line.
+
+### decision aof-replay-leaves-out-two-redis-lines
+Replaying the append-only file, firn does not log Redis's Revert incomplete MULTI/EXEC transaction line or its Error truncating the AOF file line, and the manual lists both as differences from Redis.
+- rejected: an agent proposed writing both, with a replay-result field that tells an incomplete block from a clean one and a line where cutting the tail fails; the owner rejected it, because it changes persistence's public structure and callers, needs two tests against Redis and takes half a day.

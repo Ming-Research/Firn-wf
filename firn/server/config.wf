@@ -1,9 +1,21 @@
 alias Span = pkg::protocol::Span;
 alias IntegerConfig = pkg::commands::IntegerConfig;
-alias IoError = std::io::IoError;
+alias DirectoryRead = std::fs::DirectoryRead;
+alias DirectoryWrite = std::fs::DirectoryWrite;
 alias HandleFactory = std::io::HandleFactory;
+alias HostPaths = std::fs::HostPaths;
 alias InputStream = std::io::InputStream;
+alias IoError = std::io::IoError;
 alias OutputStream = std::io::OutputStream;
+alias PathEncoding = std::fs::PathEncoding;
+alias WallClock = std::time::WallClock;
+alias log_message_append = pkg::serverlog::log_message_append;
+alias log_message_error = pkg::serverlog::log_message_error;
+alias level_notice = pkg::serverlog::level_notice;
+alias level_warning = pkg::serverlog::level_warning;
+alias log_message_new = pkg::serverlog::log_message_new;
+alias serverlog_emit = pkg::serverlog::serverlog_emit;
+alias serverlog_stamped = pkg::serverlog::serverlog_stamped;
 
 const config_no_listener: Array<u8, 44> = "Configured to not listen anywhere, exiting.\n";
 
@@ -35,15 +47,23 @@ const config_file_path: Array<u8, 47> = "appendfilename can't be a path, just a 
 
 const config_bind_many: Array<u8, 45> = "firn supports only one IPv4 bind address or *";
 
-const config_include_gap: Array<u8, 56> = "firn cannot yet read include paths (firn-req-host-paths)";
+const config_title: Array<u8, 48> = "\n*** FATAL CONFIG FILE ERROR (Redis 7.2.16) ***\n";
 
-const config_dir_gap: Array<u8, 66> = "firn cannot yet change its working directory (firn-req-host-paths)";
+const config_wildcard: Array<u8, 47> = "firn does not expand wildcards in include paths";
 
-const config_path_gap: Array<u8, 79> = "firn cannot yet open paths outside its working directory (firn-req-host-paths)\n";
+const config_nesting: Array<u8, 30> = "firn: includes nest too deeply";
+
+const config_loglevel_error: Array<u8, 82> = "argument(s) must be one of the following: debug, verbose, notice, warning, nothing";
+
+const config_logfile_error: Array<u8, 25> = "Can't open the log file: ";
+
+const config_no_paths: Array<u8, 44> = "firn: the host gave no access to host paths\n";
 
 const config_open_prefix: Array<u8, 37> = "Fatal error, can't open config file '";
 
 const config_open_suffix: Array<u8, 3> = "': ";
+
+const config_stdin_notice: Array<u8, 25> = "Reading config from stdin";
 
 const config_io_unknown: Array<u8, 39> = "firn: I/O error description unavailable";
 
@@ -62,6 +82,20 @@ const config_name_clients: Array<u8, 12> = "FIRN-CLIENTS";
 const config_name_include: Array<u8, 7> = "INCLUDE";
 
 const config_name_dir: Array<u8, 3> = "DIR";
+
+const config_name_loglevel: Array<u8, 8> = "LOGLEVEL";
+
+const config_name_logfile: Array<u8, 7> = "LOGFILE";
+
+const config_level_debug: Array<u8, 5> = "DEBUG";
+
+const config_level_verbose: Array<u8, 7> = "VERBOSE";
+
+const config_level_notice: Array<u8, 6> = "NOTICE";
+
+const config_level_warning: Array<u8, 7> = "WARNING";
+
+const config_level_nothing: Array<u8, 7> = "NOTHING";
 
 const config_name_memory: Array<u8, 9> = "MAXMEMORY";
 
@@ -267,6 +301,102 @@ fn config_ingest(buffer: &Text, ingest: &ConfigIngest, source: &[u8]) -> result:
   return unit;
 }
 
+fn config_is_directory(problem: &IoError) -> is_directory: Bool reads(problem) {
+  doc "Whether the host says the path names a directory. Redis opens an included directory with fopen, which succeeds, and fgets reads nothing from it, so such an include adds no line and startup goes on.";
+  match problem^ {
+    NotFound(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    PermissionDenied(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AlreadyExists(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NotDirectory(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    IsDirectory(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    DirectoryNotEmpty(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ReadOnly(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ResourceBusy(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    InvalidInput(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    InvalidPath(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    Unsupported(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    TimedOut(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    DeadlinePassed() => {
+      return False();
+    }
+    Cancelled() => {
+      return False();
+    }
+    BrokenPipe(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    WriteZero(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    UnexpectedEnd(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionRefused(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionReset(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionAborted(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NotConnected(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AddressInUse(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AddressUnavailable(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ResourceExhausted(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    FileTooLarge(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NoSpace(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    QuotaExceeded(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    CrossDevice(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    DeviceFailure(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    Other(code: native_code, origin: native_origin) => {
+      return False();
+    }
+  }
+}
+
 fn config_read_file(factory: &HandleFactory, file: std::fs::ReadFile, output: &OutputStream, buffer: &Text) -> success: Bool writes(factory), writes(output), writes(buffer) waits {
   let chunk = array_filled::<u8, 4096>(value: 0_u8);
   let offset = 0_u64;
@@ -300,12 +430,15 @@ fn config_read_file(factory: &HandleFactory, file: std::fs::ReadFile, output: &O
           ReadEnd() => {
           }
           ReadFailed(error: problem) => {
-            let message = config_buffer();
-            config_append(buffer: &message, source: &config_read_error[0_u64..33_u64]);
-            config_description(buffer: &message, problem: &problem);
-            config_byte(buffer: &message, byte: 10_u8);
-            config_emit(factory: factory, output: output, text: &message);
-            set success = False();
+            if config_is_directory(problem: &problem) {
+            } else {
+              let message = config_buffer();
+              config_append(buffer: &message, source: &config_read_error[0_u64..33_u64]);
+              config_description(buffer: &message, problem: &problem);
+              config_byte(buffer: &message, byte: 10_u8);
+              config_emit(factory: factory, output: output, text: &message);
+              set success = False();
+            }
           }
         }
         break;
@@ -365,35 +498,40 @@ fn config_read_stdin(factory: &HandleFactory, input: &InputStream, output: &Outp
   }
 }
 
-fn config_open(args: &std::text::Args, name: &[u8], factory: &HandleFactory, root: &std::fs::DirectoryRead, output: &OutputStream, buffer: &Text) -> success: Bool reads(args), reads(name), reads(root), writes(factory), writes(output), writes(buffer) waits {
-  match std::text::arg_get(args: args, position: 1_u64) {
-    Ok(value: host) => {
-      match std::fs::relative_path(value: move host) {
-        Ok(value: path) => {
-          match std::fs::open_read(factory: factory, root: root, path: &path) {
-            Ok(value: file) => {
-              return config_read_file(factory: factory, file: move file, output: output, buffer: buffer);
-            }
-            Err(error: problem) => {
-              let message = config_buffer();
-              config_append(buffer: &message, source: &config_open_prefix[0_u64..37_u64]);
-              config_append(buffer: &message, source: name);
-              config_append(buffer: &message, source: &config_open_suffix[0_u64..3_u64]);
-              config_description(buffer: &message, problem: &problem);
-              config_byte(buffer: &message, byte: 10_u8);
-              config_emit(factory: factory, output: output, text: &message);
-              return False();
-            }
-          }
-        }
-        Err(error: invalid) => {
-          config_write(factory: factory, output: output, bytes: &config_path_gap[0_u64..79_u64]);
-          return False();
-        }
-      }
+fn config_log(options: &Options, factory: &HandleFactory, paths: &HostPaths, base: &DirectoryRead, stdout: &OutputStream, wall: &WallClock, level: u64, message: &Box<Slots<u8>>) -> result: unit reads(options), reads(paths), reads(base), reads(wall), reads(message), writes(factory), writes(stdout) waits {
+  doc "Writes a log line for a message of the configuration load at once, as Redis's serverLog does while it loads its configuration: to standard output, or to the log file the directives read so far name, at the role C that precedes the server's initialization, unless the loglevel read so far hides the level.";
+  if level < options^.loglevel {
+    return unit;
+  }
+  let line = serverlog_stamped(clock: wall, pid: options^.pid, role: 67_u8, level: level, message: message);
+  let length = options^.logfile.inner.len;
+  serverlog_emit(factory: factory, paths: paths, base: base, output: stdout, logfile: &options^.logfile.inner[0_u64..length], line: &line);
+  return unit;
+}
+
+fn config_open_error(options: &Options, factory: &HandleFactory, paths: &HostPaths, base: &DirectoryRead, stdout: &OutputStream, wall: &WallClock, name: &[u8], problem: &IoError) -> result: unit reads(options), reads(paths), reads(base), reads(wall), reads(name), reads(problem), writes(factory), writes(stdout) waits {
+  let message = log_message_new();
+  log_message_append(message: &message, source: &config_open_prefix[0_u64..37_u64]);
+  log_message_append(message: &message, source: name);
+  log_message_append(message: &message, source: &config_open_suffix[0_u64..3_u64]);
+  log_message_error(message: &message, problem: problem);
+  config_log(options: options, factory: factory, paths: paths, base: base, stdout: stdout, wall: wall, level: level_warning, message: &message);
+  return unit;
+}
+
+fn config_load(options: &Options, name: &[u8], factory: &HandleFactory, paths: &HostPaths, root: &DirectoryRead, output: &OutputStream, stdout: &OutputStream, wall: &WallClock, buffer: &Text) -> success: Bool reads(options), reads(name), reads(paths), reads(root), reads(wall), writes(factory), writes(output), writes(stdout), writes(buffer) waits {
+  doc "Reads the file the host path name names, looked up from root, into buffer as loadServerConfig does; a file that cannot be opened is logged as Redis logs it, with the path as given.";
+  let length = name^.len;
+  let native = PathEncoding::NativeBytes();
+  match std::fs::open_host_read_bytes(factory: factory, paths: paths, base: root, path: name, start: 0_u64, end: length, encoding: native) {
+    Ok(value: file) => {
+      return config_read_file(factory: factory, file: move file, output: output, buffer: buffer);
     }
-    Err(error: absent) => {
-      config_write(factory: factory, output: output, bytes: &config_arg_error[0_u64..38_u64]);
+    Err(error: problem) => {
+      if config_is_directory(problem: &problem) {
+        return True();
+      }
+      config_open_error(options: options, factory: factory, paths: paths, base: root, stdout: stdout, wall: wall, name: name, problem: &problem);
       return False();
     }
   }
@@ -495,6 +633,12 @@ fn config_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if config_is(input: input, span: name, word: &config_name_maxclients[0_u64..10_u64]) {
     return 12_u64;
   }
+  if config_is(input: input, span: name, word: &config_name_loglevel[0_u64..8_u64]) {
+    return 13_u64;
+  }
+  if config_is(input: input, span: name, word: &config_name_logfile[0_u64..7_u64]) {
+    return 14_u64;
+  }
   if config_is(input: input, span: name, word: &config_name_memory[0_u64..9_u64]) {
     return 24_u64;
   }
@@ -523,12 +667,6 @@ fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -
   let kind = config_kind(input: input, name: name);
   if kind == 0_u64 {
     return text_of(word: &config_bad_directive[0_u64..42_u64]);
-  }
-  if kind == 10_u64 {
-    if count != 2_u64 {
-      return text_of(word: &config_bad_directive[0_u64..42_u64]);
-    }
-    return text_of(word: &config_include_gap[0_u64..56_u64]);
   }
   if kind == 2_u64 {
     if count == 1_u64 {
@@ -627,21 +765,32 @@ fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -
     }
     return text_of(word: &config_clients_error[0_u64..40_u64]);
   }
-  if kind == 11_u64 {
-    let length = value.inner.len;
-    if length == 1_u64 {
-      if value.inner[0_u64] == 46_u8 {
-        return move empty;
-      }
+  if kind == 13_u64 {
+    if spelled(text: &value, word: &config_level_debug[0_u64..5_u64]) {
+      set options^.loglevel = 0_u64;
+      return move empty;
     }
-    if length == 2_u64 {
-      let dot = value.inner[0_u64] == 46_u8;
-      let slash = value.inner[1_u64] == 47_u8;
-      if band(dot, slash) {
-        return move empty;
-      }
+    if spelled(text: &value, word: &config_level_verbose[0_u64..7_u64]) {
+      set options^.loglevel = 1_u64;
+      return move empty;
     }
-    return text_of(word: &config_dir_gap[0_u64..66_u64]);
+    if spelled(text: &value, word: &config_level_notice[0_u64..6_u64]) {
+      set options^.loglevel = 2_u64;
+      return move empty;
+    }
+    if spelled(text: &value, word: &config_level_warning[0_u64..7_u64]) {
+      set options^.loglevel = 3_u64;
+      return move empty;
+    }
+    if spelled(text: &value, word: &config_level_nothing[0_u64..7_u64]) {
+      set options^.loglevel = 4_u64;
+      return move empty;
+    }
+    return text_of(word: &config_loglevel_error[0_u64..82_u64]);
+  }
+  if kind == 14_u64 {
+    set options^.logfile = move value;
+    return move empty;
   }
   let port_setting = kind == 1_u64;
   let timeout_setting = kind == 3_u64;
@@ -694,11 +843,176 @@ fn config_trim(byte: u8) -> trimmed: Bool pure {
   return bor(horizontal, vertical);
 }
 
-fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &HandleFactory, output: &OutputStream) -> result: unit reads(source), writes(options), writes(factory), writes(output) waits {
-  doc "Processes the file plus the appended command-line text in order. Source NUL terminates the aggregate as Redis's strlen does. Fatal errors quote the untouched line after Redis's four-byte trim, with physical line numbers starting at one.";
+struct ConfigFrame {
+  bytes: Box<Slots<u8>>;
+  start: u64;
+  number: u64;
+}
+
+struct Segment {
+  start: u64;
+  number: u64;
+  state: u64;
+  path: Box<Slots<u8>>;
+  line: Box<Slots<u8>>;
+}
+
+fn segment_make(start: u64, number: u64, state: u64) -> made: Segment pure {
+  doc "A segment that holds no path and no line: state 0 says the text ended, 2 that a failure was reported.";
+  let none = box_slots_new::<u8>(capacity: 0_u64);
+  let blank = box_slots_new::<u8>(capacity: 0_u64);
+  return Segment(start: start, number: number, state: state, path: move none, line: move blank);
+}
+
+fn config_halt(options: &Options, factory: &HandleFactory, output: &OutputStream, line: &[u8], number: u64, reason: &[u8]) -> result: unit reads(line), reads(reason), writes(options), writes(factory), writes(output) waits {
+  config_failure(factory: factory, output: output, line: line, number: number, reason: reason);
+  set options^.valid = False();
+  return unit;
+}
+
+fn config_dir_walk(out: &Text, source: &[u8]) -> result: unit reads(source), writes(out) {
+  doc "Appends the components of source to out as an absolute path, by lexical rules: empty and . components vanish, and .. removes the last component.";
   let length = source^.len;
-  let start = 0_u64;
-  let number = 1_u64;
+  let from = 0_u64;
+  loop @components (
+    invariant cursor: from <= length
+  ) {
+    let to = from;
+    loop @scan (
+      invariant ordered: to >= from,
+      invariant bounded: to <= length
+    ) {
+      if to == length {
+        break @scan;
+      }
+      invariant inside: to < length;
+      if source^[to] == 47_u8 {
+        break @scan;
+      }
+      set to = to + 1_u64;
+    }
+    if to == from {
+    } else {
+      invariant nonempty_component: from < to;
+      invariant first_inside: from < length;
+      let size = to - from;
+      let dot = source^[from] == 46_u8;
+      let role = 2_u64;
+      if dot {
+        if size == 1_u64 {
+          set role = 0_u64;
+        } else {
+          let second = from + 1_u64;
+          if second < to {
+            invariant second_inside: second < length;
+            let twin = source^[second] == 46_u8;
+            if size == 2_u64 {
+              if twin {
+                set role = 1_u64;
+              }
+            }
+          }
+        }
+      }
+      if role == 1_u64 {
+        loop @removal {
+          if out^.bytes.inner.len == 0_u64 {
+            break @removal;
+          }
+          let last = take_back(window: &out^.bytes.inner);
+          if last == 47_u8 {
+            break @removal;
+          }
+        }
+      } else if role == 2_u64 {
+        config_byte(buffer: out, byte: 47_u8);
+        config_append(buffer: out, source: &source^[from..to]);
+      }
+    }
+    if to == length {
+      break @components;
+    }
+    invariant continues: to < length;
+    set from = to + 1_u64;
+  }
+  return unit;
+}
+
+fn config_join_dir(old: &[u8], path: &[u8]) -> joined: Box<Slots<u8>> reads(old), reads(path) {
+  doc "The absolute path that a dir directive leaves the process in, by lexical rules: an absolute path stands alone and a relative one follows the directory held before. Empty when that directory is unknown and path is relative.";
+  let out = config_buffer();
+  let absolute = False();
+  if path^.len > 0_u64 {
+    set absolute = path^[0_u64] == 47_u8;
+  }
+  if absolute {
+  } else if old^.len == 0_u64 {
+    return box_slots_new::<u8>(capacity: 0_u64);
+  } else {
+    config_dir_walk(out: &out, source: old);
+  }
+  config_dir_walk(out: &out, source: path);
+  if out.bytes.inner.len == 0_u64 {
+    config_byte(buffer: &out, byte: 47_u8);
+  }
+  if out.valid {
+    return move out.bytes;
+  }
+  return box_slots_new::<u8>(capacity: 0_u64);
+}
+
+fn config_set_dir(options: &Options, path: &[u8], factory: &HandleFactory, paths: &HostPaths, cwd: &DirectoryRead, cwd_write: &DirectoryWrite) -> error: Box<Slots<u8>> reads(path), reads(paths), writes(options), writes(factory), writes(cwd), writes(cwd_write) waits {
+  doc "Makes the directory the host path names the working directory of every later relative path, as Redis's chdir does, by swapping the held halves for the new ones; returns the host's description of a refusal and holds the old directory then.";
+  let length = path^.len;
+  let native = PathEncoding::NativeBytes();
+  match std::fs::open_host_directory_bytes(factory: factory, paths: paths, base: cwd, path: path, start: 0_u64, end: length, encoding: native) {
+    Ok(value: opened) => {
+      let std::fs::Directory(read: fresh_read, write: fresh_write) = move opened;
+      swap(first: &fresh_read, second: cwd);
+      swap(first: &fresh_write, second: cwd_write);
+      std::fs::close_directory(factory: factory, directory: move fresh_read);
+      std::fs::close_directory_write(factory: factory, directory: move fresh_write);
+      let previous = options^.dir.inner.len;
+      let joined = config_join_dir(old: &options^.dir.inner[0_u64..previous], path: path);
+      set options^.dir = move joined;
+      return box_slots_new::<u8>(capacity: 0_u64);
+    }
+    Err(error: problem) => {
+      let message = config_buffer();
+      config_description(buffer: &message, problem: &problem);
+      return move message.bytes;
+    }
+  }
+}
+
+fn config_check_logfile(options: &Options, factory: &HandleFactory, paths: &HostPaths, cwd: &DirectoryRead, output: &OutputStream) -> sound: Bool reads(options), reads(paths), reads(cwd), writes(factory), writes(output) waits {
+  doc "The check Redis makes where each configuration text ends: a logfile that was set must open for appending, or the text ends in a fatal error with no line frame.";
+  let length = options^.logfile.inner.len;
+  if length == 0_u64 {
+    return True();
+  }
+  match pkg::serverlog::logfile_open(factory: factory, paths: paths, base: cwd, path: &options^.logfile.inner[0_u64..length]) {
+    Ok(value: file) => {
+      pkg::serverlog::logfile_close(factory: factory, file: move file);
+      return True();
+    }
+    Err(error: problem) => {
+      let message = config_buffer();
+      config_append(buffer: &message, source: &config_title[0_u64..48_u64]);
+      config_append(buffer: &message, source: &config_logfile_error[0_u64..25_u64]);
+      config_description(buffer: &message, problem: &problem);
+      config_byte(buffer: &message, byte: 10_u8);
+      config_emit(factory: factory, output: output, text: &message);
+      return False();
+    }
+  }
+}
+
+fn config_lines(options: &Options, source: &[u8], first: u64, line_number: u64, invalid_line: u64, factory: &HandleFactory, paths: &HostPaths, cwd: &DirectoryRead, cwd_write: &DirectoryWrite, output: &OutputStream) -> segment: Segment reads(source), reads(paths), writes(options), writes(factory), writes(cwd), writes(cwd_write), writes(output) waits {
+  doc "Processes the lines of one configuration text from the byte first, numbered line_number, until the text ends, a line includes another file, which returns the path, the line itself and its number, and where to go on, or a line fails after its frame is written. Source NUL terminates the text as Redis's strlen does. Fatal errors quote the untouched line after Redis's four-byte trim, with physical line numbers starting at one.";
+  let length = source^.len;
+  let start = imin(first, length);
+  let number = line_number;
   loop @lines (
     invariant cursor: start <= length
   ) {
@@ -759,9 +1073,8 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
       if source^[left] != 35_u8 {
         let line = &source^[left..right];
         if number == invalid_line {
-          config_failure(factory: factory, output: output, line: line, number: number, reason: &config_bad_directive[0_u64..42_u64]);
-          set options^.valid = False();
-          return unit;
+          config_halt(options: options, factory: factory, output: output, line: line, number: number, reason: &config_bad_directive[0_u64..42_u64]);
+          return segment_make(start: length, number: number, state: 2_u64);
         }
         let size = right - left;
         invariant line_size: line^.len == size;
@@ -773,17 +1086,66 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
         let arguments = box_slots_new::<Span>(capacity: 8_u64);
         let parsed = pkg::protocol::split_arguments(input: &decoded.inner[0_u64..size], start: 0_u64, end: size, args: &arguments);
         if parsed.state == 7_u64 {
-          config_failure(factory: factory, output: output, line: line, number: number, reason: &config_unbalanced[0_u64..39_u64]);
-          set options^.valid = False();
-          return unit;
+          config_halt(options: options, factory: factory, output: output, line: line, number: number, reason: &config_unbalanced[0_u64..39_u64]);
+          return segment_make(start: length, number: number, state: 2_u64);
         }
         if parsed.state == 1_u64 {
-          let reason = config_apply(options: options, input: &decoded.inner[0_u64..size], arguments: &arguments);
-          let reason_length = reason.inner.len;
-          if reason_length != 0_u64 {
-            config_failure(factory: factory, output: output, line: line, number: number, reason: &reason.inner[0_u64..reason_length]);
-            set options^.valid = False();
-            return unit;
+          let name = pkg::protocol::arg(args: &arguments, index: 0_u64);
+          let kind = config_kind(input: &decoded.inner[0_u64..size], name: name);
+          let count = arguments.inner.len;
+          if kind == 10_u64 {
+            if count != 2_u64 {
+              config_halt(options: options, factory: factory, output: output, line: line, number: number, reason: &config_bad_directive[0_u64..42_u64]);
+              return segment_make(start: length, number: number, state: 2_u64);
+            }
+            let span = pkg::protocol::arg(args: &arguments, index: 1_u64);
+            let path = pkg::bytes::copy_bytes(input: &decoded.inner[0_u64..size], start: span.start, length: span.length);
+            let path_length = path.inner.len;
+            let pattern = False();
+            for (index in 0_u64..path_length) {
+              let byte = path.inner[index];
+              let star = byte == 42_u8;
+              let query = byte == 63_u8;
+              let bracket = byte == 91_u8;
+              let glob = bor(star, query);
+              if bor(glob, bracket) {
+                set pattern = True();
+              }
+            }
+            if pattern {
+              config_halt(options: options, factory: factory, output: output, line: line, number: number, reason: &config_wildcard[0_u64..47_u64]);
+              return segment_make(start: length, number: number, state: 2_u64);
+            }
+            let resume = length;
+            if end < length {
+              if source^[end] != 0_u8 {
+                set resume = end + 1_u64;
+              }
+            }
+            let quoted = pkg::bytes::copy_bytes(input: line, start: 0_u64, length: size);
+            return Segment(start: resume, number: number, state: 1_u64, path: move path, line: move quoted);
+          }
+          if kind == 11_u64 {
+            if count != 2_u64 {
+              config_halt(options: options, factory: factory, output: output, line: line, number: number, reason: &config_wrong_arity[0_u64..25_u64]);
+              return segment_make(start: length, number: number, state: 2_u64);
+            }
+            let span = pkg::protocol::arg(args: &arguments, index: 1_u64);
+            let target = pkg::bytes::copy_bytes(input: &decoded.inner[0_u64..size], start: span.start, length: span.length);
+            let target_length = target.inner.len;
+            let problem = config_set_dir(options: options, path: &target.inner[0_u64..target_length], factory: factory, paths: paths, cwd: cwd, cwd_write: cwd_write);
+            let problem_length = problem.inner.len;
+            if problem_length != 0_u64 {
+              config_halt(options: options, factory: factory, output: output, line: line, number: number, reason: &problem.inner[0_u64..problem_length]);
+              return segment_make(start: length, number: number, state: 2_u64);
+            }
+          } else {
+            let reason = config_apply(options: options, input: &decoded.inner[0_u64..size], arguments: &arguments);
+            let reason_length = reason.inner.len;
+            if reason_length != 0_u64 {
+              config_halt(options: options, factory: factory, output: output, line: line, number: number, reason: &reason.inner[0_u64..reason_length]);
+              return segment_make(start: length, number: number, state: 2_u64);
+            }
           }
         }
       }
@@ -798,11 +1160,70 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
     set start = end + 1_u64;
     set number = number +wrap 1_u64;
   }
-  return unit;
+  return segment_make(start: length, number: number, state: 0_u64);
 }
 
-fn read_options(args: &std::text::Args, factory: &HandleFactory, root: &std::fs::DirectoryRead, input: &InputStream, output: &OutputStream) -> options: Options reads(args), reads(root), writes(factory), writes(input), writes(output) waits {
-  doc "Reads [configfile|-] [--directive values ...]. File text precedes one extra LF and the command-line lines; values are quoted with Redis's representation. Every -- starts a directive. The optional file is opened only through relative_path and open_read. Include and directory changes remain explicitly refused under firn-req-host-paths; dir . and ./ retain the supplied working directory.";
+fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &HandleFactory, paths: &HostPaths, cwd: &DirectoryRead, cwd_write: &DirectoryWrite, output: &OutputStream, stdout: &OutputStream, wall: &WallClock) -> result: unit reads(source), reads(paths), reads(wall), writes(options), writes(factory), writes(cwd), writes(cwd_write), writes(output), writes(stdout) waits {
+  doc "Processes the file plus the appended command-line text in order, and the files its include directives name where they stand, each with line numbers of its own. A stack of suspended texts replaces recursion; the text on top is the one read, and the bottom is source, which alone has the line invalid_line that the command-line text begins with a value instead of a directive. The logfile is checked where each text ends.";
+  let frames = box_slots_new::<ConfigFrame>(capacity: 32_u64);
+  let current = box_slots_new::<u8>(capacity: 0_u64);
+  let start = 0_u64;
+  let number = 1_u64;
+  loop @segments {
+    let suspended = frames.inner.len;
+    let size = current.inner.len;
+    let segment = if suspended == 0_u64 {
+      give config_lines(options: options, source: source, first: start, line_number: number, invalid_line: invalid_line, factory: factory, paths: paths, cwd: cwd, cwd_write: cwd_write, output: output);
+    } else {
+      give config_lines(options: options, source: &current.inner[0_u64..size], first: start, line_number: number, invalid_line: 0_u64, factory: factory, paths: paths, cwd: cwd, cwd_write: cwd_write, output: output);
+    }
+    let state = segment.state;
+    if state == 2_u64 {
+      return unit;
+    }
+    if state == 1_u64 {
+      let path_length = segment.path.inner.len;
+      let text = config_buffer();
+      let loaded = config_load(options: options, name: &segment.path.inner[0_u64..path_length], factory: factory, paths: paths, root: cwd, output: output, stdout: stdout, wall: wall, buffer: &text);
+      if loaded {
+      } else {
+        set options^.valid = False();
+        return unit;
+      }
+      let resume_number = segment.number +wrap 1_u64;
+      let parent = ConfigFrame(bytes: move current, start: segment.start, number: resume_number);
+      if frames.inner.len < frames.inner.cap {
+        place_back(window: &frames.inner, value: move parent);
+      } else {
+        let dropped = move parent;
+        let quoted_length = segment.line.inner.len;
+        config_halt(options: options, factory: factory, output: output, line: &segment.line.inner[0_u64..quoted_length], number: segment.number, reason: &config_nesting[0_u64..30_u64]);
+        return unit;
+      }
+      set current = move text.bytes;
+      set start = 0_u64;
+      set number = 1_u64;
+      continue @segments;
+    }
+    let sound = config_check_logfile(options: options, factory: factory, paths: paths, cwd: cwd, output: output);
+    if sound {
+    } else {
+      set options^.valid = False();
+      return unit;
+    }
+    if frames.inner.len == 0_u64 {
+      return unit;
+    }
+    let parent = take_back(window: &frames.inner);
+    let ConfigFrame(bytes: resumed, start: resume, number: line) = move parent;
+    set current = move resumed;
+    set start = resume;
+    set number = line;
+  }
+}
+
+fn read_options(args: &std::text::Args, factory: &HandleFactory, paths: &HostPaths, cwd: &DirectoryRead, cwd_write: &DirectoryWrite, input: &InputStream, output: &OutputStream, stdout: &OutputStream, wall: &WallClock, pid: u64) -> options: Options reads(args), reads(paths), reads(wall), writes(factory), writes(cwd), writes(cwd_write), writes(input), writes(output), writes(stdout) waits {
+  doc "Reads [configfile|-] [--directive values ...]. File text precedes one extra LF and the command-line lines; values are quoted with Redis's representation. Every -- starts a directive. The optional file and the include directives open host paths, absolute or relative to the working directory that dir sets, and a failure to open one is logged as Redis logs it, to standard output; an include with a wildcard is refused. The loglevel and logfile directives decide where the load's own log lines go from the line they stand on.";
   let aof = text_of(word: &default_file[0_u64..14_u64]);
   let bind = text_of(word: &default_bind[0_u64..9_u64]);
   let password = box_slots_new::<u8>(capacity: 0_u64);
@@ -814,11 +1235,14 @@ fn read_options(args: &std::text::Args, factory: &HandleFactory, root: &std::fs:
   set memory[3_u64] = 10_u64;
   set memory[4_u64] = 1_u64;
   set memory[5_u64] = 10_u64;
-  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, maxclients: 10000_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, memory: memory, valid: readable);
+  let dir = box_slots_new::<u8>(capacity: 0_u64);
+  let logfile = box_slots_new::<u8>(capacity: 0_u64);
+  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, maxclients: 10000_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, memory: memory, pid: pid, dir: move dir, loglevel: 2_u64, logfile: move logfile, configured: off, valid: readable);
   let total = std::text::args_count(args: args);
   if total <= 1_u64 {
     return move options;
   }
+  set options.configured = True();
   let config = config_buffer();
   let first = option_text(args: args, position: 1_u64);
   if first.valid {
@@ -836,10 +1260,15 @@ fn read_options(args: &std::text::Args, factory: &HandleFactory, root: &std::fs:
     if length == 1_u64 {
       set from_stdin = first.bytes.inner[0_u64] == 45_u8;
     }
+    if from_stdin {
+      let stdin_notice = log_message_new();
+      log_message_append(message: &stdin_notice, source: &config_stdin_notice[0_u64..25_u64]);
+      config_log(options: &options, factory: factory, paths: paths, base: cwd, stdout: stdout, wall: wall, level: level_notice, message: &stdin_notice);
+    }
     let read = if from_stdin {
       give config_read_stdin(factory: factory, input: input, output: output, buffer: &config);
     } else {
-      give config_open(args: args, name: &first.bytes.inner[0_u64..length], factory: factory, root: root, output: output, buffer: &config);
+      give config_load(options: &options, name: &first.bytes.inner[0_u64..length], factory: factory, paths: paths, root: cwd, output: output, stdout: stdout, wall: wall, buffer: &config);
     }
     if read {
     } else {
@@ -890,7 +1319,7 @@ fn read_options(args: &std::text::Args, factory: &HandleFactory, root: &std::fs:
   }
   if config.valid {
     let length = config.bytes.inner.len;
-    config_parse(options: &options, source: &config.bytes.inner[0_u64..length], invalid_line: invalid_line, factory: factory, output: output);
+    config_parse(options: &options, source: &config.bytes.inner[0_u64..length], invalid_line: invalid_line, factory: factory, paths: paths, cwd: cwd, cwd_write: cwd_write, output: output, stdout: stdout, wall: wall);
   } else {
     config_write(factory: factory, output: output, bytes: &config_too_large[0_u64..47_u64]);
     set options.valid = False();
