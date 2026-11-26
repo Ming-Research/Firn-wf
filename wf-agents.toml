@@ -18,7 +18,7 @@ path = "design/constitution.md"
 # Where an agent keeps what it makes for research, committed: research/investigations/ and research/experiments/.
 research = "research/"
 # How an agent names a test to `run_tests`, as check.yml, design-readiness.yml and fast.yml name it in their JUnit.
-test_names = "a test of firn by its target in TESTS of the Makefile: `firn`, `test` (every network case), `redis-suite`, `design-lint`, `gate-sync`, `safety-witnesses`, `aof-sync-fault`, `design-ready` or `pin-ready`; a single network case or Redis suite test is not named alone"
+test_names = "a test of firn by its target in TESTS of the Makefile: `firn`, `test` (every network case and the benchmark client's tests), `list-ceiling`, `redis-suite` (the whole Redis suite), `design-lint`, `gate-sync`, `safety-witnesses`, `aof-sync-fault`, `design-ready` or `pin-ready`; or one test inside them, as TEST_FAMILIES of the Makefile names it: `network::<case>` for one case of the cargo test `network` by its path, such as `network::pubsub::soft_output_limit_closes_a_subscriber_whose_backlog_stays_over_8_mib_for_60_seconds` or `network::rewrite_faults::<name>`; `bench-client::<test>` for one test of the benchmark client (research/experiments/redis-bench/workload); `redis-suite/<unit>` for one unit of the Redis suite as the suite lists it, such as `redis-suite/unit/type/hash`. Name the single tests a change touches: the whole `test` and `redis-suite` take minutes, longer than a fast check's budget"
 
 # Where firn's tests are, as git pathspecs, which are all a line that changes only the tests may change: the network
 # cases, the Redis suite's runner and lists and the list-ceiling fixture under tests/, and the safety witnesses the gate
@@ -35,19 +35,23 @@ expected = [
 ]
 
 # firn's workflows, which the engine runs by hand on main's file with a commit given. Each reports every test as JUnit
-# XML, named by its target, in the artifact `test-results`; each test runs by itself through whitefoot-kit/ci/run-tests.py.
+# XML, named as it was asked for, in the artifact `test-results`; each test runs by itself through
+# whitefoot-kit/ci/run-tests.py.
 [ci.fast]
 # Runs only the tests it is given, after only the setup they need.
 workflow = "fast.yml"
 # The owner's own machine, the self-hosted runner 14900k: an agent waits for this workflow each time it asks for tests,
-# and that machine keeps the checkout, firn's builds and the reference Redis between runs, so a run builds again only
-# what changed. aof-sync-fault needs a device only root can make, so it runs in a job of the same workflow on GitHub's
-# ubuntu-24.04.
+# and that machine keeps each work's tree, with firn's builds and the reference Redis, between runs, so a work's run
+# builds again only what the work changed. aof-sync-fault needs a device only root can make, so it runs in a job of the
+# same workflow on GitHub's ubuntu-24.04.
 runner = "14900k"
-# check.yml gives the jobs of the Redis suite and the network cases 25 and 20 minutes; named together, they run one
-# after the other on the 14900k, within that job's 60 minutes, while the sync failures run beside them on GitHub's
-# machine. A run not complete by then is cancelled, and said as what it found.
-too_long = "90m"
+# The inputs that carry how long the named tests may take together, which run-tests.py holds them to, and the work a
+# run is for, whose tree on the 14900k keeps its builds.
+budget_input = "budget_seconds"
+work_input = "work"
+# The 14900k job's limit is 20 minutes (fast.yml, FIRN_FAST_JOB_MINUTES). A run not complete by then is cancelled, and
+# said as what it found.
+too_long = "25m"
 
 [ci.full]
 # Every check a merge needs, run once before the merge: the gate and the sync failures (check.yml), and the design
