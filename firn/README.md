@@ -49,7 +49,15 @@ clients send on their own:
   `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK` and
   `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
-  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, and
+  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`,
+  `ZUNIONSTORE`, `ZINTERSTORE` and `ZDIFFSTORE` and `ZUNION`, `ZINTER` and
+  `ZDIFF` with `WEIGHTS`, `AGGREGATE SUM|MIN|MAX` and `WITHSCORES` as each
+  takes them, taking plain sets as inputs at score 1, `ZINTERCARD` with
+  `LIMIT`, `ZRANGESTORE` with `BYSCORE`, `BYLEX`, `REV` and `LIMIT`,
+  `ZRANDMEMBER` with a count and `WITHSCORES`, `ZMPOP` over several keys with
+  `MIN`, `MAX` and `COUNT` (each of these naming several keys in one
+  statement holding every key it names, and not blocking: `BZMPOP` is not
+  supported), and
   `ZSCAN key cursor [MATCH pattern] [COUNT count]`, with scores read as Redis
   reads them and replies written as Redis 7.2.16's `d2string` writes them:
   signed zeros and infinities, integers through magnitude 2^62, and other
@@ -202,35 +210,47 @@ differs from Redis's. All five commands,
 including both flush commands, run through their shared parts on the
 network, in `EXEC` and through `redis.call` or `redis.pcall`.
 
-`SSCAN`, `HSCAN` and `ZSCAN` return cursor `0` and the entire collection after
-MATCH filtering in one call, including when the incoming cursor is nonzero.
-They use firn's element order: map traversal for sets and hashes, and score
-then member order for sorted sets. COUNT is validated as Redis 7.2.16 validates
-it but does not limit this reply. Both protocols use an array of bulk strings;
+`SSCAN`, `HSCAN` and `ZSCAN` return a compact collection whole after MATCH
+filtering, with cursor `0`, whatever cursor and COUNT arrive, as Redis 7.2.16
+returns its listpack and intset encodings. A collection is compact by its
+current content, with Redis's default limits: at most 128 members of a set or
+sorted set, or 512 fields of a hash, and no member, field or hash value longer
+than 64 bytes; or a set of at most 512 members that Redis's `string2ll` reads
+all as 64-bit integers. Stored CONFIG encoding values do not matter, and
+nothing remembers how a collection grew. A larger collection is scanned in
+steps, as Redis's `dictScan` loop does: the cursor is a position in the hash
+space of Whitefoot's `hash_map_scan`, printed in decimal, and one call takes
+steps from it until it has sampled COUNT entries (counted before MATCH, a hash
+field counting once), the cursor is `0`, or the call has covered 10*COUNT+1
+home buckets. A call therefore returns about COUNT entries when MATCH takes all
+of them, none or few where MATCH takes few, and fewer than COUNT from a table
+that was once large and is now sparse; the cursor `0` ends the scan. Any cursor
+value is accepted. A member present from the first call to the last is returned
+at least once while others are added and removed between calls, through any
+growth or rebuild of the table; one scanned over an unchanged collection is
+returned once. Sets and hashes use the map's order and a larger sorted set the
+order of its member-to-score map, so its steps are not in score order; a
+compact sorted set keeps score order. Both protocols use an array of bulk strings;
 hash field/value and sorted-set member/score pairs stay flat. A missing key
 returns cursor `0` and an empty array before options are checked; a wrong type
 is also checked before options, while an invalid cursor is checked first.
 TYPE and NOVALUES are not collection-scan options in Redis 7.2.16.
 
-This whole-collection path supplies SCAN's coverage guarantee but has work
-and reply size proportional to the full collection. It is provisional while
-board item coord-wfbl-02-01 supplies bounded resumable scanning for Whitefoot's
-ordinary hash map; firn adds no direct bucket reads. Redis's compact-encoding
-history, element order, cursors and dictionary batch boundaries are not
-reproduced. ZSCAN uses d2string text while the current sorted set has at most
-128 members and every member is at most 64 bytes; otherwise it uses `%.17g`,
+Redis's compact-encoding history, element order and dictionary cursor values are
+not reproduced. ZSCAN uses d2string text while the sorted set is compact;
+otherwise it uses `%.17g`,
 which supplies Redis's dictionary ZSCAN `%.17Lg` digits for a widened double.
-Both are bulk strings in both protocols. This selection examines all members
-before MATCH and uses the default limits, independently of stored CONFIG
-encoding values. A set that grew beyond a limit and later shrank returns to
+Both are bulk strings in both protocols. This selection ignores MATCH, so a
+member MATCH excludes still counts, and uses the default limits, independently
+of stored CONFIG encoding values. A set that grew beyond a limit and later shrank returns to
 d2string in firn, whereas Redis retains skiplist text after promotion.
 The recorded reference comparison and boundary cases are in
 [the collection-scan investigation](../research/investigations/firn/collection-scan.md).
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
-`save`, `timeout`, `maxclients`, `auto-aof-rewrite-percentage` and
-`auto-aof-rewrite-min-size`, and the parameters whose only effect in Redis is on its
+`save`, `timeout`, `maxclients`, `dir`, `loglevel`, `logfile`,
+`auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`, and the parameters whose only effect in Redis is on its
 internal encodings, leaving every value as commands read it,
 `hash-max-listpack-entries`, `hash-max-listpack-value`,
 `list-compress-depth`, `list-max-listpack-size`, `set-max-intset-entries`,
@@ -567,7 +587,18 @@ Supported directives, in files or after `--`, are:
 - `maxmemory`, `maxmemory-policy`, `maxmemory-samples`,
   `maxmemory-eviction-tenacity`, `lfu-log-factor` and `lfu-decay-time`, using
   the same validation as `CONFIG SET`;
-- `dir .` or `dir ./`, retaining the working directory;
+- `dir`, a directory absolute or relative to the working directory, which
+  becomes the working directory for every later relative path, `include`,
+  `logfile` and the append-only directory included, as Redis's `chdir` does;
+  `include`, one file read where the directive stands, with line numbers of
+  its own and the working directory the `dir` directives before it set; an
+  `include` path with `*`, `?` or `[` is refused;
+- `loglevel`, `debug`, `verbose`, `notice` (the default), `warning` or
+  `nothing`, and `logfile`, the file the log lines are appended to, empty by
+  default for standard output; `CONFIG GET` reports both and `dir`, `CONFIG SET
+  loglevel` changes the level while firn runs, `CONFIG SET logfile` answers
+  Redis's immutable-config error and `CONFIG SET dir` answers the unknown-option
+  error;
 - `firn-clients`, a **firn-only test directive**: how many connections to
   admit over the server's lifetime before stopping, 0 by default for no
   limit. Connections refused by `maxclients` do not count. This shutdown
@@ -582,26 +613,22 @@ incomplete. The host send contract permits zero progress, so this deadline
 alone establishes no strict return-time bound.
 `CONFIG SET maxclients` changes admission for subsequent connections;
 lowering it below the current count leaves every existing client connected.
-The Whitefoot release firn was written against, `wf-af7665be672d`, had no
-resource-limit facility; the pinned release adds `open_files_limit` and
-`raise_open_files_limit` to `std::process`, which firn does not call yet, so
-firn leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
-`maxclients` at startup or refuse `CONFIG SET` solely because the operating
-system cannot supply enough descriptors; Redis can also refuse its event
-loop's capacity adjustment. The configured application limit does not
-promise descriptor availability. An `accept` error, descriptor exhaustion
+At startup, and on `CONFIG SET maxclients`, firn raises the soft
+`RLIMIT_NOFILE` to `maxclients` plus 32 as Redis 7.2.16's
+`adjustOpenFilesLimit` does, logging what it did, lowers `maxclients` to what the
+limit supports when the host refuses, or exits with status 1 when the limit is 32
+or less; `CONFIG SET` answers Redis's error and keeps the old value when the host
+cannot support the number. firn can change only the soft limit, so a hard limit
+below the request is left as it is, where Redis lowers it to what it reaches and
+a privileged Redis raises it to the request. Redis's event-loop capacity adjustment has
+no equivalent. An `accept` error, descriptor exhaustion
 included, leaves firn listening and is logged (see
 [Accept-error diagnostics](#accept-error-diagnostics)); the
 [safety boundaries](../docs/safety.md) list what remains.
 
-The interim path rules follow owner card `firn-q-ops-paths-interim` while
-Whitefoot's path support is tracked by `firn-req-host-paths`. Configuration
-paths are resolved from the working directory and must be accepted by the
-standard library's relative-path interface. Absolute paths and paths it refuses
-stop startup with a firn-specific diagnostic citing that gap. Every `include`
-directive and every `dir` value other than `.` or `./` is refused in the
-fatal configuration error frame, with a reason citing the same gap.
-Startup does not create a data directory.
+Paths are host paths, absolute or relative to the working directory, which
+`dir` changes. Startup does not create a data directory. The log is described in
+[the operations guide](../docs/operations.md#logs).
 
 ```sh
 ./build/firn startup.conf --port 6380 --requirepass secret --appendonly yes
@@ -611,12 +638,14 @@ Startup does not create a data directory.
 Unknown directives, wrong argument counts, malformed quotes and invalid
 values stop startup with status 1 and a Redis 7.2.16 fatal configuration
 error on stderr. The error prints the trimmed source line and its line
-number; command-line directives continue after the configuration file,
-including Redis's extra separating newline. A file that cannot be opened
-also stops startup with status 1 and a cannot-open diagnostic.
+number, which is the line's number in the file that holds it; command-line
+directives continue after the configuration file,
+including Redis's extra separating newline. A configuration file or
+`include` that cannot be opened stops startup with status 1 after the log
+line `Fatal error, can't open config file`.
 
 Common Redis configuration directives still refused include `daemonize`,
-`supervised`, `pidfile`, `loglevel`, `logfile`, `databases`, `save`,
+`supervised`, `pidfile`, `databases`, `save`,
 `appendfsync`, `protected-mode`, `tcp-backlog`, `tcp-keepalive`
 and `aof-use-rdb-preamble`. Their default values receive no special
 acceptance in this version.

@@ -1,0 +1,80 @@
+Redis 7.2.16 test framework: give the next test a fresh connection after a
+failed test. The suite runs the tests of a unit on one shared connection; a
+failed test can leave it in RESP3, in raw mode or with unread replies, and
+every later test of the unit then reads shifted replies and fails, so one
+failure hides the verdicts of the rest. After a failure the shared connection
+is replaced by a new one in the mode (RESP2 or RESP3, raw or not) the failed
+test started in. No command, assertion or expected value changes, no test is
+excluded, and a passing test touches nothing. Apply to Firn and Redis
+reference runs alike; retire when the pinned suite restores the connection
+itself.
+
+Sources:
+https://github.com/redis/redis/blob/7.2.16/tests/support/test.tcl
+https://github.com/redis/redis/blob/7.2.16/tests/test_helper.tcl
+
+Redis license (COPYING from the same release):
+Copyright (c) 2006-2020, Salvatore Sanfilippo
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+    * Neither the name of Redis nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--- a/tests/support/test.tcl
++++ b/tests/support/test.tcl
+@@ -161,6 +161,19 @@
+     return 0
+ }
+ 
++# A failed test can leave the shared connection in RESP3, in raw mode or with
++# unread replies, and every later test then reads shifted replies. Give the
++# next test a fresh connection in the mode the failed one started in.
++proc restore_shared_connection {resp3 raw} {
++    catch {
++        reconnect
++        if {$resp3} {
++            r hello 3
++        }
++        r readraw $raw
++    }
++}
++
+ proc test {name code {okpattern undefined} {tags {}}} {
+     # abort if test name in skiptests
+     if {[search_pattern_list $name $::skiptests]} {
+@@ -217,6 +230,14 @@
+ 
+     send_data_packet $::test_server_fd testing $name
+ 
++    set connection_resp3 0
++    set connection_raw 0
++    catch {
++        set connection_id [string range [srv 0 client] [string length ::redis::redisHandle] end]
++        set connection_resp3 $::redis::testing_resp3($connection_id)
++        set connection_raw $::redis::readraw($connection_id)
++    }
++
+     set test_start_time [clock milliseconds]
+     if {[catch {set retval [uplevel 1 $code]} error]} {
+         set assertion [string match "assertion:*" $error]
+@@ -232,6 +253,7 @@
+ 
+             incr ::num_failed
+             send_data_packet $::test_server_fd err [join $details "\n"]
++            restore_shared_connection $connection_resp3 $connection_raw
+ 
+             if {$::stop_on_failure} {
+                 puts "Test error (last server port:[srv port], log:[srv stdout]), press enter to teardown the test."
+@@ -254,6 +276,7 @@
+ 
+             incr ::num_failed
+             send_data_packet $::test_server_fd err [join $details "\n"]
++            restore_shared_connection $connection_resp3 $connection_raw
+         }
+     }
+ 

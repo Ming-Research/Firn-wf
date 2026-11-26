@@ -25,7 +25,11 @@
 #                                 SCALE (default 2 4 8 16), the client on the
 #                                 remaining physical performance cores, for
 #                                 SCALE_TESTS at each
-#                                 depth in SCALE_PIPELINES (default 16)
+#                                 depth in SCALE_PIPELINES (default 16); where
+#                                 REDIS_LATEST, VALKEY_LATEST, DRAGONFLY_LATEST
+#                                 and GARNET_LATEST name the newest stable
+#                                 releases, those lines run in the same
+#                                 interleaved passes
 #   sh redis-bench.sh quick       firn (or firn-base with QUICK_LINE=firn-base)
 #                                 on QUICK_CPUS server CPUs (default 4) against
 #                                 the fastest of Garnet and Dragonfly, in under
@@ -239,6 +243,53 @@
 #                                 --value-size (default 64) and --window, and the
 #                                 default lines are Redis and firn.
 #                                 summary.py reads these files.
+#                                 Opt-in zunionstore, zinterstore and zmpop
+#                                 measure the sorted-set commands of item 171
+#                                 (research/investigations/firn/
+#                                 zset-algebra-bench.md): every connection keeps
+#                                 each depth of WORKLOAD_DEPTHS (default 16 1)
+#                                 commands unanswered, over sets written before
+#                                 the run. zunionstore and zinterstore run once
+#                                 for each source layout, shared (every
+#                                 connection reads one pair of 1000-member sets)
+#                                 and per-connection (a pair each), and are
+#                                 named zunionstore-shared and so on in the
+#                                 files; zmpop pops from two of 100 keys of
+#                                 --prefill members (default 200000) and a
+#                                 reply with no member fails the run.
+#                                 WORKLOAD_OPTIONS accepts --prefill and
+#                                 --pop-count (default 1); WORKLOAD_SECONDS
+#                                 sizes the run the prefill must outlast.
+#                                 zset.csv has line,pass,cpus,workload,
+#                                 connections,pipeline,requests,seconds,rate,
+#                                 p50_ms,p99_ms, where requests and rate count
+#                                 commands and the latencies are a batch's,
+#                                 and zset-limited.csv the same
+#                                 client_work_fraction columns as
+#                                 pubsub-limited.csv; summary.py zset judges
+#                                 them. Redis 7.2.16 is required.
+#                                 Opt-in scan-set, scan-hash and scan-zset
+#                                 measure SSCAN, HSCAN and ZSCAN: the client
+#                                 fills one collection of 10000 members (a set,
+#                                 a hash, a sorted set) and each of
+#                                 WORKLOAD_CONNECTIONS connections (default 50)
+#                                 keeps each depth of WORKLOAD_DEPTHS (default
+#                                 16 1) cursor chains in flight, every chain
+#                                 following COUNT 100 from cursor 0 to cursor 0
+#                                 and starting again. Every chain must receive
+#                                 each member exactly once or the run fails; a
+#                                 server that answers with an unknown-command
+#                                 error is skipped, except firn. scan.csv has
+#                                 line,pass,cpus,workload,connections,pipeline,
+#                                 calls,members,seconds,rate,p50_ms,p99_ms
+#                                 where rate is the members the replies carried
+#                                 a second and the latencies are one cursor
+#                                 call's; its client_work_fraction and
+#                                 client_limited are in pubsub-limited.csv
+#                                 under the same pipeline column. Redis 7.2.16
+#                                 is required, WORKLOAD_OPTIONS accepts
+#                                 --warmup-seconds (default 5), and the default
+#                                 lines are Redis and firn.
 #                                 Where /proc/stat exists, workload-limited.csv has
 #                                 line,pass,cpus,workload,connections,
 #                                 client_busy_mean,client_work_fraction,
@@ -2175,16 +2226,20 @@ if [ "$MODE" = workloads ]; then
     memory_workloads=
     connection_workloads=
     pubsub_workloads=
+    zset_workloads=
+    scan_workloads=
     for workload in $workloads; do
         case $workload in
             limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
             evict-zipf|session-set-limits|session-get-limits) memory_workloads=1 ;;
             handshake|client-list) connection_workloads=1 ;;
             pubsub-channel|pubsub-pattern) pubsub_workloads=1 ;;
+            scan-set|scan-hash|scan-zset) scan_workloads=1 ;;
+            zunionstore|zinterstore|zmpop) zset_workloads=1 ;;
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
-    if [ -n "$memory_workloads$connection_workloads$pubsub_workloads" ]; then
+    if [ -n "$memory_workloads$connection_workloads$pubsub_workloads$scan_workloads$zset_workloads" ]; then
         reference_version=$(redis-server --version)
         case " $reference_version " in
             *" v=7.2.16 "*) ;;
@@ -2193,6 +2248,10 @@ if [ "$MODE" = workloads ]; then
                     echo "handshake/client-list workloads require Redis 7.2.16: $reference_version" >&2
                 elif [ -n "$pubsub_workloads" ]; then
                     echo "pub/sub workloads require Redis 7.2.16: $reference_version" >&2
+                elif [ -n "$scan_workloads" ]; then
+                    echo "scan workloads require Redis 7.2.16: $reference_version" >&2
+                elif [ -n "$zset_workloads" ]; then
+                    echo "sorted-set workloads require Redis 7.2.16: $reference_version" >&2
                 else
                     echo "memory workloads require Redis 7.2.16: $reference_version" >&2
                 fi
@@ -2221,12 +2280,15 @@ if [ "$MODE" = workloads ]; then
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
     echo 'line,pass,cpus,workload,connections,pipeline,published,delivered,seconds,rate,p50_ms,p99_ms' >"$OUT/pubsub.csv"
+    echo 'line,pass,cpus,workload,connections,pipeline,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/zset.csv"
+    echo 'line,pass,cpus,workload,connections,pipeline,calls,members,seconds,rate,p50_ms,p99_ms' >"$OUT/scan.csv"
     workload_cpu=
     if [ -r /proc/stat ]; then
         workload_cpu="$OUT/workload-cpu.csv"
         echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$workload_cpu"
         echo 'line,pass,cpus,workload,connections,client_busy_mean,client_work_fraction,client_limited' >"$OUT/workload-limited.csv"
         echo 'line,pass,cpus,workload,connections,pipeline,client_busy_mean,client_work_fraction,client_limited' >"$OUT/pubsub-limited.csv"
+        echo 'line,pass,cpus,workload,connections,pipeline,client_busy_mean,client_work_fraction,client_limited' >"$OUT/zset-limited.csv"
     else
         echo "skip,workload-cpu.csv,no /proc/stat"
     fi
@@ -2234,8 +2296,9 @@ if [ "$MODE" = workloads ]; then
     # includes the client's own connection setup and warm-up, which the
     # busy fraction therefore covers. workload_end takes <line> <connections>
     # and appends the sample's rows to workload-cpu.csv and workload-limited.csv;
-    # with a third argument, the pub/sub pipeline depth, to pubsub-limited.csv
-    # and workload-cpu.csv under that depth.
+    # with a third argument, the pipeline depth, to pubsub-limited.csv (the file
+    # a fourth argument names instead) and workload-cpu.csv under that depth.
+    # The rows carry $cell when it is set and $workload otherwise.
     workload_begin() {
         rm -f "$OUT/workload-work"
         [ -z "$workload_cpu" ] || cat /proc/stat >"$OUT/workload-stat-before"
@@ -2251,11 +2314,11 @@ if [ "$MODE" = workloads ]; then
             busy=${limited%%,*}
             work=$(work_limited "$OUT/workload-work") || exit 1
             if [ -n "${3:-}" ]; then
-                echo "$1,$pass,$n,$workload,$2,$3,$busy,$work" >>"$OUT/pubsub-limited.csv"
-                awk -v key="$1,$pass,$n,$workload,$3" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
+                echo "$1,$pass,$n,${cell:-$workload},$2,$3,$busy,$work" >>"$OUT/${4:-pubsub-limited.csv}"
+                awk -v key="$1,$pass,$n,${cell:-$workload},$3" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
             else
-                echo "$1,$pass,$n,$workload,$2,$busy,$work" >>"$OUT/workload-limited.csv"
-                awk -v key="$1,$pass,$n,$workload,$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
+                echo "$1,$pass,$n,${cell:-$workload},$2,$busy,$work" >>"$OUT/workload-limited.csv"
+                awk -v key="$1,$pass,$n,${cell:-$workload},$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
             fi
         fi
     }
@@ -2269,7 +2332,7 @@ if [ "$MODE" = workloads ]; then
         set -- ${WORKLOAD_OPTIONS:-}
         while [ "$#" -gt 0 ]; do
             case $1 in
-                --keys|--value-size|--zipf-s|--warmup-seconds|--sample-ms|--window) ;;
+                --keys|--value-size|--zipf-s|--warmup-seconds|--sample-ms|--window|--prefill|--pop-count) ;;
                 *) echo "unsupported WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
             esac
             [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
@@ -2284,6 +2347,18 @@ if [ "$MODE" = workloads ]; then
             case $1 in
                 --warmup-seconds|--sample-ms) ;;
                 *) echo "handshake/client-list do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
+            esac
+            [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
+            shift 2
+        done
+    fi
+    if [ -n "$scan_workloads" ]; then
+        set -f
+        set -- ${WORKLOAD_OPTIONS:-}
+        while [ "$#" -gt 0 ]; do
+            case $1 in
+                --warmup-seconds) ;;
+                *) echo "scan workloads do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
             esac
             [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
             shift 2
@@ -2368,7 +2443,11 @@ if [ "$MODE" = workloads ]; then
             for workload in $workloads; do
                 workload_order=$order
                 case $workload in
-                    pubsub-channel|pubsub-pattern)
+                    pubsub-channel|pubsub-pattern|scan-set|scan-hash|scan-zset)
+                        case $workload in
+                            scan-*) depth_csv=scan.csv; depth_label=scan ;;
+                            *) depth_csv=pubsub.csv; depth_label=pub/sub ;;
+                        esac
                         # The AOF lines add nothing to a command that is never
                         # written to the file.
                         if [ -z "${WORKLOAD_SERVERS:-}${WORKLOAD_IMAGES:-}" ]; then
@@ -2405,11 +2484,11 @@ if [ "$MODE" = workloads ]; then
                                         continue
                                     fi
                                     if [ "$status" -ne 0 ]; then
-                                        echo "pub/sub workload failed: line=$line pass=$pass cpus=$n workload=$workload connections=$conns pipeline=$depth (exit $status)" >&2
+                                        echo "$depth_label workload failed: line=$line pass=$pass cpus=$n workload=$workload connections=$conns pipeline=$depth (exit $status)" >&2
                                         exit "$status"
                                     fi
                                     workload_end "$line" "$conns" "$depth"
-                                    echo "$line,$pass,$n,$result" | tee -a "$OUT/pubsub.csv"
+                                    echo "$line,$pass,$n,$result" | tee -a "$OUT/$depth_csv"
                                 done
                             done
                             # Profile only after every measured run on this
@@ -2450,6 +2529,57 @@ if [ "$MODE" = workloads ]; then
                             fi
                             stop
                             server=
+                        done
+                        continue
+                        ;;
+                    zunionstore|zinterstore|zmpop)
+                        # Every line runs without the append-only file, as in the
+                        # pub/sub workloads, so that the default lines are the two
+                        # of those.
+                        if [ -z "${WORKLOAD_SERVERS:-}${WORKLOAD_IMAGES:-}" ]; then
+                            workload_order="reference firn-$n"
+                            if [ $((pass % 2)) -eq 0 ]; then
+                                workload_order="firn-$n reference"
+                            fi
+                        fi
+                        layouts=shared
+                        case $workload in zunionstore|zinterstore) layouts="shared per-connection" ;; esac
+                        for line in $workload_order; do
+                            if ! available "$line"; then
+                                echo "skip,$line,no executable"
+                                continue
+                            fi
+                            for layout in $layouts; do
+                                # A fresh server for each layout: the sets of
+                                # the other layout are not left behind in it.
+                                start "$line"
+                                layout_option=
+                                cell=$workload
+                                case $workload in zunionstore|zinterstore) layout_option="--layout $layout"; cell=$workload-$layout ;; esac
+                                for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                                    for depth in ${WORKLOAD_DEPTHS:-16 1}; do
+                                        workload_begin
+                                        status=0
+                                        # layout_option is two words, or none.
+                                        result=$(taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
+                                            --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
+                                            --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" \
+                                            --pipeline "$depth" $layout_option \
+                                            --client-work-file "$OUT/workload-work") || status=$?
+                                        if [ "$status" -ne 0 ]; then
+                                            echo "sorted-set workload failed: line=$line pass=$pass cpus=$n workload=$cell connections=$conns pipeline=$depth (exit $status)" >&2
+                                            exit "$status"
+                                        fi
+                                        workload_end "$line" "$conns" "$depth" zset-limited.csv
+                                        # The client's row is workload,connections,
+                                        # commands,seconds,rate,p50,p99.
+                                        echo "$line,$pass,$n,$cell,$conns,$depth,$(printf '%s\n' "$result" | cut -d, -f3-)" | tee -a "$OUT/zset.csv"
+                                    done
+                                done
+                                cell=
+                                stop
+                                server=
+                            done
                         done
                         continue
                         ;;
@@ -2638,7 +2768,10 @@ if [ "$MODE" = scale ]; then
         # quick_client starts one process per client CPU and counts
         # CLIENT_THREADS of them, so the two must name the same CPUs.
         placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
-        lines="reference valkey-io dragonfly-$n garnet-$n firn-$n firn-base-$n"
+        # The -latest lines run where REDIS_LATEST, VALKEY_LATEST,
+        # DRAGONFLY_LATEST and GARNET_LATEST name their servers, and are
+        # skipped as absent where they do not.
+        lines="reference valkey-io dragonfly-$n garnet-$n firn-$n firn-base-$n redis-latest valkey-latest valkey-io-latest dragonfly-latest-$n garnet-latest-$n"
         for line in $lines; do
             if available "$line"; then
                 verify_suite "$line"

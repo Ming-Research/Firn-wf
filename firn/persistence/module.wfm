@@ -47,13 +47,14 @@ public struct AofBoundary {
 }
 
 public struct AofLog {
-  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file; the scan worker owns its temporary base and journal read handles, leaving boundary validation and authoritative appends with the writer.";
+  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file; the scan worker owns its temporary base and journal read handles, leaving boundary validation and authoritative appends with the writer; error_logged is the Unix second of the last append error the writer logged, which Redis limits to one line in thirty seconds.";
   public directory: DirectoryRead;
   public writable: std::fs::DirectoryWrite;
   public prefix: Box<Slots<u8>>;
   public manifest: AofManifest;
   public file: WriteFile;
   public boundary: AofBoundary;
+  public error_logged: u64;
 }
 
 public enum AofStartError {
