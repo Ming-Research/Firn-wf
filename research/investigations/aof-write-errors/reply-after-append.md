@@ -1195,6 +1195,24 @@ now goes on after the stop until the writer has seen S1 and acknowledged one
 more pipeline, at most two passes, and still fails at that assertion after
 three passes if no INFO shows S1.
 
+With that change, the gate's targets ran on e4a1203 (run 45789289568): every
+network case passed, the long-history case included, and only a unit test of
+the benchmark workload failed, `scan::tests::a_missing_member_fails_the_run`,
+which runs against a stand-in server and no firn. After main ecf6723 merged
+as 9992352, run 45795670257 failed the post-cut case at the assertion a60310b
+failed, "the exclusion was never checked while the backlog was charged". The
+explanation is inferred from the code, not measured: the sixteen writers,
+sent one after another without a pause, queue their SETs on `hot` and Meta,
+and a writer's pipelined INFO runs only once its own SET is done, possibly
+behind the SETs of the writers after it. The collecting buffer grows to
+about 256 KiB at the first SET and doubles after it, each growth charging the
+new capacity, so the third or fourth SET passes the 3.2 MiB reserve, and an
+INFO that waited behind that SET shows the abort. Before group commit one client
+sent each SET and INFO in turn, so no SET came between them. The first
+writer is now sent before the 30 ms pause that precedes the others: its SET
+and INFO run alone, and its SET does not reach the reserve. The case's
+failure message now lists what each writer's INFO saw.
+
 ### Void runs
 
 Two runs of `test` on the witness commit 82de0eb (main's server with the new

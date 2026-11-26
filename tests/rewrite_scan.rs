@@ -1133,9 +1133,10 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     // subscribed before the cut reads the commit sequence before it is sent.
     // Each reader takes the old increment's length the moment its reply or
     // message arrives, and A's record must lie inside that length. The
-    // writers below end the hold within milliseconds of being sent, so they
-    // wait 30 ms first: a reply sent before A's record is in the file then
-    // arrives, and is measured, while the file still lacks it.
+    // writers below end the hold within milliseconds of being sent, so all
+    // but the first, whose write alone does not end it, wait 30 ms first: a
+    // reply sent before A's record is in the file then arrives, and is
+    // measured, while the file still lacks it.
     let marker = wire(&[b"SET", b"held:marker", b"v"]);
     let before_marker = std::fs::metadata(&increment).unwrap().len();
     let mut holder = connect_when_ready(port, &child);
@@ -1165,28 +1166,38 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
             (name, expected, reply, length)
         })
     }).collect();
-    std::thread::sleep(Duration::from_millis(30));
     // A client that waits for each reply adds one record to the backlog per
     // hold. Sixteen 256 KiB writes from connections of their own outgrow the
     // 3.2 MiB reserve (maxmemory/20), each growth of the collecting buffer
-    // charging its full capacity. Each pipelines INFO after its SET: INFO
-    // runs while the rotation is held open and charged, and its reply waits
-    // with the SET's until the abort lets the file go.
+    // charging its full capacity. Each pipelines INFO after its SET, and its
+    // reply waits with the SET's until the abort lets the file go. Writers
+    // sent together queue their SETs on the key and Meta, and a writer's INFO
+    // can then run only after the SET that aborts the rewrite, so the first
+    // writer goes alone, before the pause: its SET charges the ledger and its
+    // INFO runs while the rotation is held open and charged.
     let value = vec![b'n'; 256 * 1024];
-    let writers: Vec<TcpStream> = (0..16).map(|_| {
+    let mut batch = wire(&[b"SET", b"hot", &value]);
+    batch.extend(wire(&[b"INFO", b"all"]));
+    let send = |batch: &[u8]| {
         let mut writer = connect_when_ready(port, &child);
-        let mut batch = wire(&[b"SET", b"hot", &value]);
-        batch.extend(wire(&[b"INFO", b"all"]));
-        writer.write_all(&batch).unwrap();
+        writer.write_all(batch).unwrap();
         writer
-    }).collect();
+    };
+    let mut writers = vec![send(&batch)];
+    std::thread::sleep(Duration::from_millis(30));
+    writers.extend((1..16).map(|_| send(&batch)));
     let info = rewrite_wait(&mut client);
     assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance: {info:?}");
     assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
     let mut reconciled = false;
+    let mut seen = Vec::new();
     for mut writer in writers {
         assert_eq!(read_reply(&mut writer), Reply::Line(b"+OK".to_vec()));
         let all = String::from_utf8(bulk(read_reply(&mut writer))).unwrap();
+        let field = |name: &str| info_field(&all, name).unwrap_or_default();
+        seen.push(format!("in progress {}, abort reason {:?}, charged {}, used {}",
+            field("aof_rewrite_in_progress"), field("firn_aof_rewrite_abort_reason"),
+            field("firn_aof_rewrite_charged"), field("firn_aof_rewrite_used")));
         // The rotation is held open here, so the collecting buffer's growth
         // charges the ledger and stays charged until the attempt ends: the
         // exclusion must then leave those charges out of the ledger once.
@@ -1198,7 +1209,8 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
             reconciled = true;
         }
     }
-    assert!(reconciled, "the exclusion was never checked while the backlog was charged");
+    assert!(reconciled, "the exclusion was never checked while the backlog was charged; the writers' INFO saw: {}",
+        seen.join("; "));
     assert_old_manifest(&program);
     assert_eq!(read_reply(&mut holder), Reply::Line(b"+OK".to_vec()));
     let file = std::fs::read(&increment).unwrap();
