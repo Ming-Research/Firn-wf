@@ -1003,6 +1003,7 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
         let mut appended = Vec::new();
         let mut members = Vec::new();
         let mut cut_count = None;
+        let mut stopped_at = None;
         let mut last_value = vec![b'n'; 16 * 1024];
         loop {
             count += 1;
@@ -1027,7 +1028,16 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
             if count == 1 { ready_tx.send(()).unwrap(); }
             // At least one whole acknowledged pipeline must follow an
             // observed S1, even if the fast switch finished before sampling.
-            if !worker_running.load(Ordering::Acquire) && cut_count.is_none_or(|cut| count > cut) { break; }
+            // An INFO that ran just before S1 is answered only once the
+            // switch returns the file, and the rewrite can end before this
+            // thread runs again. firn_aof_rewrite_cut stays 1 after the
+            // rewrite, so after the stop the writer goes on until it has seen
+            // S1 and acknowledged one more pipeline: at most two passes if S1
+            // came, and three, ending with no cut seen, if it did not.
+            if !worker_running.load(Ordering::Acquire) {
+                let stopped = *stopped_at.get_or_insert(count);
+                if cut_count.is_some_and(|cut| count > cut) || count > stopped + 2 { break; }
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
         (count, cut_count, last_value, appended, members)

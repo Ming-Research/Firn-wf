@@ -1148,6 +1148,53 @@ In (ii) and (iii) the post-cut case aborted on the driver ring (see below).
 The kill case passed on (i) and aborted on the ring in every other run of
 that day, the head's 45721254386 and the witness's 45721254294 included.
 
+On 2026-11-26, after main d49b55b merged into the branch as c6c8b28, fast.yml
+ran `test` on the head, on the witness rebuilt as d49b55b plus the head's
+`tests/durability.rs` (cb9d828), and on the three changes rebuilt on the
+head. No case of these five runs aborted on the driver ring; each passed 324
+to 326 of its 327 cases.
+
+- Head c6c8b28, run 45786976807: the kill case, the visibility case, the
+  mixed pipeline case, the post-cut case with its held-slot check and
+  `memory_limit::allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data`
+  passed. `reconciled_scan_long_history_completes_under_writes_without_duplicate_effects`
+  failed at "the continuous writer must observe S1"; see the next paragraph.
+- Witness cb9d828, run 45786972851: the kill case failed, with 173
+  observations of acknowledged writes missing after the restarts, repeated
+  observations included (in round 0, killed after 297 ms, keys
+  `kill:0:1:68`, `kill:0:2:67` and others read `$-1`); the visibility case
+  failed in all ten rounds at the acknowledged SET and at the SET made before
+  a delivered message, and in rounds 1 and 3 to 9 at the SET another
+  connection's GET revealed; the mixed pipeline case found 0 of its 2 INCR
+  records in the file at the last reply.
+- (i) cb41d07, run 45786979148: the post-cut case failed at SETNX's and
+  STRLEN's replies, which arrived while the old increment held 269,056,222
+  bytes, before A's record ended at 269,056,260. The kill case passed.
+- (ii) 07a9d15, run 45786970633: the visibility case failed in rounds 2, 3
+  and 5 to 8 at the SET another connection's GET revealed, and the post-cut
+  case at GET's and PUBLISH's replies, at 269,056,222 bytes.
+- (iii) 5253df2, run 45786974786: the visibility case failed in rounds 1, 2,
+  7, 8 and 9 at the SET made before a delivered message, and the post-cut case
+  at the subscriber's message, at 269,056,222 bytes.
+
+The assertion a60310b failed on the day before, that some writer's INFO ran
+while the rotation was held open and charged, passed in all four runs that
+reached it.
+
+The long-history case's writer loops on a pipeline and an INFO, and stopped
+at the first pass after the rewrite ended unless an INFO had shown
+`firn_aof_rewrite_cut` 1. The flag stays 1 after the rewrite, so the writer
+can have missed it only if its last INFO ran before S1 and was read after the
+rewrite ended. With replies held while the maintenance context holds the file
+from the cut through the switch, such an INFO is answered only at the switch,
+and the post-switch base completion and installation can end before the
+writer's next pass; on main the writer sampled throughout the switch. The
+case passed on (i) and (iii), whose changes leave the writer's replies as the
+head sends them, and on (ii), which does not hold the INFO replies. The case
+now goes on after the stop until the writer has seen S1 and acknowledged one
+more pipeline, at most two passes, and still fails at that assertion after
+three passes if no INFO shows S1.
+
 ### Void runs
 
 Two runs of `test` on the witness commit 82de0eb (main's server with the new
@@ -1157,8 +1204,11 @@ with firn aborting before it listened, `whitefoot completion: cannot
 initialize a selected driver ring`. Another work's run of the same day,
 45656378791, failed the same way 223 times, so the cause is the host, which
 could not set up an I/O ring while several runners tested at once, not the
-code under test. The witness's verdict on the kill and visibility cases
-comes from a run without that error.
+code under test. The owner found the cause: the runners' user could lock
+only 8 MB of memory, enough for about 204 of firn's rings across every test
+running at once, and raised the runner service's limit. The witness's
+verdict on the kill and visibility cases comes from run 45786972851 above,
+without that error.
 
 ### Whitefoot gap: a sync apart from the append handle
 
