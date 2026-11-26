@@ -121,6 +121,7 @@ fn run_zrangestore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
       let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &log_budget);
       pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::aof_note(meta: m, client: client);
     }
   }
   zrangestore_finish(client: client);
