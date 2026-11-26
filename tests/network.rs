@@ -3737,12 +3737,12 @@ fn firn_splits_quoted_inline_arguments_as_redis_does() {
 #[test]
 fn firn_handles_inline_nul_bytes_as_redis_does() {
     use std::path::PathBuf;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     let mut servers = vec![("firn", PathBuf::from(std::env::var_os("FIRN").expect("FIRN")))];
     if let Some(binary) = std::env::var_os("REDIS_SERVER") {
         let binary = PathBuf::from(binary);
-        let version = support::run_command(Command::new(&binary).arg("--version"));
+        let version = support::run_command(support::command(&binary).arg("--version"));
         assert!(version.status.success(), "Redis version: {version:?}");
         assert!(String::from_utf8_lossy(&version.stdout).contains(" v=7.2.16 "),
             "REDIS_SERVER must name Redis 7.2.16: {version:?}");
@@ -3753,7 +3753,7 @@ fn firn_handles_inline_nul_bytes_as_redis_does() {
     let port = lease.port().to_string();
     let mut firn_replies = None;
     for (label, binary) in servers {
-        let mut command = Command::new(binary);
+        let mut command = support::command(binary);
         command.current_dir(fixture.path())
             .args(["--port", &port, "--bind", "127.0.0.1", "--appendonly", "no"])
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
@@ -10170,7 +10170,7 @@ fn firn_shutdown_abandons_a_blocked_send_on_both_routes() {
 /// Sends a signal, named as kill(1) names it, to the running program alone.
 #[cfg(target_os = "linux")]
 fn send_signal(child: &ProgramChild, signal: &str) {
-    let status = std::process::Command::new("/bin/kill")
+    let status = support::command("/bin/kill")
         .args([format!("-{signal}"), "--".to_string(), child.id().to_string()])
         .status()
         .expect("run kill");
@@ -10428,7 +10428,7 @@ fn replay_server_start(
     let port = lease.port().to_string();
     match server {
         ReplayServer::Redis => {
-            let mut command = std::process::Command::new(support::redis_oracle());
+            let mut command = support::command(support::redis_oracle());
             command
                 .current_dir(directory)
                 .stdin(std::process::Stdio::null())

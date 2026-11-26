@@ -11,6 +11,93 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
+/// SIGCHLD, blocked in every thread of the test process.
+///
+/// A child's exit sends SIGCHLD to the thread that started the child. Its
+/// action is to be ignored, so the kernel discards it, unless that thread
+/// blocks it at that moment, as glibc makes a thread do while it starts a
+/// child (`posix_spawn`) or a thread (`pthread_create`). The kernel then
+/// queues it, and it wakes another thread of the process that does not block
+/// it. A socket read with a timeout that it wakes fails with EINTR, since the
+/// kernel never restarts a socket call with a timeout (signal(7)). With
+/// SIGCHLD blocked in every thread there is no thread to wake. Waiting for a
+/// child needs no signal: `Child::wait` and `try_wait` call waitpid. The
+/// account is research/investigations/firn/network-read-failures.md.
+mod child_exit_signal {
+    /// glibc's `sigset_t`, of 1024 bits.
+    type SignalSet = [u64; 16];
+    const SIGCHLD: i32 = 17;
+    const SIG_BLOCK: i32 = 0;
+    const SIG_SETMASK: i32 = 2;
+
+    unsafe extern "C" {
+        fn sigemptyset(set: *mut SignalSet) -> i32;
+        fn sigaddset(set: *mut SignalSet, signal: i32) -> i32;
+        fn pthread_sigmask(how: i32, set: *const SignalSet, old: *mut SignalSet) -> i32;
+    }
+
+    /// The signal mask the test process started with, written only by
+    /// `block`, before `main`.
+    static mut FIRST_MASK: SignalSet = [0; 16];
+
+    /// Blocks SIGCHLD in the process's one thread, so that every thread made
+    /// later inherits the block, and keeps the mask it replaces. A failure
+    /// shows in `a_child_starts_with_the_mask_the_test_process_started_with`,
+    /// whose thread then does not block SIGCHLD.
+    extern "C" fn block() {
+        let mut set: SignalSet = [0; 16];
+        // SAFETY: this runs before `main`, while the process has one thread
+        // and nothing reads FIRST_MASK; both sets outlive the calls.
+        unsafe {
+            sigemptyset(&mut set);
+            sigaddset(&mut set, SIGCHLD);
+            pthread_sigmask(SIG_BLOCK, &set, &raw mut FIRST_MASK);
+        }
+    }
+
+    /// The loader runs the functions of `.init_array` before `main`, while
+    /// the process has one thread.
+    #[used]
+    #[unsafe(link_section = ".init_array")]
+    static BLOCK: extern "C" fn() = block;
+
+    /// Signals 1 to 64 of the mask the process started with, in the form of
+    /// the `SigBlk` line of a thread's status in /proc.
+    pub(super) fn first_mask() -> u64 {
+        // SAFETY: FIRST_MASK is written only before `main`.
+        unsafe { (*(&raw const FIRST_MASK))[0] }
+    }
+
+    /// Gives the calling thread the mask the process started with. It runs
+    /// in a child between its fork and its exec.
+    pub(super) fn restore() -> std::io::Result<()> {
+        // SAFETY: FIRST_MASK is written only before `main`, and
+        // pthread_sigmask is async-signal-safe (signal-safety(7)).
+        match unsafe { pthread_sigmask(SIG_SETMASK, &raw const FIRST_MASK, std::ptr::null_mut()) } {
+            0 => Ok(()),
+            error => Err(std::io::Error::from_raw_os_error(error)),
+        }
+    }
+}
+
+/// A command for a child of the test process: every child of the network
+/// cases is made here. The child starts with the signal mask the test
+/// process started with, as it would outside the tests, and not with the
+/// block `child_exit_signal` gives every thread here: servers, shells and
+/// `sudo` wait for children of their own. The function that gives the mask
+/// back runs before the child's exec, so std starts the child by fork and
+/// exec instead of `posix_spawn`.
+pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new(program);
+    // SAFETY: restore reads a value written before `main` and makes one
+    // async-signal-safe call.
+    unsafe {
+        command.pre_exec(child_exit_signal::restore);
+    }
+    command
+}
+
 static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(0);
 static LEASED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
 
@@ -213,7 +300,7 @@ impl CompiledProgram {
     /// argument that is not valid UTF-8.
     pub fn run(&self, working_directory: &Path, arguments: &[&[u8]]) -> Output {
         run_command(
-            Command::new(&self.executable)
+            command(&self.executable)
                 .current_dir(working_directory)
                 .args(arguments.iter().map(|bytes| invocation_argument(bytes))),
         )
@@ -227,7 +314,7 @@ impl CompiledProgram {
         arguments: &[&[u8]],
     ) -> ProgramChild {
         ProgramChild::spawn(
-            Command::new(&self.executable)
+            command(&self.executable)
                 .current_dir(working_directory)
                 .args(arguments.iter().map(|bytes| invocation_argument(bytes)))
                 .stdin(Stdio::null())
@@ -306,7 +393,7 @@ impl CompiledProgram {
         ignore_xfsz: bool,
         limit: Duration,
     ) -> ProgramChild {
-        let mut command = Command::new(&self.executable);
+        let mut command = command(&self.executable);
         #[cfg(target_os = "linux")]
         if ignore_xfsz {
             use std::os::unix::process::CommandExt;
@@ -646,7 +733,7 @@ impl ProgramMonitor {
     // hold the captured pipes open and prevent diagnostics from completing.
     fn kill_group(&self) {
         #[cfg(unix)]
-        let _ = Command::new("/bin/kill")
+        let _ = command("/bin/kill")
             .args(["-KILL", "--", &format!("-{}", self.program.pid)])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -813,7 +900,7 @@ pub(crate) fn redis_oracle() -> PathBuf {
     let binary = std::env::var_os("REDIS_SERVER")
         .map(PathBuf::from)
         .expect("REDIS_SERVER must name redis-server 7.2.16, the oracle");
-    let output = run_command(Command::new(&binary).arg("--version"));
+    let output = run_command(command(&binary).arg("--version"));
     assert!(output.status.success(), "Redis version command: {output:?}");
     assert!(
         String::from_utf8_lossy(&output.stdout).contains(" v=7.2.16 "),
@@ -867,7 +954,7 @@ mod tests {
 
     /// Spawns a firn-free witness through the same process and capture path.
     fn shell_child(script: &str, lease: &PortLease) -> ProgramChild {
-        let mut command = Command::new("/bin/sh");
+        let mut command = command("/bin/sh");
         command
             .args(["-c", script])
             .stdin(Stdio::null())
@@ -1049,7 +1136,7 @@ mod tests {
     /// when it was forked.
     fn run_slow_exec_child() {
         use std::os::unix::process::CommandExt;
-        let mut command = Command::new("/bin/true");
+        let mut command = command("/bin/true");
         // SAFETY: the closure calls only nanosleep, which is async-signal-safe.
         unsafe {
             command.pre_exec(|| {
@@ -1217,7 +1304,7 @@ mod tests {
     #[test]
     fn readiness_reports_child_exit_status_and_stderr() {
         let lease = lease_port();
-        let mut command = Command::new("/bin/sh");
+        let mut command = command("/bin/sh");
         command
             .args(["-c", "echo FIRN_READINESS_EXIT_MARKER >&2; exit 7"])
             .stdin(Stdio::null())
@@ -1248,6 +1335,160 @@ mod tests {
         assert!(
             message.contains("FIRN_READINESS_EXIT_MARKER"),
             "readiness panic lost stderr: {message}"
+        );
+    }
+
+    /// What blocking SIGCHLD removes. A thread starts children back to back,
+    /// as cases do when they stop servers with `/bin/kill`, while the test's
+    /// thread reads an idle connection with a timeout. A raw command, with no
+    /// function to run before its exec, is started by `posix_spawn`, inside
+    /// which glibc blocks every signal in the starting thread, so a child
+    /// that exits meanwhile has its SIGCHLD queued. Unless every thread
+    /// blocks SIGCHLD, a queued one wakes the reader and its read fails with
+    /// EINTR: without the block, 4000 children did so in each of 20 runs
+    /// (research/investigations/firn/network-read-failures.md).
+    #[test]
+    fn a_queued_child_exit_signal_interrupts_no_timed_read() {
+        const CHILDREN: usize = 4000;
+        const AT_ONCE: usize = 64;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("listen");
+        let mut idle = std::net::TcpStream::connect(listener.local_addr().expect("listener address"))
+            .expect("connect");
+        let _peer = listener.accept().expect("accept");
+        idle.set_read_timeout(Some(Duration::from_millis(20))).expect("bound the reads");
+        let starting = std::thread::spawn(|| {
+            let mut children: Vec<Child> = Vec::with_capacity(AT_ONCE);
+            for _ in 0..CHILDREN {
+                let child = Command::new("/bin/true")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("start /bin/true");
+                children.push(child);
+                if children.len() == AT_ONCE {
+                    for mut child in children.drain(..) {
+                        child.wait().expect("wait for /bin/true");
+                    }
+                }
+            }
+            for mut child in children {
+                child.wait().expect("wait for /bin/true");
+            }
+        });
+        let (mut reads, mut interrupted) = (0_u32, 0_u32);
+        while !starting.is_finished() {
+            match idle.read(&mut [0_u8]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => interrupted += 1,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                other => panic!("the idle connection gave {other:?}"),
+            }
+            reads += 1;
+        }
+        starting.join().expect("the thread that starts the children");
+        assert_eq!(
+            interrupted, 0,
+            "{interrupted} of {reads} timed reads of an idle connection failed with Interrupted"
+        );
+    }
+
+    /// The block is the test process's own: the test's thread blocks
+    /// SIGCHLD, and a child made by `command` runs with the mask the test
+    /// process started with.
+    #[test]
+    fn a_child_starts_with_the_mask_the_test_process_started_with() {
+        const SIGCHLD: u64 = 1 << (17 - 1);
+        fn blocked(status: &str) -> u64 {
+            let mask = status
+                .lines()
+                .find_map(|line| line.strip_prefix("SigBlk:"))
+                .expect("a SigBlk line in the status");
+            u64::from_str_radix(mask.trim(), 16).expect("a hexadecimal mask")
+        }
+        let own = blocked(
+            &std::fs::read_to_string("/proc/thread-self/status").expect("this thread's status"),
+        );
+        assert_ne!(own & SIGCHLD, 0, "the test's thread does not block SIGCHLD: SigBlk {own:016x}");
+        let output = run_command(command("/bin/cat").arg("/proc/self/status"));
+        assert!(output.status.success(), "cat /proc/self/status: {output:?}");
+        let child = blocked(&String::from_utf8_lossy(&output.stdout));
+        let first = child_exit_signal::first_mask();
+        assert_eq!(
+            child, first,
+            "a child has SigBlk {child:016x}; the test process started with {first:016x}"
+        );
+    }
+
+    /// Every child of the network cases is made by `command`, so that a case
+    /// added later cannot start one that keeps the block. The one other
+    /// command is the raw one of
+    /// `a_queued_child_exit_signal_interrupts_no_timed_read`, which needs
+    /// `posix_spawn`.
+    #[test]
+    fn every_child_is_started_through_support_command() {
+        // Written in two parts so that this test's own source does not hold it.
+        let made = concat!("Command", "::new");
+        fn sources(directory: &Path, found: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(directory).expect("read the crate's directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    if path.file_name() != Some(OsStr::new("target")) {
+                        sources(&path, found);
+                    }
+                } else if path.extension() == Some(OsStr::new("rs")) {
+                    found.push(path);
+                }
+            }
+        }
+        /// The indices of the lines of the function that begins with
+        /// `signature`, through the brace that closes it.
+        fn function_lines(source: &str, signature: &str) -> std::ops::RangeInclusive<usize> {
+            let lines: Vec<&str> = source.lines().collect();
+            let start = lines
+                .iter()
+                .position(|line| line.trim_start().starts_with(signature))
+                .unwrap_or_else(|| panic!("no function {signature} in support.rs"));
+            let indent = &lines[start][..lines[start].len() - lines[start].trim_start().len()];
+            let end = lines[start..]
+                .iter()
+                .position(|line| line.strip_prefix(indent) == Some("}"))
+                .unwrap_or_else(|| panic!("no end of {signature} in support.rs"));
+            start..=start + end
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        sources(root, &mut files);
+        let support = root.join("support.rs");
+        assert!(
+            files.contains(&support) && files.contains(&root.join("network.rs")),
+            "the crate's sources under {}: {files:?}",
+            root.display()
+        );
+        let mut stray = Vec::new();
+        for file in &files {
+            let source = std::fs::read_to_string(file).expect("read a source file");
+            let allowed = if *file == support {
+                vec![
+                    function_lines(&source, "pub(crate) fn command("),
+                    function_lines(&source, "fn a_queued_child_exit_signal_interrupts_no_timed_read("),
+                ]
+            } else {
+                Vec::new()
+            };
+            for (index, line) in source.lines().enumerate() {
+                if line.contains(made) && !allowed.iter().any(|lines| lines.contains(&index)) {
+                    stray.push(format!("{}:{}: {}", file.display(), index + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            stray.is_empty(),
+            "children made without support::command:\n{}",
+            stray.join("\n")
         );
     }
 }

@@ -4,13 +4,13 @@
 use super::*;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 fn servers() -> Vec<(&'static str, PathBuf)> {
     let mut servers = vec![("firn", PathBuf::from(std::env::var_os("FIRN").expect("FIRN")))];
     if let Some(binary) = std::env::var_os("REDIS_SERVER") {
         let binary = PathBuf::from(binary);
-        let version = support::run_command(Command::new(&binary).arg("--version"));
+        let version = support::run_command(support::command(&binary).arg("--version"));
         assert!(version.status.success(), "Redis version: {version:?}");
         assert!(String::from_utf8_lossy(&version.stdout).contains(" v=7.2.16 "),
             "REDIS_SERVER must name Redis 7.2.16: {version:?}");
@@ -20,7 +20,7 @@ fn servers() -> Vec<(&'static str, PathBuf)> {
 }
 
 fn start(binary: &Path, directory: &Path, arguments: &[OsString], stdin: Option<&Path>) -> ProgramChild {
-    let mut command = Command::new(binary);
+    let mut command = support::command(binary);
     command.current_dir(directory).args(arguments)
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .env_remove("WF_REQUIRE_WINDOWS_IOCP");

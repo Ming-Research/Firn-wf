@@ -823,7 +823,7 @@ fn reconciled_scan_crash_uses_old_authoritative_files() {
     }
     assert_old_manifest(&program);
     assert_eq!(rewrite_info(&mut client)["aof_rewrite_in_progress"], "1");
-    let status = std::process::Command::new("/bin/kill").args(["-KILL", &child.id().to_string()]).status().unwrap();
+    let status = support::command("/bin/kill").args(["-KILL", &child.id().to_string()]).status().unwrap();
     assert!(status.success());
     assert!(!child.wait_with_output().unwrap().status.success());
     assert!(journal_path(&program).exists(), "SIGKILL leaves the journal for startup cleanup");

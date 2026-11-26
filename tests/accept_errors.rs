@@ -3,7 +3,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const EMFILE_LOG: &[u8] = b"Accepting client connection: Too many open files\n";
 const ACCEPT_LOG_PREFIX: &[u8] = b"Accepting client connection: ";
@@ -204,7 +204,7 @@ fn clock_ticks_per_second() -> u64 {
     *TICKS.get_or_init(|| {
         // This command runs inside the Linux CI test, through the same bounded
         // subprocess harness as the other external helpers, never on the Mac.
-        let output = support::run_command(Command::new("getconf").arg("CLK_TCK"));
+        let output = support::run_command(support::command("getconf").arg("CLK_TCK"));
         assert!(output.status.success(), "getconf CLK_TCK failed: {output:?}");
         let ticks: u64 = std::str::from_utf8(&output.stdout).expect("getconf numeric output")
             .trim().parse().expect("getconf CLK_TCK is a positive integer");
@@ -418,7 +418,7 @@ fn accept_emfile_case(native: bool, shutdown_while_saturated: bool) {
     let lease = support::lease_port();
     let port = lease.port();
     let executable = std::env::var_os("FIRN").expect("validated FIRN executable");
-    let mut command = Command::new("prlimit");
+    let mut command = support::command("prlimit");
     command.args(["--nofile=256:256", "--"]).arg(executable)
         .args(["--port".to_owned(), port.to_string(), "--firn-clients".to_owned(), "0".to_owned(),
             "--appendonly".to_owned(), "no".to_owned()])

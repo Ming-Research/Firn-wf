@@ -160,7 +160,10 @@ and `collection_scan::zscan_score_text_uses_current_cardinality_before_match`.
 Earlier diagnostic runs saw `pubsub::soft_output_limit_*`,
 `collection_scan::multi_resp2_oracle`,
 `firn_script_clients_direct_unpack_boundaries` and
-`firn_script_clients_direct_arity_and_execution_errors`. None is analyzed here.
+`firn_script_clients_direct_arity_and_execution_errors`. They are taken up in
+[`network-read-failures.md`](../firn/network-read-failures.md), which says why
+their kind cannot be recovered from these runs and which causes of socket
+read failures were found since.
 
 ## Weaknesses of the design noticed
 
