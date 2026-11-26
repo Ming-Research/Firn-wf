@@ -1074,7 +1074,7 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
   whether or not it took a sequence, and the send then reads no Meta for it.
   The note is cleared in `execute_client` at its start and again after
   eviction and admission, immediately before the handler. A reply whose
-  command noted nothing (GET's key-only statement, scripts, PING, QUEUED)
+  command noted nothing (GET's key-only statement, PING, QUEUED)
   makes the send read the commit sequence in one Meta statement, once per
   send. A subscribed connection's output reads it once per frame. The owner
   kept this rule over waiting for present keys' last-write stamps (question
@@ -1097,8 +1097,8 @@ above, and why. Whitefoot stays at `wf-63b7cbb03820`.
 - **Rewrite.** The maintenance context holds the slot from the cut through
   the sealed drain, the full journal drain and the switch, so the S1 order
   holds; replies wait for that turn, including the switch's exceptional
-  reread, which the post-cut backlog case uses to check that GET, SETNX and
-  STRLEN replies wait for another connection's record.
+  reread, which the post-cut backlog case uses to check that GET, SETNX,
+  STRLEN and a script's replies wait for another connection's record.
 - **Frame checks.** A publisher that pipelines its SET before its PUBLISH
   appends the SET in its own send, so without the frame wait the message
   only races that append; on red commit (iii) below it won the race in 7 of

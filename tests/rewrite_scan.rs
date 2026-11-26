@@ -1126,11 +1126,12 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     // From the cut until the switch's reread ends, the maintenance context
     // holds the active file, so no record reaches it, and a reply that may
     // have observed one waits. A's SET commits and stays unread. B1's GET
-    // shows its value, B2's SETNX finds the key and B3's STRLEN measures it,
-    // each on a connection of its own; the first reads the commit sequence
-    // before it sends, the other two note it in their own Meta statement.
-    // B4 publishes after A's SET, and the message to the connection that
-    // subscribed before the cut reads the commit sequence before it is sent.
+    // shows its value, B2's SETNX finds the key, B3's STRLEN measures it and
+    // B5's script reads it, each on a connection of its own; the first reads
+    // the commit sequence before it sends, the other three note it in their
+    // own Meta statement. B4 publishes after A's SET, and the message to the
+    // connection that subscribed before the cut reads the commit sequence
+    // before it is sent.
     // Each reader takes the old increment's length the moment its reply or
     // message arrives, and A's record must lie inside that length. The
     // writers below end the hold within milliseconds of being sent, so all
@@ -1154,6 +1155,7 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         (vec![b"SETNX".as_slice(), b"held:marker", b"x"], Reply::Line(b":0".to_vec())),
         (vec![b"STRLEN".as_slice(), b"held:marker"], Reply::Line(b":1".to_vec())),
         (vec![b"PUBLISH".as_slice(), b"held:channel", b"m"], Reply::Line(b":1".to_vec())),
+        (vec![b"EVAL".as_slice(), b"return redis.call('GET', KEYS[1])", b"1", b"held:marker"], Reply::Bulk(Some(b"v".to_vec()))),
     ].into_iter().map(|(command, expected)| {
         let mut observer = connect_when_ready(port, &child);
         observer.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
